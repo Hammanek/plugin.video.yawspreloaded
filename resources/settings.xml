@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="30204">
+        <setting label="30030" type="lsep" />
+        <setting label="30031" id="wsuser" type="text" default="" />
+        <setting label="30032" id="wspass" type="text" default="" option="hidden" />
+        <setting id="token" type="text" visible="false" />
+        <setting type="lsep" label="30010" />
+        <setting label="30011" id="scategory" type="select" lvalues="30012|30013|30014|30015|30016|30017|30018" default="1"/>
+        <setting label="30020" id="ssort" type="select" lvalues="30021|30022|30023|30024|30025" default="3"/>
+        <setting label="30029" id="shistory" type="number" default="20"/>
+        <setting id="slast" type="text" visible="false" default="%#NONE#%"/>
+        <setting type="lsep" label="30040" />
+		<setting label="30041" id="dfolder" type="folder" default="" />
+        <setting label="30042" id="dnormalize" type="bool" default="true" />
+		<setting label="30043" id="dnotify" type="bool" default="true" />
+		<setting label="30044" id="dnevery" type="select" values="1%|5%|10%|20%|25%|50%" default="10%" visible="eq(-1,true)" />
+        <setting type="sep"/>
+        <setting label="30051" id="experimental" type="bool" default="false" />
+    </category>
+    <category label="Trakt">
+        <setting id="trakt_username" type="text" label="Trakt Username" default=""/>
+        <setting id="trakt_client_id" type="text" label="Trakt Client ID" default=""/>
+    </category>
+</settings>
