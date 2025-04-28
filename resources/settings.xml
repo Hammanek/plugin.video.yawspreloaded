@@ -7,7 +7,7 @@
         <setting id="token" type="text" visible="false" />
         <setting type="lsep" label="30010" />
         <setting label="30011" id="scategory" type="select" lvalues="30012|30013|30014|30015|30016|30017|30018" default="1"/>
-        <setting label="30020" id="ssort" type="select" lvalues="30021|30022|30023|30024|30025" default="3"/>
+        <setting label="30020" id="ssort" type="select" lvalues="30021|30022|30023|30024|30025" default="0"/>
         <setting label="30029" id="shistory" type="number" default="20"/>
         <setting id="slast" type="text" visible="false" default="%#NONE#%"/>
         <setting type="lsep" label="30040" />
@@ -19,7 +19,9 @@
         <setting label="30051" id="experimental" type="bool" default="false" />
     </category>
     <category label="Trakt">
-        <setting id="trakt_username" type="text" label="Trakt Username" default=""/>
         <setting id="trakt_client_id" type="text" label="Trakt Client ID" default=""/>
+        <setting id="trakt_client_secret" type="text" label="Trakt Client Secret" default=""/>
+        <setting id="trakt_access_token" type="text" label="Trakt Access Token" visible="false" default=""/>
+        <setting id="trakt_refresh_token" type="text" label="Trakt Refresh Token" visible="false" default=""/>
     </category>
 </settings>

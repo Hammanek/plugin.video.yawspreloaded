@@ -13,6 +13,7 @@ from md5crypt import md5crypt
 import traceback
 import json
 import unidecode
+import time
 import re
 import zipfile
 import uuid
@@ -42,6 +43,13 @@ SORTS = ['', 'recent', 'rating', 'largest', 'smallest']
 SEARCH_HISTORY = 'search_history'
 NONE_WHAT = '%#NONE#%'
 BACKUP_DB = 'D1iIcURxlR'
+
+# Trakt OAuth constants
+TRAKT_OAUTH_URL = 'https://api.trakt.tv/oauth/'
+TRAKT_AUTHORIZE_URL = TRAKT_OAUTH_URL + 'authorize'
+TRAKT_TOKEN_URL = TRAKT_OAUTH_URL + 'token'
+TRAKT_DEVICE_CODE_URL = TRAKT_OAUTH_URL + 'device/code'
+TRAKT_DEVICE_TOKEN_URL = TRAKT_OAUTH_URL + 'device/token'
 
 # Plugin setup
 _url = sys.argv[0]
@@ -821,21 +829,19 @@ def router(paramstring):
 
 def trakt_watchlist(params):
     xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ Trakt Watchlist")
-    trakt_username = _addon.getSetting('trakt_username').strip()
-    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
     
-    if not trakt_username or not trakt_client_id:
-        popinfo("Vyplňte Trakt údaje v nastavení!", icon=xbmcgui.NOTIFICATION_INFO, sound=True)
+    # Check authentication first
+    if 'reauth' in params:
+        if trakt_authenticate():
+            xbmc.executebuiltin('Container.Refresh()')
+        return
+    
+    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
+    if not trakt_client_id:
+        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID v nastavení.", sound=True)
         _addon.openSettings()
         xbmcplugin.endOfDirectory(_handle)
         return
-    
-    headers = {
-        'Content-Type': 'application/json',
-        'trakt-api-version': '2',
-        'trakt-api-key': trakt_client_id,
-        'Accept-Language': 'cs'  # Požadavek na česká metadata
-    }
     
     try:
         if 'category' not in params:
@@ -859,35 +865,57 @@ def trakt_watchlist(params):
                 True
             )
             
+            # Authentication item
+            if not _addon.getSetting('trakt_access_token'):
+                listitem = xbmcgui.ListItem(label="Připojit k Traktu...")
+                listitem.setArt({'icon': 'DefaultAddonService.png'})
+                xbmcplugin.addDirectoryItem(
+                    _handle,
+                    get_url(action='trakt_watchlist', reauth=1),
+                    listitem,
+                    False
+                )
+            
             xbmcplugin.endOfDirectory(_handle)
             return
         
         # Check if we're removing an item
         if 'remove' in params:
+            access_token = _addon.getSetting('trakt_access_token').strip()
+            if not access_token:
+                popinfo("Pro tuto akci je třeba se nejprve připojit k Traktu.", icon=xbmcgui.NOTIFICATION_ERROR)
+                xbmcplugin.endOfDirectory(_handle)
+                return
+                
             media_type = 'movie' if params['category'] == 'movies' else 'show'
             remove_url = f'https://api.trakt.tv/sync/watchlist/remove'
             remove_data = {
                 media_type + 's': [{'ids': {'trakt': int(params['remove'])}}]
             }
             
-            response = _session.post(remove_url, headers=headers, json=remove_data, timeout=10)
+            response = _session.post(remove_url, headers=trakt_get_headers(write=True), json=remove_data, timeout=10)
+            
+            if response.status_code == 401:
+                # Token might be expired - try to refresh
+                if trakt_refresh_token():
+                    response = _session.post(remove_url, headers=trakt_get_headers(write=True), json=remove_data, timeout=10)
+            
             if response.status_code == 200:
                 popinfo("Položka odstraněna z watchlistu", icon=xbmcgui.NOTIFICATION_INFO)
+            elif response.status_code == 401:
+                popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
             else:
-                popinfo("Chyba při odstraňování", icon=xbmcgui.NOTIFICATION_ERROR)
-                log(f"Chyba při odstraňování z watchlistu: {response.status_code}", xbmc.LOGERROR)
+                popinfo(f"Chyba při odstraňování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
             
-            # Refresh the listing
             xbmc.executebuiltin('Container.Refresh()')
             return
         
         # Fetch watchlist with images
-        url = f'https://api.trakt.tv/users/{trakt_username}/watchlist/{params["category"]}?extended=full,images'
-        response = _session.get(url, headers=headers, timeout=10)
+        url = f'https://api.trakt.tv/users/me/watchlist/{params["category"]}?extended=full,images'
+        response = _session.get(url, headers=trakt_get_headers(), timeout=10)
         
-        if response.status_code != 200:
-            popinfo(f"Chyba: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-            xbmcplugin.endOfDirectory(_handle)
+        response = handle_trakt_401(url)
+        if not response or response.status_code != 200:
             return
         
         items = response.json()
@@ -1006,6 +1034,17 @@ def trakt_watchlist(params):
                 True
             )
             
+        # Add authentication item if not authenticated
+        if not _addon.getSetting('trakt_access_token'):
+            listitem = xbmcgui.ListItem(label="Připojit k Traktu...")
+            listitem.setArt({'icon': 'DefaultAddonService.png'})
+            xbmcplugin.addDirectoryItem(
+                _handle,
+                get_url(action='trakt_watchlist', reauth=1),
+                listitem,
+                False
+            )
+        
     except Exception as e:
         log(f"Trakt chyba: {str(e)}", xbmc.LOGERROR)
         popinfo("Chyba při načítání", icon=xbmcgui.NOTIFICATION_ERROR)
@@ -1013,6 +1052,179 @@ def trakt_watchlist(params):
         
     xbmcplugin.setContent(_handle, 'movies')
     xbmcplugin.endOfDirectory(_handle)
+
+@handle_errors
+def trakt_authenticate():
+    """Handle Trakt OAuth authentication using device flow"""
+    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
+    trakt_client_secret = _addon.getSetting('trakt_client_secret').strip()
+    
+    if not trakt_client_id or not trakt_client_secret:
+        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID a Client Secret v nastavení.", sound=True)
+        _addon.openSettings()
+        return False
+    
+    # Step 1: Get device code
+    data = {
+        'client_id': trakt_client_id
+    }
+    
+    try:
+        response = _session.post(TRAKT_DEVICE_CODE_URL, data=data, timeout=30)
+        response.raise_for_status()
+        device_data = response.json()
+        
+        # Show user the verification info
+        dialog = xbmcgui.Dialog()
+        dialog.textviewer(
+            'Trakt ověření',
+            f"1. Otevřete v prohlížeči: [B]{device_data['verification_url']}[/B]\n"
+            f"2. Zadejte tento kód: [B]{device_data['user_code']}[/B]\n\n"
+            f"Kód platí {device_data['expires_in']//60} minut.\n"
+            "Po ověření zmáčkněte ESC/zpět."
+        )
+        
+        # Step 2: Poll for token
+        data = {
+            'client_id': trakt_client_id,
+            'client_secret': trakt_client_secret,
+            'code': device_data['device_code']
+        }
+        
+        interval = device_data['interval']
+        expires_in = device_data['expires_in']
+        start_time = time.time()
+        
+        progress = xbmcgui.DialogProgress()
+        progress.create('Trakt ověření', 'Čekání na uživatelské ověření...')
+        
+        while (time.time() - start_time) < expires_in:
+            if progress.iscanceled():
+                break
+                
+            progress.update(int(((time.time() - start_time) / expires_in) * 100))
+            
+            try:
+                response = _session.post(TRAKT_DEVICE_TOKEN_URL, data=data, timeout=30)
+                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    _addon.setSetting('trakt_access_token', token_data['access_token'])
+                    _addon.setSetting('trakt_refresh_token', token_data['refresh_token'])
+                    progress.close()
+                    popinfo("Úspěšně připojeno k Traktu!")
+                    return True
+                
+                elif response.status_code == 400:
+                    # Still pending - wait and try again
+                    time.sleep(interval)
+                
+                else:
+                    response.raise_for_status()
+                    
+            except Exception as e:
+                log(f"Trakt authentication error: {str(e)}", xbmc.LOGERROR)
+                break
+        
+        progress.close()
+        popinfo("Čas na ověření vypršel nebo došlo k chybě.", icon=xbmcgui.NOTIFICATION_ERROR)
+        
+    except Exception as e:
+        log(f"Trakt authentication failed: {str(e)}", xbmc.LOGERROR)
+        popinfo("Chyba při připojování k Traktu", icon=xbmcgui.NOTIFICATION_ERROR)
+    
+    return False
+
+@handle_errors
+def trakt_refresh_token():
+    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
+    trakt_client_secret = _addon.getSetting('trakt_client_secret').strip()
+    trakt_refresh_token = _addon.getSetting('trakt_refresh_token').strip()
+
+    if not all([trakt_client_id, trakt_client_secret, trakt_refresh_token]):
+        log("Chybí údaje pro refresh tokenu", xbmc.LOGERROR)
+        return False
+
+    data = {
+        'client_id': trakt_client_id,
+        'client_secret': trakt_client_secret,
+        'refresh_token': trakt_refresh_token,
+        'grant_type': 'refresh_token',
+        'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob'
+    }
+
+    try:
+        response = _session.post(TRAKT_TOKEN_URL, data=data, timeout=30)
+        log(f"Refresh token response: {response.status_code} - {response.text}", xbmc.LOGDEBUG)
+
+        if response.status_code == 401:
+            # Kompletně neplatné údaje - nutná nová autentizace
+            _addon.setSetting('trakt_access_token', '')
+            _addon.setSetting('trakt_refresh_token', '')
+            popinfo("Přihlášení vypršelo, proveďte novou autentizaci", icon=xbmcgui.NOTIFICATION_WARNING)
+            return False
+
+        response.raise_for_status()
+        token_data = response.json()
+
+        _addon.setSetting('trakt_access_token', token_data['access_token'])
+        _addon.setSetting('trakt_refresh_token', token_data['refresh_token'])
+        log("Token úspěšně obnoven", xbmc.LOGINFO)
+        return True
+
+    except Exception as e:
+        log(f"CHYBA při refreshi tokenu: {str(e)}", xbmc.LOGERROR)
+        return False
+
+def trakt_get_headers(write=False):
+    headers = {
+        'Content-Type': 'application/json',
+        'trakt-api-version': '2',
+        'trakt-api-key': _addon.getSetting('trakt_client_id').strip(),
+        'Accept-Language': 'cs'
+    }
+
+    log(f"Trakt headers: {_addon.getSetting('trakt_access_token')}", xbmc.LOGDEBUG)
+    
+    if write:
+        access_token = _addon.getSetting('trakt_access_token').strip()
+        if not access_token:
+            # Pokus o obnovení tokenu, pokud chybí
+            trakt_refresh_token()
+            access_token = _addon.getSetting('trakt_access_token').strip()
+        
+        if access_token:
+            headers['Authorization'] = f'Bearer {access_token}'
+        else:
+            log("Chybí Trakt access token!", xbmc.LOGERROR)
+    
+    return headers
+
+def handle_trakt_401(url, method='GET', data=None):
+    """Specializovaný handler pro 401 chyby"""
+    for attempt in range(2):  # 2 pokusy (1x refresh + 1x nový pokus)
+        headers = trakt_get_headers(write=True)
+        response = _session.request(
+            method,
+            url,
+            headers=headers,
+            json=data,
+            timeout=15
+        )
+        
+        log(f"Trakt API attempt {attempt}: {response.status_code}", xbmc.LOGDEBUG)
+        
+        if response.status_code != 401:
+            return response
+            
+        if not trakt_refresh_token():
+            break  # Refresh se nepovedl
+    
+    # Pokud jsme se sem dostali, selhalo vše
+    popinfo("Vyžaduje nové přihlášení k Traktu", icon=xbmcgui.NOTIFICATION_WARNING)
+    trakt_authenticate()
+    return None
+
 
 if __name__ == '__main__':
     router(sys.argv[2][1:])
