@@ -936,7 +936,7 @@ def trakt_watchlist(params):
             # Try to get Czech translation
             try:
                 translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
-                translation_response = _session.get(translation_url, headers=headers, timeout=10)
+                translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
                 if translation_response.status_code == 200:
                     translation = translation_response.json()
                     if translation and isinstance(translation, list):
