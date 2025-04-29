@@ -14,6 +14,7 @@ import traceback
 import json
 import unidecode
 import time
+from datetime import date
 import re
 import zipfile
 import uuid
@@ -398,7 +399,7 @@ def search(params):
     xbmcplugin.endOfDirectory(_handle, updateListing=updateListing)
 
 def queue(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {_addon.getLocalizedString(30202)}")
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getLocalizedString(30202)}")
     token = revalidate()
     updateListing = False
     
@@ -442,7 +443,7 @@ def toqueue(ident, token):
         popinfo(_addon.getLocalizedString(30107), icon=xbmcgui.NOTIFICATION_WARNING)
 
 def history(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {_addon.getLocalizedString(30203)}")
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getLocalizedString(30203)}")
     token = revalidate()
     updateListing = False
     
@@ -614,7 +615,7 @@ def play(params):
     xbmcplugin.setResolvedUrl(_handle, True, listitem)
 
 def join(path, file):
-    return os.path.join(path, file) if not path.endswith(('/', '\\')) else path + file
+    return os.path.join(path, file) if not path.endswith(('/', '//')) else path + file
 
 def download(params):
     token = revalidate()
@@ -839,7 +840,7 @@ def router(paramstring):
         menu()
 
 def trakt_watchlist(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ Trakt Watchlist")
+    xbmcplugin.setPluginCategory(_handle, f"Trakt Watchlist")
     
     # Check authentication first
     if 'reauth' in params:
@@ -1022,7 +1023,7 @@ def trakt_watchlist(params):
                     'plot': plot,
                     'year': int(year) if year else 0,
                     'genre': " / ".join(media.get('genres', [])),
-                    'duration': media.get('runtime', 0),
+                    'duration': media.get('runtime', 0) * 60,
                     'trailer': media.get('trailer'),
                     'rating': float(media.get('rating', 0)),
                 }
@@ -1189,7 +1190,7 @@ def list_seasons(params):
     seasons = seasons_response.json()
     
     # Set plugin category to show title
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {title}")
+    xbmcplugin.setPluginCategory(_handle, f"{title}")
         
     # Add each season
     for season in sorted(seasons, key=lambda x: x['number']):
@@ -1220,7 +1221,7 @@ def list_seasons(params):
 
 @handle_errors
 def list_episodes(params):
-    """List all episodes for a season"""
+    """List all episodes for a season with detailed info"""
     show_id = params['show_id']
     season_num = params['season']
     series_title = params['series_title']
@@ -1236,25 +1237,36 @@ def list_episodes(params):
 
     token = revalidate()
 
-    # Načtení epizod ze sezóny
-    url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}?extended=episodes"
-    response = _session.get(url, headers=trakt_get_headers(), timeout=10)
-
-    response = handle_trakt_401(url)
-    if not response or response.status_code != 200:
+    # 1. Načtení základního seznamu epizod (pro čísla)
+    seasons_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}?extended=episodes"
+    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
+    
+    seasons_response = handle_trakt_401(seasons_url)
+    if not seasons_response or seasons_response.status_code != 200:
         return
 
-    episodes = response.json()
-
-    today = datetime.today().date()
+    episodes = seasons_response.json()
+    today = datetime.now().date()
 
     for episode in episodes:
         ep_num = episode.get('number')
-        ep_title = episode.get('title') or 'Neznámý název'
-        ep_air_date = episode.get('first_aired')
-        ep_plot = episode.get('overview') or ''
+        
+        # 2. Detailní informace o epizodě (zvlášť, kvůli extended=full)
+        episode_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}?extended=full"
+        episode_response = _session.get(episode_url, headers=trakt_get_headers(), timeout=10)
+        
+        if episode_response.status_code != 200:
+            log(f"Chyba při načítání epizody S{season_num}E{ep_num}: {episode_response.status_code}", xbmc.LOGERROR)
+            continue
 
-        # Zkusit načíst český překlad
+        ep_data = episode_response.json()
+        ep_title = ep_data.get('title', 'Neznámý název')
+        ep_air_date = ep_data.get('first_aired')
+        ep_plot = ep_data.get('overview', '')
+        ep_rating = ep_data.get('rating', 0)
+        ep_runtime = ep_data.get('runtime', 0)
+
+        # Načtení českého překladu (pokud existuje)
         try:
             translation_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}/translations/cs"
             translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
@@ -1266,29 +1278,48 @@ def list_episodes(params):
         except Exception as e:
             log(f"Chyba při načítání překladu epizody: {str(e)}", xbmc.LOGERROR)
 
-        # Kontrola, jestli epizoda ještě nebyla odvysílána
+        # Formátování data (pokud epizoda ještě nebyla vysílána)
+        air_date_str = ""
         is_future = False
         if ep_air_date:
             try:
-                air_date_obj = datetime.strptime(ep_air_date[:10], "%Y-%m-%d").date()
+                # Nejprve odstraníme časovou část
+                date_part = ep_air_date.split('T')[0]
+                # Rozdělení na komponenty data
+                year, month, day = map(int, date_part.split('-'))
+                air_date_obj = date(year, month, day)
+                
                 if air_date_obj > today:
                     is_future = True
+                    air_date_str = f" ({day:02d}.{month:02d}.{year})"
             except Exception as e:
-                log(f"Chyba při parsování data: {str(e)}", xbmc.LOGERROR)
+                log(f"Chyba při zpracování data {ep_air_date}: {str(e)}", xbmc.LOGERROR)
+                air_date_str = " [Datum neznámé]"
 
-        # Připravit label
-        label = f"Sezóna {season_num}, Epizoda {ep_num}: {ep_title}"
+        # Vytvoření popisku
+        label = f"{ep_title}"
         if is_future:
-            label = f"[COLOR red]{label}[/COLOR]"
+            label += f" [COLOR red]{air_date_str}[/COLOR]"
+        elif air_date_str:
+            label += f" [COLOR gray]{air_date_str}[/COLOR]"
 
-        listitem = xbmcgui.ListItem(label=label)
-        listitem.setInfo('video', {
-            'title': ep_title,
+        # Vytvoření položky v seznamu
+        listitem = xbmcgui.ListItem(label="label")
+        info = {
+            'title': label,
             'plot': ep_plot,
             'season': int(season_num),
-            'episode': int(ep_num)
-        })
+            'episode': int(ep_num),
+            'duration': ep_runtime * 60,  # převod minut na sekundy (pro Kodi)
+            'rating': float(ep_rating),
+        }
+        
+        if ep_air_date:
+            info['aired'] = ep_air_date[:10]
+            
+        listitem.setInfo('video', info)
 
+        # Přidání do seznamu
         xbmcplugin.addDirectoryItem(
             _handle,
             get_url(action='search', what=f"{series_title} S{int(season_num):02d}E{int(ep_num):02d}"),
