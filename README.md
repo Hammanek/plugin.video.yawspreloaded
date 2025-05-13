@@ -10,7 +10,7 @@ Changelog:
 
 1.0
 - integrován trakt
-- malá vylepšení
+- další vylepšení, neptej se
 
 1.1
 - vyhledávání v DB
