@@ -4,6 +4,7 @@ Založeno na doplňku od "cache", integrován Trakt, provedeno pár vylepšení 
 
 Připomínky případně jen na Telegram @hammanek
 
+------------------------------------------
 
 Changelog:
 
