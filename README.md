@@ -4,6 +4,9 @@ Založeno na doplňku od "cache", integrován Trakt, provedeno pár vylepšení 
 
 Připomínky případně jen na Telegram @hammanek
 
+
+Changelog:
+
 1.0
 - integrován trakt
 - malá vylepšení
