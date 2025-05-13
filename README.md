@@ -9,8 +9,8 @@ Připomínky případně jen na Telegram @hammanek
 Changelog:
 
 1.0
-- integrován trakt
-- další vylepšení, neptej se
+- Integrován trakt
+- Další vylepšení, neptej se
 
 1.1
-- vyhledávání v DB
+- Vyhledávání v DB
