@@ -14,11 +14,13 @@ import traceback
 import json
 import unidecode
 import time
+from datetime import date
 import re
 import zipfile
 import uuid
 import json
 from functools import wraps
+from datetime import datetime
 
 try:
     from urllib import urlencode
@@ -263,6 +265,10 @@ def dosearch(token, what, category, sort, limit, offset, action):
         'wst': token,
         'maybe_removed': 'true'
     }
+
+    what = normalize_season_episode(what)
+
+    log(f"Searching for: {what}", xbmc.LOGERROR)
     
     response = api('search', params)
     xml = ET.fromstring(response.content)
@@ -289,16 +295,12 @@ def dosearch(token, what, category, sort, limit, offset, action):
             True
         )
     
-    # Get first word of the search term
-    first_word = what.split()[0].lower() if what else ''
-
     # Files
     for file in xml.iter('file'):
         item = todict(file)
         
         # Normalizace: odstranění interpunkce a mezer, převedení na malá písmena
         normalized_name = re.sub(r'[^\w]', '', item['name'].lower())  # odstraní vše kromě písmen a čísliclimit
-        normalized_search = re.sub(r'[^\w]', '', what.lower())  # to samé pro hledaný výraz
         
         # Rozdělení hledaného výrazu na slova (už bez interpunkce)
         search_words = re.findall(r'[a-z0-9]+', what.lower())  # např. ["heart", "eyes"]
@@ -318,8 +320,19 @@ def dosearch(token, what, category, sort, limit, offset, action):
             )
     
 
+def normalize_season_episode(search_str):
+    """Normalizuje formát řady a dílu (S1E2 -> S01E02, S10E10 zůstane S10E10)"""
+    pattern = re.compile(r'(?i)S(\d{1,2})E(\d{1,2})')
+    
+    def replacer(match):
+        season = match.group(1).zfill(2)  # Doplnění nulou pro 1-9
+        episode = match.group(2).zfill(2)  # Doplnění nulou pro 1-9
+        return f"S{season}E{episode}"
+    
+    return pattern.sub(replacer, search_str)
+
 def search(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {_addon.getLocalizedString(30201)}")
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} / {_addon.getLocalizedString(30201)}")
     token = revalidate()
     updateListing = False
     
@@ -333,15 +346,14 @@ def search(params):
     
     what = params.get('what')
     
-    if 'ask' in params:
-        slast = _addon.getSetting('slast')
-        if slast != what:
-            what = ask(what)
-            if what is not None:
-                storesearch(what)
-            else:
-                updateListing = True
-
+    # Automaticky zobrazit dialog pro hledání pokud není zadán parametr what
+    if what is None and 'ask' not in params:
+        what = ask('')
+        if what is not None:
+            storesearch(what)
+        else:
+            updateListing = True
+    
     if what is not None:
         if 'offset' not in params:
             _addon.setSetting('slast', what)
@@ -387,7 +399,7 @@ def search(params):
     xbmcplugin.endOfDirectory(_handle, updateListing=updateListing)
 
 def queue(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {_addon.getLocalizedString(30202)}")
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getLocalizedString(30202)}")
     token = revalidate()
     updateListing = False
     
@@ -431,7 +443,7 @@ def toqueue(ident, token):
         popinfo(_addon.getLocalizedString(30107), icon=xbmcgui.NOTIFICATION_WARNING)
 
 def history(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ {_addon.getLocalizedString(30203)}")
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getLocalizedString(30203)}")
     token = revalidate()
     updateListing = False
     
@@ -603,7 +615,7 @@ def play(params):
     xbmcplugin.setResolvedUrl(_handle, True, listitem)
 
 def join(path, file):
-    return os.path.join(path, file) if not path.endswith(('/', '\\')) else path + file
+    return os.path.join(path, file) if not path.endswith(('/', '//')) else path + file
 
 def download(params):
     token = revalidate()
@@ -686,6 +698,7 @@ def db(params):
     token = revalidate()
     updateListing = False
     dbdir = os.path.join(_profile, 'db')
+    search_query = params.get('search', '').lower()
     
     # Download DB if needed
     if not os.path.exists(dbdir):
@@ -713,6 +726,7 @@ def db(params):
         toqueue(params['toqueue'], token)
         updateListing = True
     
+    # Streamy
     if 'file' in params and 'key' in params:
         data = loaddb(dbdir, params['file'])
         item = next((x for x in data if x['id'] == params['key']), None)
@@ -734,9 +748,16 @@ def db(params):
                     listitem,
                     False
                 )
+        xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_LABEL)
+
+    # Film/seriál
     elif 'file' in params:
         data = loaddb(dbdir, params['file'])
         for item in data:
+            # Skip items that don't match search query if one is provided
+            if search_query and search_query not in item['title'].lower():
+                continue
+                
             listitem = xbmcgui.ListItem(label=item['title'])
             if 'plot' in item:
                 listitem.setInfo('video', {'title': item['title'], 'plot': item['plot']})
@@ -746,8 +767,25 @@ def db(params):
                 listitem,
                 True
             )
+
+        xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_LABEL)
+
+    # Složky A-Z
     else:
         if os.path.exists(dbdir):
+            # Add search item if not already in search mode
+
+            if not search_query:
+                search_item = xbmcgui.ListItem(label=_addon.getLocalizedString(30010)) 
+                search_item.setArt({'icon': 'DefaultAddonsSearch.png'})  # Set icon
+                xbmcplugin.addDirectoryItem(
+                    _handle,
+                    get_url(action='searchdb'),
+                    search_item,
+                    True
+                )
+
+            
             for dbfile in [f for f in os.listdir(dbdir) if os.path.isfile(os.path.join(dbdir, f))]:
                 listitem = xbmcgui.ListItem(label=os.path.splitext(dbfile)[0])
                 xbmcplugin.addDirectoryItem(
@@ -757,8 +795,28 @@ def db(params):
                     True
                 )
     
-    xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_LABEL)
+    # xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_LABEL)
     xbmcplugin.endOfDirectory(_handle, updateListing=updateListing)
+
+
+def searchdb(params=None):
+    search_query = ''
+    if params and 'query' in params:
+        search_query = params['query']
+    else:
+        keyboard = xbmc.Keyboard('', _addon.getLocalizedString(30216))  # "Search for"
+        keyboard.doModal()
+        if keyboard.isConfirmed():
+            search_query = keyboard.getText()
+    
+    if search_query:
+        # Get first character of search query (uppercase)
+        first_char = search_query[0].upper()
+        # For non-ASCII characters or numbers, use '0'
+        if not first_char.isalpha():
+            first_char = '0'
+        # Redirect to db function with search parameter and appropriate file
+        db({'search': search_query, 'file': f'{first_char}.txt'})
 
 def menu():
     revalidate()
@@ -779,11 +837,10 @@ def menu():
     listitem.setArt({'icon': 'DefaultAddonsUpdates.png'})
     xbmcplugin.addDirectoryItem(_handle, get_url(action='history'), listitem, True)
     
-    # Backup DB (experimental)
-    if _addon.getSetting('experimental') == 'true':
-        listitem = xbmcgui.ListItem(label='Backup DB')
-        listitem.setArt({'icon': 'DefaultAddonsZip.png'})
-        xbmcplugin.addDirectoryItem(_handle, get_url(action='db'), listitem, True)
+    # DB
+    listitem = xbmcgui.ListItem(label='Backup DB')
+    listitem.setArt({'icon': 'DefaultAddonsZip.png'})
+    xbmcplugin.addDirectoryItem(_handle, get_url(action='db'), listitem, True)
 
     # Trakt Watchlist
     listitem = xbmcgui.ListItem(label='Trakt Watchlist')
@@ -824,11 +881,13 @@ def router(paramstring):
         db(params)
     elif action == 'trakt_watchlist':
         trakt_watchlist(params)
+    elif action == 'searchdb':
+        searchdb(params)
     else:
         menu()
 
 def trakt_watchlist(params):
-    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} \\ Trakt Watchlist")
+    xbmcplugin.setPluginCategory(_handle, f"Trakt Watchlist")
     
     # Check authentication first
     if 'reauth' in params:
@@ -910,6 +969,14 @@ def trakt_watchlist(params):
             xbmc.executebuiltin('Container.Refresh()')
             return
         
+        # Handle seasons listing for a show
+        if 'show_id' in params and 'season' not in params:
+            return list_seasons(params)
+        
+        # Handle episodes listing for a season
+        if 'show_id' in params and 'season' in params:
+            return list_episodes(params)
+        
         # Fetch watchlist with images
         url = f'https://api.trakt.tv/users/me/watchlist/{params["category"]}?extended=full,images'
         response = _session.get(url, headers=trakt_get_headers(), timeout=10)
@@ -926,114 +993,190 @@ def trakt_watchlist(params):
                 media = item['movie']
                 media_type = 'movie'
                 media_id = media['ids']['trakt']
+                
+                # Try to get Czech translation
+                try:
+                    translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
+                    translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
+                    if translation_response.status_code == 200:
+                        translation = translation_response.json()
+                        if translation and isinstance(translation, list):
+                            title = translation[0].get('title', media.get('title', 'Neznámý název'))
+                            plot = translation[0].get('overview', media.get('overview', ''))
+                        else:
+                            title = media.get('title', 'Neznámý název')
+                            plot = media.get('overview', '')
+                    else:
+                        title = media.get('title', 'Neznámý název')
+                        plot = media.get('overview', '')
+                except Exception as e:
+                    log(f"Chyba při načítání překladu: {str(e)}", xbmc.LOGERROR)
+                    title = media.get('title', 'Neznámý název')
+                    plot = media.get('overview', '')
+
+                # Fallback to original title if translation fails
+                if not title:
+                    title = media.get('title', 'Neznámý název')
+                
+                # Add year if available
+                year = media.get('year', '')
+                if year:
+                    title = f"{title} ({year})"
+                
+                artwork = {}
+                if isinstance(media.get('images'), dict):
+                    images = media['images']
+                    if isinstance(images.get('poster'), list) and len(images['poster']) > 0:
+                        poster_url = images['poster'][0]
+                        artwork['poster'] = f"https://{poster_url}" if not poster_url.startswith('http') else poster_url
+                    if isinstance(images.get('fanart'), list) and len(images['fanart']) > 0:
+                        fanart_url = images['fanart'][0]
+                        artwork['fanart'] = f"https://{fanart_url}" if not fanart_url.startswith('http') else fanart_url
+                    artwork['thumb'] = artwork.get('poster', '')
+                          
+                # Create list item
+                listitem = xbmcgui.ListItem(label=title)
+                if artwork:
+                    listitem.setArt(artwork)
+
+                # Create context menu items
+                context_menu_items = []
+                
+                if media.get('trailer'):
+                    trailer_url = media['trailer']
+                    if 'youtube.com' in trailer_url or 'youtu.be' in trailer_url:
+                        video_id = trailer_url.split('v=')[-1].split('&')[0]
+                        youtube_plugin_url = f'plugin://plugin.video.youtube/play/?video_id={video_id}'
+                        context_menu_items.append((
+                            "Přehrát trailer",
+                            f'PlayMedia({youtube_plugin_url})'
+                        ))    
+
+                context_menu_items.append((
+                    'Vyhledat původní název', 
+                    f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
+                ))
+                
+                context_menu_items.append((
+                    'Odstranit z watchlistu',
+                    f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], remove=media_id)})'
+                ))
+                
+                listitem.addContextMenuItems(context_menu_items)
+
+                info = {
+                    'title': title,
+                    'mediatype': media_type,
+                    'plot': plot,
+                    'year': int(year) if year else 0,
+                    'genre': " / ".join(media.get('genres', [])),
+                    'duration': media.get('runtime', 0) * 60,
+                    'trailer': media.get('trailer'),
+                    'rating': float(media.get('rating', 0)),
+                }
+                listitem.setInfo('video', info)
+                
+                xbmcplugin.addDirectoryItem(
+                    _handle,
+                    get_url(action='search', what=title),
+                    listitem,
+                    True
+                )
+                
             elif params['category'] == 'shows' and 'show' in item:
                 media = item['show']
                 media_type = 'show'
                 media_id = media['ids']['trakt']
-            else:
-                continue
-            
-            # Try to get Czech translation
-            try:
-                translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
-                translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
-                if translation_response.status_code == 200:
-                    translation = translation_response.json()
-                    if translation and isinstance(translation, list):
-                        # Use Czech title and plot if available
-                        title = translation[0].get('title', media.get('title', 'Neznámý název'))
-                        plot = translation[0].get('overview', media.get('overview', ''))
+                
+                # Try to get Czech translation
+                try:
+                    translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
+                    translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
+                    if translation_response.status_code == 200:
+                        translation = translation_response.json()
+                        if translation and isinstance(translation, list):
+                            title = translation[0].get('title', media.get('title', 'Neznámý název'))
+                            plot = translation[0].get('overview', media.get('overview', ''))
+                        else:
+                            title = media.get('title', 'Neznámý název')
+                            plot = media.get('overview', '')
                     else:
                         title = media.get('title', 'Neznámý název')
                         plot = media.get('overview', '')
-                else:
+                except Exception as e:
+                    log(f"Chyba při načítání překladu: {str(e)}", xbmc.LOGERROR)
                     title = media.get('title', 'Neznámý název')
                     plot = media.get('overview', '')
-            except Exception as e:
-                log(f"Chyba při načítání překladu: {str(e)}", xbmc.LOGERROR)
-                title = media.get('title', 'Neznámý název')
-                plot = media.get('overview', '')
 
-            # Fallback to original title if translation fails
-            if not title:
-                title = media.get('title', 'Neznámý název')
-            
-            # Add year if available
-            year = media.get('year', '')
-            if year:
-                title = f"{title} ({year})"
-            else:
-                title = title
-            
-            artwork = {}
-            if isinstance(media.get('images'), dict):
-                images = media['images']
-                # Poster
-                if isinstance(images.get('poster'), list) and len(images['poster']) > 0:
-                    poster_url = images['poster'][0]
-                    artwork['poster'] = f"https://{poster_url}" if not poster_url.startswith('http') else poster_url
-                # Fanart
-                if isinstance(images.get('fanart'), list) and len(images['fanart']) > 0:
-                    fanart_url = images['fanart'][0]
-                    artwork['fanart'] = f"https://{fanart_url}" if not fanart_url.startswith('http') else fanart_url
-                # Thumbnail (fallback na poster)
-                artwork['thumb'] = artwork.get('poster', '')
-                      
-            # Create list item
-            listitem = xbmcgui.ListItem(label=title)
-            if artwork:
-                listitem.setArt(artwork)
+                # Fallback to original title if translation fails
+                if not title:
+                    title = media.get('title', 'Neznámý název')
+                
+                # Add year if available
+                year = media.get('year', '')
+                if year:
+                    title = f"{title} ({year})"
+                
+                artwork = {}
+                if isinstance(media.get('images'), dict):
+                    images = media['images']
+                    if isinstance(images.get('poster'), list) and len(images['poster']) > 0:
+                        poster_url = images['poster'][0]
+                        artwork['poster'] = f"https://{poster_url}" if not poster_url.startswith('http') else poster_url
+                    if isinstance(images.get('fanart'), list) and len(images['fanart']) > 0:
+                        fanart_url = images['fanart'][0]
+                        artwork['fanart'] = f"https://{fanart_url}" if not fanart_url.startswith('http') else fanart_url
+                    artwork['thumb'] = artwork.get('poster', '')
+                          
+                # Create list item
+                listitem = xbmcgui.ListItem(label=title)
+                if artwork:
+                    listitem.setArt(artwork)
 
-            # Create context menu items
-            context_menu_items = []
-            
-            # Přidání traileru do kontextového menu
-            if media.get('trailer'):
-                trailer_url = media['trailer']
-                if 'youtube.com' in trailer_url or 'youtu.be' in trailer_url:
-                    video_id = trailer_url.split('v=')[-1].split('&')[0]
-                    youtube_plugin_url = f'plugin://plugin.video.youtube/play/?video_id={video_id}'
-                    context_menu_items.append((
-                        "Přehrát trailer",
-                        f'PlayMedia({youtube_plugin_url})'
-                    ))    
+                # Create context menu items
+                context_menu_items = []
+                
+                if media.get('trailer'):
+                    trailer_url = media['trailer']
+                    if 'youtube.com' in trailer_url or 'youtu.be' in trailer_url:
+                        video_id = trailer_url.split('v=')[-1].split('&')[0]
+                        youtube_plugin_url = f'plugin://plugin.video.youtube/play/?video_id={video_id}'
+                        context_menu_items.append((
+                            "Přehrát trailer",
+                            f'PlayMedia({youtube_plugin_url})'
+                        ))    
 
-            # Add search option
-            context_menu_items.append((
-                'Vyhledat původní název', 
-                f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
-            ))
-            
-            # Add remove from watchlist option
-            context_menu_items.append((
-                'Odstranit z watchlistu',
-                f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], remove=media_id)})'
-            ))
-            
-            listitem.addContextMenuItems(context_menu_items)
+                context_menu_items.append((
+                    'Vyhledat původní název', 
+                    f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
+                ))
+                
+                context_menu_items.append((
+                    'Odstranit z watchlistu',
+                    f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], remove=media_id)})'
+                ))
+                
+                listitem.addContextMenuItems(context_menu_items)
 
-            # Add info for Kodi
-            info = {
-                'title': title,
-                'mediatype': media_type,
-                'plot': plot,
-                'year': int(year) if year else 0,
-                'genre': " / ".join(media.get('genres', [])),
-                'duration': media.get('runtime', 0),
-                'trailer': media.get('trailer'),
-                'rating': float(media.get('rating', 0)),
-                'status': media.get('status', ''),
-            }
-            listitem.setInfo('video', info)
-            
-            # Přidání do výpisu
-            xbmcplugin.addDirectoryItem(
-                _handle,
-                get_url(action='search', what=title),
-                listitem,
-                True
-            )
-            
+                info = {
+                    'title': title,
+                    'mediatype': media_type,
+                    'plot': plot,
+                    'year': int(year) if year else 0,
+                    'genre': " / ".join(media.get('genres', [])),
+                    'status': media.get('status', ''),
+                    'rating': float(media.get('rating', 0)),
+                }
+                listitem.setInfo('video', info)
+                
+                # For shows, link to seasons listing
+                xbmcplugin.addDirectoryItem(
+                    _handle,
+                    get_url(action='trakt_watchlist', show_id=media_id, category='shows'),
+                    listitem,
+                    True
+                )
+                
         # Add authentication item if not authenticated
         if not _addon.getSetting('trakt_access_token'):
             listitem = xbmcgui.ListItem(label="Připojit k Traktu...")
@@ -1050,8 +1193,190 @@ def trakt_watchlist(params):
         popinfo("Chyba při načítání", icon=xbmcgui.NOTIFICATION_ERROR)
         traceback.print_exc()
         
-    xbmcplugin.setContent(_handle, 'movies')
+    xbmcplugin.setContent(_handle, 'movies' if params.get('category') == 'movies' else 'tvshows')
     xbmcplugin.endOfDirectory(_handle)
+
+@handle_errors
+def list_seasons(params):
+    """List all seasons for a show"""
+    show_id = params['show_id']
+    
+    # Get show details
+    show_url = f'https://api.trakt.tv/shows/{show_id}?extended=full,images'
+    show_response = _session.get(show_url, headers=trakt_get_headers(), timeout=10)
+    
+    if show_response.status_code != 200:
+        popinfo("Chyba při načítání detailu seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
+        return
+    
+    show = show_response.json()
+    
+    # Get Czech title if available
+    try:
+        translation_url = f'https://api.trakt.tv/shows/{show_id}/translations/cs'
+        translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
+        if translation_response.status_code == 200:
+            translation = translation_response.json()
+            if translation and isinstance(translation, list):
+                title = translation[0].get('title', show.get('title', 'Neznámý název'))
+            else:
+                title = show.get('title', 'Neznámý název')
+        else:
+            title = show.get('title', 'Neznámý název')
+    except Exception:
+        title = show.get('title', 'Neznámý název')
+    
+    # Get all seasons
+    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
+    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
+    
+    if seasons_response.status_code != 200:
+        popinfo("Chyba při načítání sezón", icon=xbmcgui.NOTIFICATION_ERROR)
+        return
+    
+    seasons = seasons_response.json()
+    
+    # Set plugin category to show title
+    xbmcplugin.setPluginCategory(_handle, f"{title}")
+        
+    # Add each season
+    for season in sorted(seasons, key=lambda x: x['number']):
+        season_num = season['number']
+        episode_count = len(season.get('episodes', []))
+        
+        listitem = xbmcgui.ListItem(label=f"Sezóna {season_num} ({episode_count} epizod)")
+        listitem.setArt({'icon': 'DefaultSeason.png'})
+        
+        # Add season info
+        info = {
+            'title': f"Sezóna {season_num}",
+            'mediatype': 'season',
+            'season': season_num,
+            'episode': episode_count,
+        }
+        listitem.setInfo('video', info)
+        
+        xbmcplugin.addDirectoryItem(
+            _handle,
+            get_url(action='trakt_watchlist', show_id=show_id, season=season_num, series_title=show.get('title'),category='shows'),
+            listitem,
+            True
+        )
+    
+    xbmcplugin.setContent(_handle, 'seasons')
+    xbmcplugin.endOfDirectory(_handle)
+
+@handle_errors
+def list_episodes(params):
+    """List all episodes for a season with detailed info"""
+    show_id = params['show_id']
+    season_num = params['season']
+    series_title = params['series_title']
+
+    xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} / Sezóna {season_num}")
+
+    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
+    if not trakt_client_id:
+        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID v nastavení.", sound=True)
+        _addon.openSettings()
+        xbmcplugin.endOfDirectory(_handle)
+        return
+
+    token = revalidate()
+
+    # 1. Načtení základního seznamu epizod (pro čísla)
+    seasons_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}?extended=episodes"
+    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
+    
+    seasons_response = handle_trakt_401(seasons_url)
+    if not seasons_response or seasons_response.status_code != 200:
+        return
+
+    episodes = seasons_response.json()
+    today = datetime.now().date()
+
+    for episode in episodes:
+        ep_num = episode.get('number')
+        
+        # 2. Detailní informace o epizodě (zvlášť, kvůli extended=full)
+        episode_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}?extended=full"
+        episode_response = _session.get(episode_url, headers=trakt_get_headers(), timeout=10)
+        
+        if episode_response.status_code != 200:
+            log(f"Chyba při načítání epizody S{season_num}E{ep_num}: {episode_response.status_code}", xbmc.LOGERROR)
+            continue
+
+        ep_data = episode_response.json()
+        ep_title = ep_data.get('title', 'Neznámý název')
+        ep_air_date = ep_data.get('first_aired')
+        ep_plot = ep_data.get('overview', '')
+        ep_rating = ep_data.get('rating', 0)
+        ep_runtime = ep_data.get('runtime', 0)
+
+        # Načtení českého překladu (pokud existuje)
+        try:
+            translation_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}/translations/cs"
+            translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
+            if translation_response.status_code == 200:
+                translations = translation_response.json()
+                if translations and isinstance(translations, list):
+                    ep_title = translations[0].get('title', ep_title)
+                    ep_plot = translations[0].get('overview', ep_plot)
+        except Exception as e:
+            log(f"Chyba při načítání překladu epizody: {str(e)}", xbmc.LOGERROR)
+
+        # Formátování data (pokud epizoda ještě nebyla vysílána)
+        air_date_str = ""
+        is_future = False
+        if ep_air_date:
+            try:
+                # Nejprve odstraníme časovou část
+                date_part = ep_air_date.split('T')[0]
+                # Rozdělení na komponenty data
+                year, month, day = map(int, date_part.split('-'))
+                air_date_obj = date(year, month, day)
+                
+                if air_date_obj > today:
+                    is_future = True
+                    air_date_str = f" ({day:02d}.{month:02d}.{year})"
+            except Exception as e:
+                log(f"Chyba při zpracování data {ep_air_date}: {str(e)}", xbmc.LOGERROR)
+                air_date_str = " [Datum neznámé]"
+
+        # Vytvoření popisku
+        label = f"{ep_title}"
+        if is_future:
+            label += f" [COLOR red]{air_date_str}[/COLOR]"
+        elif air_date_str:
+            label += f" [COLOR gray]{air_date_str}[/COLOR]"
+
+        # Vytvoření položky v seznamu
+        listitem = xbmcgui.ListItem(label="label")
+        info = {
+            'title': label,
+            'plot': ep_plot,
+            'season': int(season_num),
+            'episode': int(ep_num),
+            'duration': ep_runtime * 60,  # převod minut na sekundy (pro Kodi)
+            'rating': float(ep_rating),
+        }
+        
+        if ep_air_date:
+            info['aired'] = ep_air_date[:10]
+            
+        listitem.setInfo('video', info)
+
+        # Přidání do seznamu
+        xbmcplugin.addDirectoryItem(
+            _handle,
+            get_url(action='search', what=f"{series_title} S{int(season_num):02d}E{int(ep_num):02d}"),
+            listitem,
+            True
+        )
+
+    xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_EPISODE)
+    xbmcplugin.endOfDirectory(_handle)
+
 
 @handle_errors
 def trakt_authenticate():

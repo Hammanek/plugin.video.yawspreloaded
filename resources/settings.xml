@@ -15,8 +15,6 @@
         <setting label="30042" id="dnormalize" type="bool" default="true" />
 		<setting label="30043" id="dnotify" type="bool" default="true" />
 		<setting label="30044" id="dnevery" type="select" values="1%|5%|10%|20%|25%|50%" default="10%" visible="eq(-1,true)" />
-        <setting type="sep"/>
-        <setting label="30051" id="experimental" type="bool" default="false" />
     </category>
     <category label="Trakt">
         <setting id="trakt_client_id" type="text" label="Trakt Client ID" default=""/>
