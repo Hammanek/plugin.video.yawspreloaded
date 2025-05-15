@@ -373,7 +373,7 @@ def search(params):
         # Search box
         listitem = xbmcgui.ListItem(label=_addon.getLocalizedString(30205))
         listitem.setArt({'icon': 'DefaultAddSource.png'})
-        xbmcplugin.addDirectoryItem(_handle, get_url(action='search', ask=1), listitem, True)
+        xbmcplugin.addDirectoryItem(_handle, get_url(action='search', what=''), listitem, True)
         
         # Newest
         listitem = xbmcgui.ListItem(label=_addon.getLocalizedString(30208))
