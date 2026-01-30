@@ -14,3 +14,7 @@ Changelog:
 
 1.1
 - Vyhledávání v DB
+
+- 1.24
+- Opravy
+- Funkce traileru
