@@ -938,12 +938,12 @@ def trakt_watchlist(params):
             xbmcplugin.endOfDirectory(_handle)
             return
         
-        # Check if we're removing an item
+        # Check if we're removing an item - musí být PRVNÍ před načtením seznamu
         if 'remove' in params:
             access_token = _addon.getSetting('trakt_access_token').strip()
             if not access_token:
                 popinfo("Pro tuto akci je třeba se nejprve připojit k Traktu.", icon=xbmcgui.NOTIFICATION_ERROR)
-                xbmcplugin.endOfDirectory(_handle)
+                xbmc.executebuiltin('Container.Refresh()')
                 return
                 
             media_type = 'movie' if params['category'] == 'movies' else 'show'
@@ -961,11 +961,162 @@ def trakt_watchlist(params):
             
             if response.status_code == 200:
                 popinfo("Položka odstraněna z watchlistu", icon=xbmcgui.NOTIFICATION_INFO)
+                # Force refresh instead of update
+                xbmc.executebuiltin('Container.Refresh()')
+                return
             elif response.status_code == 401:
                 popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
             else:
                 popinfo(f"Chyba při odstraňování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
             
+            xbmc.executebuiltin('Container.Refresh()')
+            return
+        
+        # Check if we're marking as watched/unwatched - musí být PŘED načtením seznamu
+        if 'watched' in params or 'unwatched' in params:
+            access_token = _addon.getSetting('trakt_access_token').strip()
+            if not access_token:
+                popinfo("Pro tuto akci je třeba se nejprve připojit k Traktu.", icon=xbmcgui.NOTIFICATION_ERROR)
+                xbmc.executebuiltin('Container.Refresh()')
+                return
+                
+            if 'watched' in params:
+                # Mark as watched
+                if params['category'] == 'movies':
+                    # For movies - simple case
+                    watched_url = f'https://api.trakt.tv/sync/history'
+                    watched_data = {
+                        'movies': [{'ids': {'trakt': int(params['watched'])}}]
+                    }
+                    
+                    response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=10)
+                    
+                    if response.status_code == 401:
+                        if trakt_refresh_token():
+                            response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=10)
+                    
+                    if response.status_code == 201:
+                        popinfo("Film označen jako zhlédnutý", icon=xbmcgui.NOTIFICATION_INFO)
+                    elif response.status_code == 401:
+                        popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
+                    else:
+                        popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
+                        
+                elif params['category'] == 'shows':
+                    # For shows - we need to mark all episodes as watched
+                    show_id = params['watched']
+                    
+                    # First, get all seasons and episodes for this show
+                    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
+                    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
+                    
+                    if seasons_response.status_code != 200:
+                        popinfo("Chyba při načítání sezón seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
+                        xbmc.executebuiltin('Container.Refresh()')
+                        return
+                    
+                    seasons = seasons_response.json()
+                    episodes_data = []
+                    
+                    # Collect all episodes
+                    for season in seasons:
+                        season_num = season['number']
+                        for episode in season.get('episodes', []):
+                            episodes_data.append({
+                                'ids': episode['ids']
+                            })
+                    
+                    if episodes_data:
+                        # Mark all episodes as watched
+                        watched_url = f'https://api.trakt.tv/sync/history'
+                        watched_data = {
+                            'episodes': episodes_data
+                        }
+                        
+                        response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=30)
+                        
+                        if response.status_code == 401:
+                            if trakt_refresh_token():
+                                response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=30)
+                        
+                        if response.status_code == 201:
+                            popinfo(f"Seriál označen jako zhlédnutý ({len(episodes_data)} epizod)", icon=xbmcgui.NOTIFICATION_INFO)
+                        elif response.status_code == 401:
+                            popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
+                        else:
+                            popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
+                    else:
+                        popinfo("Seriál nemá žádné epizody", icon=xbmcgui.NOTIFICATION_WARNING)
+            
+            elif 'unwatched' in params:
+                # Mark as unwatched
+                if params['category'] == 'movies':
+                    # For movies - simple case
+                    unwatched_url = f'https://api.trakt.tv/sync/history/remove'
+                    unwatched_data = {
+                        'movies': [{'ids': {'trakt': int(params['unwatched'])}}]
+                    }
+                    
+                    response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=10)
+                    
+                    if response.status_code == 401:
+                        if trakt_refresh_token():
+                            response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=10)
+                    
+                    if response.status_code == 200:
+                        popinfo("Film označen jako nezhlednutý", icon=xbmcgui.NOTIFICATION_INFO)
+                    elif response.status_code == 401:
+                        popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
+                    else:
+                        popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
+                        
+                elif params['category'] == 'shows':
+                    # For shows - we need to mark all episodes as unwatched
+                    show_id = params['unwatched']
+                    
+                    # First, get all seasons and episodes for this show
+                    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
+                    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
+                    
+                    if seasons_response.status_code != 200:
+                        popinfo("Chyba při načítání sezón seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
+                        xbmc.executebuiltin('Container.Refresh()')
+                        return
+                    
+                    seasons = seasons_response.json()
+                    episodes_data = []
+                    
+                    # Collect all episodes
+                    for season in seasons:
+                        season_num = season['number']
+                        for episode in season.get('episodes', []):
+                            episodes_data.append({
+                                'ids': episode['ids']
+                            })
+                    
+                    if episodes_data:
+                        # Mark all episodes as unwatched
+                        unwatched_url = f'https://api.trakt.tv/sync/history/remove'
+                        unwatched_data = {
+                            'episodes': episodes_data
+                        }
+                        
+                        response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=30)
+                        
+                        if response.status_code == 401:
+                            if trakt_refresh_token():
+                                response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=30)
+                        
+                        if response.status_code == 200:
+                            popinfo(f"Seriál označen jako nezhlednutý ({len(episodes_data)} epizod)", icon=xbmcgui.NOTIFICATION_INFO)
+                        elif response.status_code == 401:
+                            popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
+                        else:
+                            popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
+                    else:
+                        popinfo("Seriál nemá žádné epizody", icon=xbmcgui.NOTIFICATION_WARNING)
+            
+            # Force refresh instead of update
             xbmc.executebuiltin('Container.Refresh()')
             return
         
@@ -988,11 +1139,35 @@ def trakt_watchlist(params):
         items = response.json()
         items = sorted(items, key=lambda x: x['movie']['title'] if 'movie' in x else x['show']['title'])
         
+        # Fetch watched items to check status - OPRAVENÉ
+        watched_url = f'https://api.trakt.tv/sync/watched/{params["category"]}'
+        watched_response = _session.get(watched_url, headers=trakt_get_headers(), timeout=10)
+        
+        watched_ids = set()
+        if watched_response.status_code == 200:
+            watched_items = watched_response.json()
+            if params['category'] == 'movies':
+                # Pro filmy - sbíráme ID zhlédnutých filmů
+                for item in watched_items:
+                    if 'movie' in item and 'ids' in item['movie']:
+                        watched_ids.add(item['movie']['ids']['trakt'])
+            elif params['category'] == 'shows':
+                # Pro seriály - sbíráme ID zhlédnutých seriálů
+                for item in watched_items:
+                    if 'show' in item and 'ids' in item['show']:
+                        watched_ids.add(item['show']['ids']['trakt'])
+
+        # Přidejte tento řádek po načtení watched_ids
+        log(f"Zhlédnuté ID: {watched_ids}", xbmc.LOGDEBUG)
+        
         for item in items:
             if params['category'] == 'movies' and 'movie' in item:
                 media = item['movie']
                 media_type = 'movie'
                 media_id = media['ids']['trakt']
+                
+                # Check if movie is watched - OPRAVENÉ
+                is_watched = media_id in watched_ids
                 
                 # Try to get Czech translation
                 try:
@@ -1056,6 +1231,18 @@ def trakt_watchlist(params):
                     'Vyhledat původní název', 
                     f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
                 ))
+                
+                # Add "Mark as watched/unwatched" option based on current status
+                if is_watched:
+                    context_menu_items.append((
+                        'Označit jako nezhlednuté',
+                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], unwatched=media_id)})'
+                    ))
+                else:
+                    context_menu_items.append((
+                        'Označit jako zhlédnuté',
+                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], watched=media_id)})'
+                    ))
                 
                 context_menu_items.append((
                     'Odstranit z watchlistu',
@@ -1088,6 +1275,9 @@ def trakt_watchlist(params):
                 media_type = 'show'
                 media_id = media['ids']['trakt']
                 
+                # Check if show is fully watched - OPRAVENÉ
+                is_watched = media_id in watched_ids
+                
                 # Try to get Czech translation
                 try:
                     translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
@@ -1150,6 +1340,18 @@ def trakt_watchlist(params):
                     'Vyhledat původní název', 
                     f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
                 ))
+                
+                # Add "Mark as watched/unwatched" option for shows based on current status
+                if is_watched:
+                    context_menu_items.append((
+                        'Označit jako nezhlednuté',
+                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], unwatched=media_id)})'
+                    ))
+                else:
+                    context_menu_items.append((
+                        'Označit jako zhlédnuté',
+                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], watched=media_id)})'
+                    ))
                 
                 context_menu_items.append((
                     'Odstranit z watchlistu',
