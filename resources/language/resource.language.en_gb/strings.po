@@ -1,0 +1,215 @@
+# XBMC Media Center language file
+# Addon Name: YAWsP
+# Addon id: plugin.video.yawsp
+# Addon Provider: cache-sk
+
+msgid ""
+msgstr ""
+
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en\n"
+
+msgctxt "#30010"
+msgid "Search"
+msgstr ""
+
+msgctxt "#30011"
+msgid "Category"
+msgstr ""
+
+msgctxt "#30012"
+msgid "Everything"
+msgstr ""
+
+msgctxt "#30013"
+msgid "Video"
+msgstr ""
+
+msgctxt "#30014"
+msgid "Images"
+msgstr ""
+
+msgctxt "#30015"
+msgid "Audio"
+msgstr ""
+
+msgctxt "#30016"
+msgid "Archives"
+msgstr ""
+
+msgctxt "#30017"
+msgid "Documents"
+msgstr ""
+
+msgctxt "#30018"
+msgid "Adult"
+msgstr ""
+
+msgctxt "#30020"
+msgid "Sort"
+msgstr ""
+
+msgctxt "#30021"
+msgid "Relevance"
+msgstr ""
+
+msgctxt "#30022"
+msgid "Recent"
+msgstr ""
+
+msgctxt "#30023"
+msgid "Rating"
+msgstr ""
+
+msgctxt "#30024"
+msgid "Largest"
+msgstr ""
+
+msgctxt "#30025"
+msgid "Smallest"
+msgstr ""
+
+msgctxt "#30028"
+msgid "Results on page"
+msgstr ""
+
+msgctxt "#30029"
+msgid "Memorized searches"
+msgstr ""
+
+msgctxt "#30030"
+msgid "Account"
+msgstr ""
+
+msgctxt "#30031"
+msgid "Username"
+msgstr ""
+
+msgctxt "#30032"
+msgid "Password"
+msgstr ""
+
+msgctxt "#30040"
+msgid "Files download"
+msgstr ""
+
+msgctxt "#30041"
+msgid "Download folder"
+msgstr ""
+
+msgctxt "#30042"
+msgid "Normalize filename"
+msgstr ""
+
+msgctxt "#30043"
+msgid "Notify progress"
+msgstr "Oznamovaù priebeh"
+
+msgctxt "#30044"
+msgid "Notify every"
+msgstr ""
+
+msgctxt "#30051"
+msgid "Experimental functions"
+msgstr ""
+
+msgctxt "#30101"
+msgid "To use this plugin, you must enter Webshare account in the settings."
+msgstr ""
+
+msgctxt "#30102"
+msgid "Invalid login details!"
+msgstr ""
+
+msgctxt "#30103"
+msgid "You do not have a valid VIP."
+msgstr ""
+
+msgctxt "#30104"
+msgid "The file has been deleted from history."
+msgstr ""
+
+msgctxt "#30105"
+msgid "The file has been added to Queue."
+msgstr ""
+
+msgctxt "#30106"
+msgid "The file has been removed from Queue."
+msgstr ""
+
+msgctxt "#30107"
+msgid "An error occurred while communicating with the Webshare API."
+msgstr ""
+
+msgctxt "#30201"
+msgid "Search"
+msgstr ""
+
+msgctxt "#30202"
+msgid "Queue"
+msgstr ""
+
+msgctxt "#30203"
+msgid "History"
+msgstr ""
+
+msgctxt "#30204"
+msgid "Settings"
+msgstr ""
+
+msgctxt "#30205"
+msgid "New search"
+msgstr ""
+
+msgctxt "#30206"
+msgid "previous page"
+msgstr ""
+
+msgctxt "#30207"
+msgid "next page"
+msgstr ""
+
+msgctxt "#30208"
+msgid "Most recent on Webshare"
+msgstr ""
+
+msgctxt "#30209"
+msgid "Biggest on Webshare"
+msgstr ""
+
+msgctxt "#30211"
+msgid "File information"
+msgstr ""
+
+msgctxt "#30212"
+msgid "Download file"
+msgstr ""
+
+msgctxt "#30213"
+msgid "Remove from history"
+msgstr ""
+
+msgctxt "#30214"
+msgid "Add to Queue"
+msgstr ""
+
+msgctxt "#30215"
+msgid "Remove from Queue"
+msgstr ""
+
+msgctxt "#30301"
+msgid "Downloading, but don't know file length, please wait - "
+msgstr ""
+
+msgctxt "#30302"
+msgid "Downloading file - "
+msgstr ""
+
+msgctxt "#30303"
+msgid "Downloading completed - "
+msgstr ""
+
+msgctxt "#30304"
+msgid "Unknown error - "
+msgstr ""
+

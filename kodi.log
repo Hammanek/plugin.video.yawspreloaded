@@ -1,0 +1,535 @@
+﻿2026-03-16 11:41:09.567 T:45180    info <general>: -----------------------------------------------------------------------
+2026-03-16 11:41:09.567 T:45180    info <general>: Starting Kodi (21.2 (21.2.0) Git:20250115-d1a1d48c3c). Platform: Windows NT x86 64-bit
+2026-03-16 11:41:09.567 T:45180    info <general>: Using Release Kodi x64
+2026-03-16 11:41:09.567 T:45180    info <general>: Kodi compiled 2025-01-18 by MSVC 194234436 for Windows NT x86 64-bit version 10.0 (0x0A00000C)
+2026-03-16 11:41:09.567 T:45180    info <general>: Running on Windows 11 25H2, kernel: Windows NT x86 64-bit version 10.0.26200.6899
+2026-03-16 11:41:09.567 T:45180    info <general>: FFmpeg version/source: 6.0.1-Kodi
+2026-03-16 11:41:09.568 T:45180    info <general>: Host CPU: AMD Ryzen 5 5600X 6-Core Processor, 12 cores available
+2026-03-16 11:41:09.568 T:45180    info <general>: System has 16.0 GB of RAM installed
+2026-03-16 11:41:09.568 T:45180    info <general>: Desktop Resolution: 1920x1080 32Bit at 144Hz
+2026-03-16 11:41:09.568 T:45180    info <general>: Running with restricted rights
+2026-03-16 11:41:09.568 T:45180    info <general>: Aero is enabled
+2026-03-16 11:41:09.568 T:45180    info <general>: Display is not HDR capable or cannot be detected
+2026-03-16 11:41:09.568 T:45180    info <general>: special://xbmc/ is mapped to: C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p
+2026-03-16 11:41:09.568 T:45180    info <general>: special://xbmcbin/ is mapped to: C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p
+2026-03-16 11:41:09.568 T:45180    info <general>: special://xbmcbinaddons/ is mapped to: C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p/addons
+2026-03-16 11:41:09.568 T:45180    info <general>: special://masterprofile/ is mapped to: C:\Users\Jirka\AppData\Roaming\Kodi\userdata
+2026-03-16 11:41:09.568 T:45180    info <general>: special://home/ is mapped to: C:\Users\Jirka\AppData\Roaming\Kodi\
+2026-03-16 11:41:09.568 T:45180    info <general>: special://temp/ is mapped to: C:\Users\Jirka\AppData\Roaming\Kodi\cache
+2026-03-16 11:41:09.568 T:45180    info <general>: special://logpath/ is mapped to: C:\Users\Jirka\AppData\Roaming\Kodi\
+2026-03-16 11:41:09.568 T:45180    info <general>: Webserver extra whitelist paths: 
+2026-03-16 11:41:09.568 T:45180    info <general>: The executable running is: C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p\Kodi.exe
+2026-03-16 11:41:09.570 T:45180    info <general>: Local hostname: Jirka-PC
+2026-03-16 11:41:09.570 T:45180    info <general>: Log File is located: C:\Users\Jirka\AppData\Roaming\Kodi\kodi.log
+2026-03-16 11:41:09.570 T:45180    info <general>: -----------------------------------------------------------------------
+2026-03-16 11:41:09.570 T:45180    info <general>: loading settings
+2026-03-16 11:41:09.576 T:45180    info <general>: special://profile/ is mapped to: special://masterprofile/
+2026-03-16 11:41:09.585 T:45180    info <general>: No settings file to load (special://xbmc/system/advancedsettings.xml)
+2026-03-16 11:41:09.586 T:45180    info <general>: No settings file to load (special://masterprofile/advancedsettings.xml)
+2026-03-16 11:41:09.586 T:45180    info <general>: Default Video Player: VideoPlayer
+2026-03-16 11:41:09.586 T:45180    info <general>: Default Audio Player: paplayer
+2026-03-16 11:41:09.586 T:45180    info <general>: Disabled debug logging due to GUI setting. Level 0.
+2026-03-16 11:41:09.586 T:45180    info <general>: Log level changed to "info"
+2026-03-16 11:41:09.586 T:45180    info <general>: CMediaSourceSettings: loading media sources from special://masterprofile/sources.xml
+2026-03-16 11:41:09.598 T:45180    info <general>: New Cache GUI Settings (replacement of cache in advancedsettings.xml) are:
+                                                     Buffer Mode: 4
+                                                     Memory Size: 20 MB
+                                                     Read Factor: 4.00 x 
+                                                     Chunk Size : 131072 bytes
+2026-03-16 11:41:09.598 T:45180    info <general>: creating subdirectories
+2026-03-16 11:41:09.598 T:45180    info <general>: userdata folder: special://masterprofile/
+2026-03-16 11:41:09.598 T:45180    info <general>: recording folder: 
+2026-03-16 11:41:09.598 T:45180    info <general>: screenshots folder: 
+2026-03-16 11:41:09.629 T:45180    info <general>: Running database version Addons33
+2026-03-16 11:41:09.926 T:45180 warning <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: Addon 'game.controller.default' already present with higher version 1.0.42 at 'C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p\addons\game.controller.default\' - other version 1.0.41 at 'C:\Users\Jirka\AppData\Roaming\Kodi\addons\game.controller.default\' will be ignored
+2026-03-16 11:41:09.932 T:45180 warning <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: Addon 'game.controller.keyboard' already present with higher version 1.1.43 at 'C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p\addons\game.controller.keyboard\' - other version 1.1.33 at 'C:\Users\Jirka\AppData\Roaming\Kodi\addons\game.controller.keyboard\' will be ignored
+2026-03-16 11:41:10.034 T:45180   error <general>: AddonVersion: 1.4.0  is not a valid version
+2026-03-16 11:41:10.258 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: audioencoder.kodi.builtin.aac v1.0.2 installed
+2026-03-16 11:41:10.258 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: audioencoder.kodi.builtin.wma v1.0.2 installed
+2026-03-16 11:41:10.258 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: game.controller.default v1.0.42 installed
+2026-03-16 11:41:10.258 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: game.controller.keyboard v1.1.43 installed
+2026-03-16 11:41:10.259 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: game.controller.mouse v1.0.26 installed
+2026-03-16 11:41:10.259 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: game.controller.snes v1.0.43 installed
+2026-03-16 11:41:10.259 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: inputstream.adaptive v21.5.18 installed
+2026-03-16 11:41:10.259 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.audioengine v1.1.1 installed
+2026-03-16 11:41:10.260 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.filesystem v1.1.8 installed
+2026-03-16 11:41:10.260 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.general v1.0.5 installed
+2026-03-16 11:41:10.260 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.gui v5.15.0 installed
+2026-03-16 11:41:10.261 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.main v2.0.2 installed
+2026-03-16 11:41:10.261 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.network v1.0.4 installed
+2026-03-16 11:41:10.261 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.global.tools v1.0.4 installed
+2026-03-16 11:41:10.262 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.audiodecoder v4.0.0 installed
+2026-03-16 11:41:10.262 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.audioencoder v3.0.0 installed
+2026-03-16 11:41:10.262 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.game v3.0.2 installed
+2026-03-16 11:41:10.263 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.imagedecoder v3.0.1 installed
+2026-03-16 11:41:10.263 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.inputstream v3.3.0 installed
+2026-03-16 11:41:10.263 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.peripheral v3.0.2 installed
+2026-03-16 11:41:10.264 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.pvr v8.3.0 installed
+2026-03-16 11:41:10.264 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.screensaver v2.2.0 installed
+2026-03-16 11:41:10.264 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.vfs v3.0.1 installed
+2026-03-16 11:41:10.264 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.videocodec v2.1.0 installed
+2026-03-16 11:41:10.265 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.binary.instance.visualization v4.0.0 installed
+2026-03-16 11:41:10.265 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: kodi.resource v1.0.0 installed
+2026-03-16 11:41:10.265 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.album.universal v3.1.18 installed
+2026-03-16 11:41:10.265 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.artists.universal v4.3.21 installed
+2026-03-16 11:41:10.266 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.common.allmusic.com v3.2.2 installed
+2026-03-16 11:41:10.266 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.common.fanart.tv v3.6.5 installed
+2026-03-16 11:41:10.266 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.common.musicbrainz.org v2.2.4 installed
+2026-03-16 11:41:10.266 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.common.theaudiodb.com v2.0.3 installed
+2026-03-16 11:41:10.267 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.generic.albums v1.0.18 installed
+2026-03-16 11:41:10.267 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.generic.artists v1.0.18 installed
+2026-03-16 11:41:10.267 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.local v1.0.1 installed
+2026-03-16 11:41:10.267 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.themoviedb.org.python v3.1.3 installed
+2026-03-16 11:41:10.268 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: metadata.tvshows.themoviedb.org.python v1.7.4 installed
+2026-03-16 11:41:10.268 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: peripheral.joystick v21.1.23 installed
+2026-03-16 11:41:10.268 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: plugin.video.stream-cinema-2-release v2.4.2 installed
+2026-03-16 11:41:10.269 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: plugin.video.themoviedb.helper v5.4.16 installed
+2026-03-16 11:41:10.269 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: plugin.video.yawspreloaded v1.2.4 installed
+2026-03-16 11:41:10.269 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: plugin.video.youtube v7.3.0.1 installed
+2026-03-16 11:41:10.269 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: repository.hacky v1.0.9 installed
+2026-03-16 11:41:10.270 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: repository.xbmc-kodi.cz v1.4.0 installed
+2026-03-16 11:41:10.270 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: repository.xbmc.org v3.4.0 installed
+2026-03-16 11:41:10.270 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: resource.images.weathericons.default v1.1.9 installed
+2026-03-16 11:41:10.270 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: resource.language.cs_cz v11.0.92 installed
+2026-03-16 11:41:10.271 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: resource.language.en_gb v2.0.2 installed
+2026-03-16 11:41:10.271 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: resource.uisounds.kodi v1.0.1 installed
+2026-03-16 11:41:10.271 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: screensaver.xbmc.builtin.black v1.0.34 installed
+2026-03-16 11:41:10.271 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: screensaver.xbmc.builtin.dim v1.0.66 installed
+2026-03-16 11:41:10.272 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.addon.signals v0.0.6+matrix.1 installed
+2026-03-16 11:41:10.272 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.arrow v1.2.3 installed
+2026-03-16 11:41:10.272 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.beautifulsoup4 v4.12.2 installed
+2026-03-16 11:41:10.272 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.certifi v2023.5.7 installed
+2026-03-16 11:41:10.272 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.chardet v5.1.0 installed
+2026-03-16 11:41:10.273 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.dateutil v2.8.2 installed
+2026-03-16 11:41:10.273 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.future v1.0.0+matrix.1 installed
+2026-03-16 11:41:10.273 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.idna v3.10.0 installed
+2026-03-16 11:41:10.273 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.infotagger v0.0.8 installed
+2026-03-16 11:41:10.274 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.jurialmunkey v0.2.28 installed
+2026-03-16 11:41:10.274 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.pil v5.1.0 installed
+2026-03-16 11:41:10.274 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.pycryptodome v3.4.3 installed
+2026-03-16 11:41:10.275 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.pyqrcode v1.2.1+matrix.4 installed
+2026-03-16 11:41:10.275 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.requests v2.31.0 installed
+2026-03-16 11:41:10.275 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.simplejson v3.19.1+matrix.1 installed
+2026-03-16 11:41:10.276 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.six v1.16.0+matrix.1 installed
+2026-03-16 11:41:10.276 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.soupsieve v2.4.1 installed
+2026-03-16 11:41:10.276 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.trakt v4.4.0+matrix.1 installed
+2026-03-16 11:41:10.276 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.typing_extensions v4.7.1 installed
+2026-03-16 11:41:10.277 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.unidecode v1.3.6 installed
+2026-03-16 11:41:10.277 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.urllib3 v2.2.3 installed
+2026-03-16 11:41:10.277 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.websocket v1.6.4 installed
+2026-03-16 11:41:10.277 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: script.module.yt-dlp v2023.07.06-1 installed
+2026-03-16 11:41:10.277 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: service.subtitles.titulky.com v2.0.2 installed
+2026-03-16 11:41:10.278 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: service.upnext v1.1.9+matrix.1 installed
+2026-03-16 11:41:10.278 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: service.xbmc.versioncheck v0.5.30+matrix.1 installed
+2026-03-16 11:41:10.278 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: skin.estuary v4.0.0 installed
+2026-03-16 11:41:10.278 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: skin.estuary.scc.nexus v3.0.14.1 installed
+2026-03-16 11:41:10.279 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: webinterface.default v21.x-1.0.1 installed
+2026-03-16 11:41:10.279 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.addon v21.2.0 installed
+2026-03-16 11:41:10.279 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.core v0.1.0 installed
+2026-03-16 11:41:10.279 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.gui v5.17.0 installed
+2026-03-16 11:41:10.280 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.json v13.5.0 installed
+2026-03-16 11:41:10.280 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.metadata v2.1.0 installed
+2026-03-16 11:41:10.280 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.python v3.0.1 installed
+2026-03-16 11:41:10.280 T:45180    info <general>: CAddonMgr::ADDON::CAddonMgr::FindAddons: xbmc.webinterface v1.0.0 installed
+2026-03-16 11:41:10.289 T:45180    info <general>: CKeyboardLayoutManager: loading keyboard layouts from special://xbmc/system/keyboardlayouts...
+2026-03-16 11:41:10.478 T:51112    info <general>: Loading special://xbmc/system/IRSSmap.xml
+2026-03-16 11:41:10.479 T:45180    info <general>: Primary mode: 2590G4 #1: 1920x1080 @ 144.00Hz
+2026-03-16 11:41:10.479 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 144.00Hz
+2026-03-16 11:41:10.480 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 120.00Hz
+2026-03-16 11:41:10.480 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 100.00Hz
+2026-03-16 11:41:10.480 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 75.00Hz
+2026-03-16 11:41:10.480 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 60.00Hz
+2026-03-16 11:41:10.480 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 48.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 59.94Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 640x480 @ 72.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 144.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 120.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 100.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 75.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 60.00Hz
+2026-03-16 11:41:10.481 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 48.00Hz
+2026-03-16 11:41:10.482 T:45180    info <general>: Additional mode: 2590G4 #1: 720x480 @ 59.94Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 144.00Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 120.00Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 100.00Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 75.00Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 60.00Hz
+2026-03-16 11:41:10.483 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 48.00Hz
+2026-03-16 11:41:10.484 T:45180    info <general>: Additional mode: 2590G4 #1: 720x576 @ 50.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 144.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 120.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 100.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 75.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 60.00Hz
+2026-03-16 11:41:10.485 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 48.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 56.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 800x600 @ 72.00Hz
+2026-03-16 11:41:10.486 T:51112    info <general>: * Adding remote mapping for device 'Microsoft MCE'
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 144.00Hz
+2026-03-16 11:41:10.486 T:51112    info <general>: * Adding remote mapping for device 'Abstract'
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 120.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 100.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 75.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 60.00Hz
+2026-03-16 11:41:10.486 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 48.00Hz
+2026-03-16 11:41:10.487 T:45180    info <general>: Additional mode: 2590G4 #1: 1024x768 @ 70.00Hz
+2026-03-16 11:41:10.487 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 144.00Hz
+2026-03-16 11:41:10.487 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 120.00Hz
+2026-03-16 11:41:10.487 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 100.00Hz
+2026-03-16 11:41:10.488 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 75.00Hz
+2026-03-16 11:41:10.488 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 60.00Hz
+2026-03-16 11:41:10.488 T:45180    info <general>: Additional mode: 2590G4 #1: 1152x864 @ 48.00Hz
+2026-03-16 11:41:10.489 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 144.00Hz
+2026-03-16 11:41:10.489 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 120.00Hz
+2026-03-16 11:41:10.489 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 100.00Hz
+2026-03-16 11:41:10.490 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 75.00Hz
+2026-03-16 11:41:10.490 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 60.00Hz
+2026-03-16 11:41:10.490 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 48.00Hz
+2026-03-16 11:41:10.491 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 59.94Hz
+2026-03-16 11:41:10.491 T:45180    info <general>: Additional mode: 2590G4 #1: 1176x664 @ 50.00Hz
+2026-03-16 11:41:10.491 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 144.00Hz
+2026-03-16 11:41:10.491 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 120.00Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 100.00Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 75.00Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 60.00Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 48.00Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 59.94Hz
+2026-03-16 11:41:10.492 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x720 @ 50.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 144.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 120.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 100.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 75.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 60.00Hz
+2026-03-16 11:41:10.493 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x768 @ 48.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 144.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 120.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 100.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 75.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 60.00Hz
+2026-03-16 11:41:10.494 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x800 @ 48.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 144.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 120.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 100.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 75.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 60.00Hz
+2026-03-16 11:41:10.495 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x960 @ 48.00Hz
+2026-03-16 11:41:10.496 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 144.00Hz
+2026-03-16 11:41:10.496 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 120.00Hz
+2026-03-16 11:41:10.496 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 100.00Hz
+2026-03-16 11:41:10.496 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 75.00Hz
+2026-03-16 11:41:10.497 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 60.00Hz
+2026-03-16 11:41:10.497 T:45180    info <general>: Additional mode: 2590G4 #1: 1280x1024 @ 48.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 144.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 120.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 100.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 75.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 60.00Hz
+2026-03-16 11:41:10.498 T:45180    info <general>: Additional mode: 2590G4 #1: 1360x768 @ 48.00Hz
+2026-03-16 11:41:10.499 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 144.00Hz
+2026-03-16 11:41:10.499 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 120.00Hz
+2026-03-16 11:41:10.499 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 100.00Hz
+2026-03-16 11:41:10.500 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 75.00Hz
+2026-03-16 11:41:10.500 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 60.00Hz
+2026-03-16 11:41:10.500 T:45180    info <general>: Additional mode: 2590G4 #1: 1366x768 @ 48.00Hz
+2026-03-16 11:41:10.500 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 60.00Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 59.94Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 144.00Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 120.00Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 100.00Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 75.00Hz
+2026-03-16 11:41:10.501 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 48.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x1080 @ 50.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 144.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 120.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 100.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 75.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 60.00Hz
+2026-03-16 11:41:10.502 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x900 @ 48.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 144.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 120.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 100.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 75.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 60.00Hz
+2026-03-16 11:41:10.504 T:45180    info <general>: Additional mode: 2590G4 #1: 1600x1024 @ 48.00Hz
+2026-03-16 11:41:10.505 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 144.00Hz
+2026-03-16 11:41:10.506 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 120.00Hz
+2026-03-16 11:41:10.506 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 100.00Hz
+2026-03-16 11:41:10.506 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 75.00Hz
+2026-03-16 11:41:10.506 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 60.00Hz
+2026-03-16 11:41:10.506 T:45180    info <general>: Additional mode: 2590G4 #1: 1680x1050 @ 48.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 60.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 59.94Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 144.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 120.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 100.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 75.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 48.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1920x1080 @ 50.00Hz
+2026-03-16 11:41:10.507 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 144.00Hz
+2026-03-16 11:41:10.508 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 120.00Hz
+2026-03-16 11:41:10.508 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 100.00Hz
+2026-03-16 11:41:10.508 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 75.00Hz
+2026-03-16 11:41:10.508 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 60.00Hz
+2026-03-16 11:41:10.508 T:45180    info <general>: Additional mode: 2590G4 #1: 1440x900 @ 48.00Hz
+2026-03-16 11:41:10.509 T:45180    info <general>: CApplication::CApplication::CreateGUI - using the default windowing system
+2026-03-16 11:41:10.509 T:45180    info <general>: Checking resolution 16
+2026-03-16 11:41:10.715 T:45180    info <general>: DX::DeviceResources::CheckNV12SharedTexturesSupport: extended NV12 shared textures is supported
+2026-03-16 11:41:10.717 T:45180    info <general>: DX::DeviceResources::CreateDeviceResources: device is created on adapter 'NVIDIA GeForce RTX 3080' with D3D_FEATURE_LEVEL_12_1
+2026-03-16 11:41:10.717 T:45180    info <general>: VideoDriverInfo::Log: video driver version is NVIDIA 595.71 (32.0.15.9571)
+2026-03-16 11:41:10.717 T:45180    info <general>: DX::DeviceResources::CheckDXVA2SharedDecoderSurfaces: DXVA2 shared decoder surfaces is supported
+2026-03-16 11:41:10.717 T:45180    info <general>: DX::DeviceResources::CheckDXVA2SharedDecoderSurfaces: DXVA2 shared decoder surfaces WITH fence synchronization.
+2026-03-16 11:41:10.717 T:45180    info <general>: DX::DeviceResources::CheckDXVA2SharedDecoderSurfaces: DXVA Video Super Resolution is potentially supported
+2026-03-16 11:41:10.736 T:45180    info <general>: DX::DeviceResources::ResizeBuffers: 8 bit swapchain is used with 6 flip discard buffers and SDR output (format B8G8R8A8_UNORM)
+2026-03-16 11:41:10.749 T:45180    info <general>: RetroPlayer[RENDER]: Registering renderer factory for DirectX
+2026-03-16 11:41:10.787 T:45180    info <general>: load keymapping
+2026-03-16 11:41:10.788 T:45180    info <general>: Loading special://xbmc/system/keymaps/appcommand.xml
+2026-03-16 11:41:10.795 T:45180    info <general>: Loading special://xbmc/system/keymaps/customcontroller.AppleRemote.xml
+2026-03-16 11:41:10.802 T:45180    info <general>: Loading special://xbmc/system/keymaps/customcontroller.Harmony.xml
+2026-03-16 11:41:10.810 T:45180    info <general>: Loading special://xbmc/system/keymaps/customcontroller.SiriRemote.xml
+2026-03-16 11:41:10.816 T:45180    info <general>: Loading special://xbmc/system/keymaps/gamepad.xml
+2026-03-16 11:41:10.822 T:45180    info <general>: Loading special://xbmc/system/keymaps/joystick.xml
+2026-03-16 11:41:10.829 T:45180    info <general>: Loading special://xbmc/system/keymaps/keyboard.xml
+2026-03-16 11:41:10.836 T:45180    info <general>: Loading special://xbmc/system/keymaps/mouse.xml
+2026-03-16 11:41:10.843 T:45180    info <general>: Loading special://xbmc/system/keymaps/remote.xml
+2026-03-16 11:41:10.849 T:45180    info <general>: Loading special://xbmc/system/keymaps/touchscreen.xml
+2026-03-16 11:41:10.856 T:45180    info <general>: GUI format 1920x1080, Display 2590G4 #1: 1920x1080 @ 144.00Hz
+2026-03-16 11:41:10.945 T:50908    info <general>: Found 2 Lists of Devices
+2026-03-16 11:41:10.945 T:50908    info <general>: Enumerated DIRECTSOUND devices:
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 1
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {3998851E-AD4F-4B5A-B3AF-01F11261EF2F}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : LineLevel - SteelSeries Sonar - Microphone (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: DIRECTSOUND: SteelSeries Sonar - Microphone (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 48000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 2
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {A0C154AE-D7C3-434F-8215-5DD50E416F45}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : Headphones - SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: DIRECTSOUND: SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR, FC, BL, BR, SL, SR, LFE
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 96000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 3
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {DE43957B-343B-4957-B951-633980F346A6}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : Headset - SteelSeries Sonar - Chat (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: DIRECTSOUND: SteelSeries Sonar - Chat (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 48000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 4
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {FCAE4A59-1A46-445F-AE34-89B3E3A9A6BB}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : Headset - Sluchátko u sluchátek s mikrofonem (2 - Jabra Link 390)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: DIRECTSOUND: Sluchátko u sluchátek s mikrofonem (2 - Jabra Link 390)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 48000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 5
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {FD3B92FB-8248-4438-9529-712ABFC140DF}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : Speakers - Reproduktory (Sound Blaster Audigy Fx)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: DIRECTSOUND: Reproduktory (Sound Blaster Audigy Fx)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR, FC, BL, BR, LFE
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 48000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 6
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : default
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : default
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: 
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR, FC, BL, BR, LFE
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 48000
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_FLOAT
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>: Enumerated WASAPI devices:
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 1
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {3998851E-AD4F-4B5A-B3AF-01F11261EF2F}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : LineLevel - SteelSeries Sonar - Microphone (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: WASAPI: SteelSeries Sonar - Microphone (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : AE_FMT_S24NE3,AE_FMT_S24LE3,AE_FMT_S24BE3
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.945 T:50908    info <general>:     Device 2
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceName      : {A0C154AE-D7C3-434F-8215-5DD50E416F45}
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayName     : Headphones - SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_displayNameExtra: WASAPI: SteelSeries Sonar - Gaming (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_sampleRates     : 
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_dataFormats     : 
+2026-03-16 11:41:10.945 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.946 T:50908    info <general>:     Device 3
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceName      : {DE43957B-343B-4957-B951-633980F346A6}
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayName     : Headset - SteelSeries Sonar - Chat (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayNameExtra: WASAPI: SteelSeries Sonar - Chat (SteelSeries Sonar Virtual Audio Device)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_sampleRates     : 
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_dataFormats     : AE_FMT_S24NE3,AE_FMT_S24LE3,AE_FMT_S24BE3
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.946 T:50908    info <general>:     Device 4
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceName      : {FCAE4A59-1A46-445F-AE34-89B3E3A9A6BB}
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayName     : Headset - Sluchátko u sluchátek s mikrofonem (2 - Jabra Link 390)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayNameExtra: WASAPI: Sluchátko u sluchátek s mikrofonem (2 - Jabra Link 390)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_channels        : FL, FR
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_sampleRates     : 48000,32000
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_dataFormats     : AE_FMT_S16NE,AE_FMT_S16LE,AE_FMT_S16BE
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.946 T:50908    info <general>:     Device 5
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceName      : {FD3B92FB-8248-4438-9529-712ABFC140DF}
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayName     : Speakers - Reproduktory (Sound Blaster Audigy Fx)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayNameExtra: WASAPI: Reproduktory (Sound Blaster Audigy Fx)
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_channels        : FL, FR, FC, LFE, BL, BR
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_sampleRates     : 192000,96000,88200,48000,44100
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_dataFormats     : AE_FMT_S24NE4MSB,AE_FMT_S16NE,AE_FMT_S16LE,AE_FMT_S16BE
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.946 T:50908    info <general>:     Device 6
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceName      : default
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayName     : default
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_displayNameExtra: 
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_deviceType      : AE_DEVTYPE_PCM
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_channels        : FL, FR, FC, LFE, BL, BR
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_sampleRates     : 192000,96000,88200,48000,44100
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_dataFormats     : AE_FMT_S24NE4MSB,AE_FMT_S16NE,AE_FMT_S16LE,AE_FMT_S16BE
+2026-03-16 11:41:10.946 T:50908    info <general>:         m_streamTypes     : No passthrough capabilities
+2026-03-16 11:41:10.946 T:43888    info <general>: CActiveAESink::OpenSink - initialize sink
+2026-03-16 11:41:10.989 T:50908 warning <general>: CActiveAE::ActiveAE::CActiveAE::StateMachine - signal: 0 from port: OutputControlPort not handled for state: 7
+2026-03-16 11:41:10.989 T:45180    info <general>: Skipped 1 duplicate messages..
+2026-03-16 11:41:10.989 T:45180    info <general>: CLangInfo: loading resource.language.cs_cz language information...
+2026-03-16 11:41:11.000 T:45180    info <general>: global locale set to cs-cs
+2026-03-16 11:41:11.000 T:45180    info <general>: CLangInfo: loading resource.language.cs_cz language strings...
+2026-03-16 11:41:11.373 T:45208    info <general>: Running database version Addons33
+2026-03-16 11:41:11.374 T:45208    info <general>: Running database version ViewModes6
+2026-03-16 11:41:11.376 T:45208    info <general>: Running database version Textures13
+2026-03-16 11:41:11.378 T:45208    info <general>: Running database version MyMusic83
+2026-03-16 11:41:11.381 T:45208    info <general>: Running database version MyVideos131
+2026-03-16 11:41:11.383 T:45208    info <general>: Running database version TV46
+2026-03-16 11:41:11.385 T:45208    info <general>: Running database version Epg16
+2026-03-16 11:41:11.433 T:45180    info <general>: Unloaded skin
+2026-03-16 11:41:11.441 T:45180    info <general>:   load skin from: C:\Users\Jirka\AppData\Roaming\Kodi\addons\skin.estuary.scc.nexus\ (version: 3.0.14.1)
+2026-03-16 11:41:11.441 T:45180    info <general>:   load fonts for skin...
+2026-03-16 11:41:11.454 T:45180    info <general>: Loading skin includes from C:\Users\Jirka\AppData\Roaming\Kodi\addons\skin.estuary.scc.nexus\xml\Includes.xml
+2026-03-16 11:41:11.615 T:45180    info <general>: GUIFontManager::LoadFontsFromFile: Loading <fontset> with name 'Default' from 'C:\Users\Jirka\AppData\Roaming\Kodi\addons\skin.estuary.scc.nexus\xml\Font.xml'
+2026-03-16 11:41:11.666 T:45180    info <general>: ADDON::CSkinInfo::LoadTimers: Trying to load skin timers from C:\Users\Jirka\AppData\Roaming\Kodi\addons\skin.estuary.scc.nexus\xml\Timers.xml
+2026-03-16 11:41:11.674 T:45180    info <general>:   load new skin...
+2026-03-16 11:41:11.674 T:45180    info <general>: Loading custom window XMLs from skin path C:\Users\Jirka\AppData\Roaming\Kodi\addons\skin.estuary.scc.nexus\xml
+2026-03-16 11:41:11.737 T:45180    info <general>:   initialize new skin...
+2026-03-16 11:41:11.737 T:45180    info <general>: Loading skin file: DialogBusy.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.745 T:45180    info <general>: Loading skin file: Pointer.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.758 T:45180    info <general>: Loading skin file: DialogVolumeBar.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.767 T:45180    info <general>: Loading skin file: DialogExtendedProgressBar.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.776 T:45180    info <general>: Loading skin file: DialogSeekBar.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.788 T:45180    info <general>: Loading skin file: DialogNotification.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.796 T:45180    info <general>: Loading skin file: DialogBusy.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.796 T:45180    info <general>: Loading skin file: Custom_1109_TopBarOverlay.xml, load type: LOAD_ON_GUI_INIT
+2026-03-16 11:41:11.799 T:45180    info <general>: Loading resource://resource.uisounds.kodi/sounds.xml
+2026-03-16 11:41:11.856 T:45180    info <general>:   skin loaded...
+2026-03-16 11:41:11.857 T:45180    info <general>: Loading skin file: Startup.xml, load type: LOAD_EVERY_TIME
+2026-03-16 11:41:11.866 T:45180 warning <general>: CApplication::Initialize - startup.xml taints init process
+2026-03-16 11:41:11.872 T:45180 warning <general>: JSONRPC: Could not parse type "Setting.Details.SettingList"
+2026-03-16 11:41:11.872 T:45180    info <general>: JSONRPC: Adding type "Setting.Details.SettingList" to list of incomplete definitions (waiting for "Setting.Details.Setting")
+2026-03-16 11:41:11.872 T:45180    info <general>: JSONRPC: Resolving incomplete types/methods referencing Setting.Details.Setting
+2026-03-16 11:41:11.878 T:45180    info <general>: JSONRPC v13.5.0: Successfully initialized
+2026-03-16 11:41:11.927 T:45180    info <general>: AddOnLog: peripheral.joystick: Enabling joystick interface "xinput"
+2026-03-16 11:41:11.928 T:45180    info <general>: AddOnLog: peripheral.joystick: Enabling joystick interface "directinput"
+2026-03-16 11:41:11.934 T:45180    info <general>: PERIPHERALS::CPeripheralBus::Register - new keyboard device registered on application->keyboard: Klávesnice (0000:0000)
+2026-03-16 11:41:11.935 T:45180    info <general>: PERIPHERALS::CPeripheralBus::Register - new mouse device registered on application->mouse: Myš (0000:0000)
+2026-03-16 11:41:11.937 T:45180    info <general>: Loading player core factory settings from special://xbmc/system/playercorefactory.xml.
+2026-03-16 11:41:11.945 T:45180    info <general>: Loaded playercorefactory configuration
+2026-03-16 11:41:11.945 T:45180    info <general>: Loading player core factory settings from special://masterprofile/playercorefactory.xml.
+2026-03-16 11:41:11.945 T:45180    info <general>: special://masterprofile/playercorefactory.xml does not exist. Skipping.
+2026-03-16 11:41:11.945 T:45180    info <general>: removing tempfiles
+2026-03-16 11:41:11.950 T:45180    info <general>: initialize done
+2026-03-16 11:41:11.950 T:45180    info <general>: Running the application...
+2026-03-16 11:41:11.955 T:47032    info <general>: ES: Starting UDP Event server on port 9777
+2026-03-16 11:41:11.956 T:47032    info <general>: UDP: Listening on port 9777 (ipv6 : false)
+2026-03-16 11:41:11.956 T:45180    info <general>: JSONRPC Server: Successfully initialized
+2026-03-16 11:41:11.964 T:45180    info <general>: [WS-Discovery]: Daemon started successfully.
+2026-03-16 11:41:13.726 T:45180    info <general>: Loading controller layout: C:\Users\Jirka\AppData\Roaming\Kodi\addons\game.controller.mouse\resources\layout.xml
+2026-03-16 11:41:14.581 T:51112    info <general>: CIRServerSuite::Process: failed to connect to irss, will keep retrying every 5 seconds
+2026-03-16 11:41:15.688 T:19432 warning <general>: [plugin.video.youtube] xbmc_context_ui:206(refresh_container) - Plugin container not found for 'FileNameAndPath'
+2026-03-16 11:41:15.688 T:19432 warning <general>: [plugin.video.youtube] xbmc_context_ui:206(refresh_container) - Plugin container not found for 'IsUpdating'
+2026-03-16 11:41:15.688 T:19432 warning <general>: [plugin.video.youtube] xbmc_context_ui:206(refresh_container) - Plugin container not found for 'HasFolders'
+2026-03-16 11:41:15.688 T:19432 warning <general>: [plugin.video.youtube] xbmc_context_ui:206(refresh_container) - Plugin container not found for 'HasFiles'
+2026-03-16 11:41:15.688 T:19432 warning <general>: [plugin.video.youtube] xbmc_context_ui:206(refresh_container) - Plugin container not found for 'HasParent'
+2026-03-16 11:41:15.689 T:19432    info <general>: [plugin.video.youtube] service_runner:54(run)
+                                                   Starting v7.3.0.1
+                                                   Kodi:    v21.2 (Kodi Omega)
+                                                   Python:  v3.8.15
+2026-03-16 11:41:17.976 T:45180    info <general>: Loading skin file: Home.xml, load type: KEEP_IN_MEMORY
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetInfoAnimation
+2026-03-16 11:41:17.998 T:45180 warning <general>: Skin has invalid include: WidgetTitle
+2026-03-16 11:41:20.847 T:45180    info <general>: Loading skin file: MyVideoNav.xml, load type: KEEP_IN_MEMORY
+2026-03-16 11:41:27.766 T:49964    info <general>: [plugin.video.yawspreloaded] Token úspěšně obnoven
+2026-03-16 11:41:28.457 T:49964   error <general>: [plugin.video.yawspreloaded] Trakt chyba: unsupported operand type(s) for *: 'NoneType' and 'int'
+2026-03-16 11:41:28.471 T:49964   error <general>: Traceback (most recent call last):
+                                                   
+2026-03-16 11:41:28.471 T:49964   error <general>: 
+2026-03-16 11:41:28.471 T:49964   error <general>:   File "C:\Users\Jirka\AppData\Roaming\Kodi\addons\plugin.video.yawspreloaded\yawsp.py", line 1260, in trakt_watchlist
+                                                       'duration': media.get('runtime', 0) * 60,
+                                                   
+2026-03-16 11:41:28.471 T:49964   error <general>: 
+2026-03-16 11:41:28.471 T:49964   error <general>: TypeError: unsupported operand type(s) for *: 'NoneType' and 'int'
+                                                   
+2026-03-16 11:41:28.471 T:49964   error <general>: 
+2026-03-16 11:41:29.860 T:45180    info <general>: Loading controller layout: C:\Program Files\WindowsApps\XBMCFoundation.Kodi_21.2.500.0_x64__4n2hpmxwrvr6p\addons\game.controller.keyboard\resources\layout.xml
+2026-03-16 11:41:31.264 T:45180    info <general>: Stopping the application...
+2026-03-16 11:41:31.264 T:45180    info <general>: Stopping player
+2026-03-16 11:41:31.264 T:45180    info <general>: Storing total System Uptime
+2026-03-16 11:41:31.265 T:45180    info <general>: Saving settings
+2026-03-16 11:41:31.267 T:45180    info <general>: Saving skin settings
+2026-03-16 11:41:31.268 T:45180    info <general>: Stopping all
+2026-03-16 11:41:31.268 T:45180    info <general>: ES: Stopping event server
+2026-03-16 11:41:31.269 T:45180    info <general>: [WS-Discovery]: terminating
+2026-03-16 11:41:31.964 T:47032    info <general>: ES: UDP Event server stopped
+2026-03-16 11:41:32.213 T:45180    info <general>: CServiceAddonManager: failed to stop service.xbmc.versioncheck (may have ended)
+2026-03-16 11:41:32.223 T:45180    info <general>: Application stopped
+2026-03-16 11:41:32.897 T:45180    info <general>: AddOnLog: peripheral.joystick: Disabling joystick interface "directinput"
+2026-03-16 11:41:32.897 T:45180    info <general>: AddOnLog: peripheral.joystick: Disabling joystick interface "xinput"
+2026-03-16 11:41:32.897 T:45180    info <general>: ADDON: Dll Destroyed - Joystick Support
+2026-03-16 11:41:32.897 T:45180    info <general>: unload skin
+2026-03-16 11:41:32.906 T:45180    info <general>: Unloaded skin
+2026-03-16 11:41:32.938 T:45180    info <general>: unload sections
+2026-03-16 11:41:32.944 T:45180    info <general>: Exiting the application...

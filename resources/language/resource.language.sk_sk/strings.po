@@ -1,0 +1,215 @@
+# XBMC Media Center language file
+# Addon Name: YAWsP
+# Addon id: plugin.video.yawsp
+# Addon Provider: cache-sk
+
+msgid ""
+msgstr ""
+
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: sk\n"
+
+msgctxt "#30010"
+msgid "Search"
+msgstr "Vyhľadávanie"
+
+msgctxt "#30011"
+msgid "Category"
+msgstr "Kategória"
+
+msgctxt "#30012"
+msgid "Everything"
+msgstr "Všetko"
+
+msgctxt "#30013"
+msgid "Video"
+msgstr "Video"
+
+msgctxt "#30014"
+msgid "Images"
+msgstr "Obrázky"
+
+msgctxt "#30015"
+msgid "Audio"
+msgstr "Audio"
+
+msgctxt "#30016"
+msgid "Archives"
+msgstr "Archívy"
+
+msgctxt "#30017"
+msgid "Documents"
+msgstr "Dokumenty"
+
+msgctxt "#30018"
+msgid "Adult"
+msgstr "Pre dospelých"
+
+msgctxt "#30020"
+msgid "Sort"
+msgstr "Triedenie"
+
+msgctxt "#30021"
+msgid "Relevance"
+msgstr "Relevancia"
+
+msgctxt "#30022"
+msgid "Recent"
+msgstr "Najnovšie"
+
+msgctxt "#30023"
+msgid "Rating"
+msgstr "Hodnotenie"
+
+msgctxt "#30024"
+msgid "Largest"
+msgstr "Najväčšie"
+
+msgctxt "#30025"
+msgid "Smallest"
+msgstr "Najmenšie"
+
+msgctxt "#30028"
+msgid "Results on page"
+msgstr "Výsledkov na stránku"
+
+msgctxt "#30029"
+msgid "Memorized searches"
+msgstr "Zapamätaných vyhľadávaní"
+
+msgctxt "#30030"
+msgid "Account"
+msgstr "Účet"
+
+msgctxt "#30031"
+msgid "Username"
+msgstr "Meno používateľa"
+
+msgctxt "#30032"
+msgid "Password"
+msgstr "Heslo"
+
+msgctxt "#30040"
+msgid "Files download"
+msgstr "Sťahovanie súborov"
+
+msgctxt "#30041"
+msgid "Download folder"
+msgstr "Adresár kam stiahnuť"
+
+msgctxt "#30042"
+msgid "Normalize filename"
+msgstr "Normalizovať názov súboru"
+
+msgctxt "#30043"
+msgid "Notify progress"
+msgstr "Oznamovať priebeh"
+
+msgctxt "#30044"
+msgid "Notify every"
+msgstr "Notifikovať každých"
+
+msgctxt "#30051"
+msgid "Experimental functions"
+msgstr "Experimentálne funkcie"
+
+msgctxt "#30101"
+msgid "To use this plugin, you must enter Webshare account in the settings."
+msgstr "Pre použitie tohto pluginu musíte zadať v nastaveniach konto pre Webshare."
+
+msgctxt "#30102"
+msgid "Invalid login details!"
+msgstr "Neplatné prihlasovacie údaje!"
+
+msgctxt "#30103"
+msgid "You do not have a valid VIP."
+msgstr "Nemáte platné VIP."
+
+msgctxt "#30104"
+msgid "The file has been deleted from history."
+msgstr "Súbor bol vymazaný z histórie."
+
+msgctxt "#30105"
+msgid "The file has been added to Queue."
+msgstr "Súbor bol pridaný do Chcem si stiahnuť."
+
+msgctxt "#30106"
+msgid "The file has been removed from Queue."
+msgstr "Súbor bol vymazaný zo Chcem si stiahnuť."
+
+msgctxt "#30107"
+msgid "An error occurred while communicating with the Webshare API."
+msgstr "Vznikla chyba pri komunikácii s Webshare API."
+
+msgctxt "#30201"
+msgid "Search"
+msgstr "Vyhľadávanie"
+
+msgctxt "#30202"
+msgid "Queue"
+msgstr "Chcem si stiahnuť"
+
+msgctxt "#30203"
+msgid "History"
+msgstr "História sťahovania"
+
+msgctxt "#30204"
+msgid "Settings"
+msgstr "Nastavenia"
+
+msgctxt "#30205"
+msgid "New search"
+msgstr "Nové hľadanie"
+
+msgctxt "#30206"
+msgid "previous page"
+msgstr "predchádzajúca stránka"
+
+msgctxt "#30207"
+msgid "next page"
+msgstr "nasledujúca stránka"
+
+msgctxt "#30208"
+msgid "Most recent on Webshare"
+msgstr "Najnovšie na Webshare"
+
+msgctxt "#30209"
+msgid "Biggest on Webshare"
+msgstr "Najväčšie na Webshare"
+
+msgctxt "#30211"
+msgid "File information"
+msgstr "Informácie o súbore"
+
+msgctxt "#30212"
+msgid "Download file"
+msgstr "Stiahnuť súbor"
+
+msgctxt "#30213"
+msgid "Remove from history"
+msgstr "Zmazať z histórie"
+
+msgctxt "#30214"
+msgid "Add to Queue"
+msgstr "Pridať do Chcem si stiahnuť"
+
+msgctxt "#30215"
+msgid "Remove from Queue"
+msgstr "Zmazať z Chcem si stiahnuť"
+
+msgctxt "#30301"
+msgid "Downloading, but don't know file length, please wait - "
+msgstr "Sťahujem, ale neviem dĺžku súboru, čakajte - "
+
+msgctxt "#30302"
+msgid "Downloading file - "
+msgstr "Sťahujem súbor - "
+
+msgctxt "#30303"
+msgid "Downloading completed - "
+msgstr "Sťahovanie dokončené - "
+
+msgctxt "#30304"
+msgid "Unknown error - "
+msgstr "Neznáma chyba - "
+

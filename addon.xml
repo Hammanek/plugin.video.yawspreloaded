@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="plugin.video.yawspreloaded" name="YAWsP Reloaded" version="1.2.4" provider-name="Hammanek">
+    <requires>
+        <!--import addon="xbmc.python" version="2.19.0"/-->
+        <import addon="script.module.requests" version="2.25.0"/>
+        <import addon="script.module.unidecode" version="1.4.0 "/>
+    </requires>
+    <extension point="xbmc.python.pluginsource" library="main.py">
+        <provides>video</provides>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary>Yet Another Webshare Plugin Reloaded</summary>
+        <platform>all</platform>
+        <license>AGPL 3.0</license>
+        <source>https://github.com/Hammanek/plugin.video.yawspreloaded</source>
+        <assets>
+            <icon>resources/icon.png</icon>
+        </assets>
+        <news>
+        </news>
+    </extension>
+</addon>
