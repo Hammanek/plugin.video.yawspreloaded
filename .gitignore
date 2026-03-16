@@ -35,3 +35,6 @@ wheels/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Antigravity Kit
+.agent/
