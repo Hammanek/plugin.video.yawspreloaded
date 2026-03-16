@@ -1,6 +1,6 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.2.4-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-1.2.5-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
@@ -20,7 +20,12 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 
 ## 📝 Changelog
 
-### 1.24
+### 1.2.5
+- Oprava pádu Trakt watchlistu (TypeError: NoneType).
+- Navýšen limit položek ve watchlistu na 1000.
+- Aktualizována konfigurace pro Antigravity Kit.
+
+### 1.2.4
 - Opravy chyb v rozhraní.
 - Implementace funkce trailerů.
 
