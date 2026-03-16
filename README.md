@@ -23,7 +23,6 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 ### 1.2.5
 - Oprava pádu Trakt watchlistu (TypeError: NoneType).
 - Navýšen limit položek ve watchlistu na 1000.
-- Aktualizována konfigurace pro Antigravity Kit.
 
 ### 1.2.4
 - Opravy chyb v rozhraní.
