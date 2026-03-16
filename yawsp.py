@@ -1128,8 +1128,8 @@ def trakt_watchlist(params):
         if 'show_id' in params and 'season' in params:
             return list_episodes(params)
         
-        # Fetch watchlist with images
-        url = f'https://api.trakt.tv/users/me/watchlist/{params["category"]}?extended=full,images'
+        # Fetch watchlist with images - added limit to show more than 10 items
+        url = f'https://api.trakt.tv/users/me/watchlist/{params["category"]}?extended=full,images&limit=1000'
         response = _session.get(url, headers=trakt_get_headers(), timeout=10)
         
         response = handle_trakt_401(url)
@@ -1257,9 +1257,9 @@ def trakt_watchlist(params):
                     'plot': plot,
                     'year': int(year) if year else 0,
                     'genre': " / ".join(media.get('genres', [])),
-                    'duration': media.get('runtime', 0) * 60,
+                    'duration': (media.get('runtime') or 0) * 60,
                     'trailer': media.get('trailer'),
-                    'rating': float(media.get('rating', 0)),
+                    'rating': float(media.get('rating') or 0),
                 }
                 listitem.setInfo('video', info)
                 
@@ -1367,7 +1367,7 @@ def trakt_watchlist(params):
                     'year': int(year) if year else 0,
                     'genre': " / ".join(media.get('genres', [])),
                     'status': media.get('status', ''),
-                    'rating': float(media.get('rating', 0)),
+                    'rating': float(media.get('rating') or 0),
                 }
                 listitem.setInfo('video', info)
                 
@@ -1512,8 +1512,8 @@ def list_episodes(params):
         ep_title = ep_data.get('title', 'Neznámý název')
         ep_air_date = ep_data.get('first_aired')
         ep_plot = ep_data.get('overview', '')
-        ep_rating = ep_data.get('rating', 0)
-        ep_runtime = ep_data.get('runtime', 0)
+        ep_rating = ep_data.get('rating') or 0
+        ep_runtime = ep_data.get('runtime') or 0
 
         # Načtení českého překladu (pokud existuje)
         try:
