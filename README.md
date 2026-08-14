@@ -23,7 +23,7 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 
 ## 🚀 Instalace
 
-1. Stáhněte si repozitář jako [ZIP archiv](https://github.com/Hammanek/plugin.video.yawspreloaded/archive/refs/heads/main.zip).
+1. Stáhněte si instalační ZIP z [nejnovějšího release](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest) (soubor `plugin.video.yawspreloaded-*.zip`).
 2. V Kodi zvolte **Doplňky** -> **Instalovat ze souboru zip**.
 3. Vyhledejte stažený soubor a potvrďte instalaci.
 4. V nastavení doplňku vyplňte přihlašovací údaje k Webshare.
