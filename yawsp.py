@@ -1128,7 +1128,8 @@ class TmdbQRDialog(xbmcgui.WindowXMLDialog):
     CONTROL_CLOSE = 102
 
     def __init__(self, image_path, url):
-        super().__init__('tmdb-qr.xml', _addon.getAddonInfo('path'), 'Default', '720p')
+        addon_path = translatePath(f"special://home/addons/{_addon.getAddonInfo('id')}")
+        super().__init__('tmdb-qr.xml', addon_path, 'Default', '720p')
         self.image_path = image_path
         self.url = url
 
