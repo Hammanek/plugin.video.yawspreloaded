@@ -32,10 +32,9 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 
 ## ⚙️ Nastavení TMDB
 
-1. Přihlaste se na TMDB a na [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) si **vyžádejte API klíč** (typ *Developer*, schválení je okamžité a zdarma).
-2. Zkopírujte krátký **API Key** – 32 znaků, pohodlně se zadává i na TV.
-3. Vložte jej v nastavení doplňku (sekce **TMDB**) do pole **TMDB API Key**.
-4. Ve stejné sekci klikněte **Připojit k TMDB...** – zobrazí se **QR kód**, ten naskenujte telefonem a schvalte přístup (jednorázově). Odkaz lze případně opsat ručně, najdete ho i v `kodi.log`.
+1. Na [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) si zdarma **vyžádejte API klíč** (okamžité schválení).
+2. Zkopírujte **API Key** (32 znaků) do nastavení doplňku, sekce **TMDB**.
+3. Klikněte **Připojit k TMDB...** a naskenujte telefonem zobrazený **QR kód** – po schválení je vše nastavené (jednorázově).
 
 ## 📝 Changelog
 
