@@ -1346,7 +1346,7 @@ def tmdb_watchlist(params):
 
             context_menu_items = [(
                 'Vyhledat původní název',
-                f'Container.Update({get_url(action="search", what=original_title or title)})'
+                f'Container.Update({get_url(action="search", what=original_title or title, sort="largest")})'
             )]
 
             youtube_id = tmdb_trailer(media, media_id)
@@ -1375,7 +1375,7 @@ def tmdb_watchlist(params):
             listitem.setInfo('video', info)
 
             if is_movie:
-                url = get_url(action='search', what=title)
+                url = get_url(action='search', what=title, sort='largest')
             else:
                 url = get_url(action='tmdb_watchlist', show_id=media_id, category='shows')
 

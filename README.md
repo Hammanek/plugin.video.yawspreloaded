@@ -1,6 +1,6 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.3.10-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-1.3.11-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
