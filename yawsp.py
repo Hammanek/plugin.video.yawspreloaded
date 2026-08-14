@@ -962,6 +962,11 @@ def tmdb_get_account_id():
     log(f"TMDB account_id: {account_id}")
     return account_id
 
+def set_view_infowall(params):
+    """Po načtení watchlistu vynutí pohled InfoWall (Estuary view id 54)"""
+    if params.get('category') in ('movies', 'shows') and xbmc.getSkinDir() == 'skin.estuary':
+        xbmc.executebuiltin('Container.SetViewMode(54)')
+
 def tmdb_genres(media):
     if media not in _TMDB_GENRES_CACHE:
         data = tmdb_get(f'/3/genre/{media}/list')
@@ -1390,6 +1395,7 @@ def tmdb_watchlist(params):
 
     xbmcplugin.setContent(_handle, 'movies' if params.get('category') == 'movies' else 'tvshows')
     xbmcplugin.endOfDirectory(_handle)
+    set_view_infowall(params)
 
 @handle_errors
 def list_seasons(params):
