@@ -31,8 +31,8 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 ## ⚙️ Nastavení TMDB
 
 1. Přihlaste se na TMDB a na [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) si **vyžádejte API klíč** (typ *Developer*, schválení je okamžité a zdarma).
-2. Zkopírujte krátký **API Key (v3 auth)** – 32 znaků, pohodlně se zadává i na TV.
-3. Vložte jej v nastavení doplňku (sekce **TMDB**) do pole **TMDB API Key (v3 auth)**.
+2. Zkopírujte krátký **API Key** – 32 znaků, pohodlně se zadává i na TV.
+3. Vložte jej v nastavení doplňku (sekce **TMDB**) do pole **TMDB API Key**.
 4. Ve stejné sekci klikněte **Připojit k TMDB...** – zobrazí se **QR kód**, ten naskenujte telefonem a schvalte přístup (jednorázově). Odkaz lze případně opsat ručně, najdete ho i v `kodi.log`.
 
 ## 📝 Changelog
@@ -41,7 +41,7 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 - Oprava závislosti `script.module.unidecode` (požadavek 1.4.0 nebyl v repozitáři Kodi dostupný).
 
 ### 1.3.1
-- Zjednodušené nastavení TMDB: stačí krátký **API Key (v3 auth)** místo dlouhého tokenu.
+- Zjednodušené nastavení TMDB: stačí krátký **API Key** místo dlouhého tokenu.
 - Připojení k TMDB přímo v nastavení doplňku, včetně **QR kódu** pro schválení telefonem.
 - Srozumitelná hláška při neplatném TMDB klíči (401) místo obecné chyby.
 - Oprava varování "AddonVersion is not a valid version".

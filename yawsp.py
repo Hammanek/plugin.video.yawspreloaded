@@ -898,7 +898,7 @@ def router(paramstring):
         menu()
 
 def tmdb_get_api_key():
-    """API klíč (v3 auth) z nastavení doplňku"""
+    """API klíč z nastavení doplňku"""
     return _addon.getSetting('tmdb_api_key').strip()
 
 def tmdb_get_session():
