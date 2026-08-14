@@ -1165,10 +1165,15 @@ def tmdb_authenticate():
     # Čekání na schválení (polling), max ~5 minut
     monitor = xbmc.Monitor()
     deadline = time.time() + 300
+    viewer_shown = False
     while time.time() < deadline:
-        if use_qr and xbmc.getCurrentWindowId() != WINDOW_PICTURES:
-            log("TMDB auth: uživatel zavřel QR okno")
-            return False
+        if use_qr:
+            wid = xbmcgui.getCurrentWindowId()
+            if wid == WINDOW_PICTURES:
+                viewer_shown = True
+            elif viewer_shown:
+                log("TMDB auth: uživatel zavřel QR okno")
+                return False
         session_id = tmdb_create_session(api_key, request_token)
         if session_id:
             _addon.setSetting('tmdb_access_token', session_id)
