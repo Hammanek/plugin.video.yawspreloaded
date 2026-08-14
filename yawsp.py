@@ -1121,38 +1121,25 @@ def tmdb_qr_png(url):
         log(f"QR generation failed: {str(e)}", xbmc.LOGERROR)
         return None
 
-class TmdbQRDialog(xbmcgui.WindowXMLDialog):
-    """Vlastní okno s QR kódem pro TMDB ověření"""
-    CONTROL_IMAGE = 100
-    CONTROL_LABEL = 101
-    CONTROL_CLOSE = 102
-
-    def __init__(self, image_path, url):
-        addon_path = translatePath(f"special://home/addons/{_addon.getAddonInfo('id')}")
-        super().__init__('tmdb-qr.xml', addon_path, 'Default', '720p')
-        self.image_path = image_path
-        self.url = url
-
-    def onInit(self):
-        self.getControl(self.CONTROL_IMAGE).setImage(self.image_path)
-        self.getControl(self.CONTROL_LABEL).setLabel(
-            "Naskenujte QR kód telefonem, přihlaste se k TMDB a klikněte Approve.\n\n"
-            f"[B]Nebo ručně zadejte odkaz:[/B]\n{self.url}\n\n"
-            "(odkaz najdete také v kodi.log)"
-        )
-        self.setFocusId(self.CONTROL_CLOSE)
-
-    def onClick(self, controlId):
-        if controlId == self.CONTROL_CLOSE:
-            self.close()
-
-    def onAction(self, action):
-        if action.getId() in (9, 10, 92):  # previous menu / nav back / backspace
-            self.close()
+def tmdb_create_session(api_key, request_token):
+    """Zkusí vytvořit session z request tokenu (vrátí session_id nebo None)"""
+    response = _session.post(
+        f'{TMDB_API_URL}/3/authentication/session/new',
+        params={'api_key': api_key},
+        json={'request_token': request_token},
+        timeout=15
+    )
+    if response.status_code == 200:
+        return response.json().get('session_id')
+    return None
 
 @handle_errors
 def tmdb_authenticate():
-    """Handle TMDB user authentication (v3 session flow)"""
+    """Handle TMDB user authentication (v3 session flow).
+
+    Zobrazí QR kód fullscreen (bez dialogu, který by ho zakryl) a čeká na schválení."""
+    WINDOW_PICTURES = 12007
+
     api_key = tmdb_get_api_key()
     if not api_key:
         popinfo("Nejprve vyplňte API Key v nastavení doplňku.", icon=xbmcgui.NOTIFICATION_ERROR)
@@ -1162,38 +1149,37 @@ def tmdb_authenticate():
     response = _session.get(f'{TMDB_API_URL}/3/authentication/token/new', params={'api_key': api_key}, timeout=15)
     response.raise_for_status()
     request_token = response.json()['request_token']
-    log(f"TMDB auth odkaz: {TMDB_AUTH_URL}{request_token}", xbmc.LOGINFO)
 
     url = f'{TMDB_AUTH_URL}{request_token}'
-    dialog = xbmcgui.Dialog()
+    log(f"TMDB auth odkaz: {url}", xbmc.LOGINFO)
 
+    use_qr = False
     qr_path = tmdb_qr_png(url)
     if qr_path:
-        TmdbQRDialog(qr_path, url).doModal()
+        use_qr = True
+        xbmc.executebuiltin(f'ShowPicture({qr_path})')
+        popinfo("Naskenujte QR kód telefonem a schvalte přístup", time=5000)
+    else:
+        popinfo(f"Schvalte přístup v prohlížeči: {url}", icon=xbmcgui.NOTIFICATION_WARNING, time=15000)
 
-    approved = dialog.yesno(
-        'TMDB ověření',
-        "Schválili jste přístup v telefonu?\n\n"
-        f"Odkaz pro ruční zadání: [B]{url}[/B]\n"
-        "(najdete ho také v kodi.log)"
-    )
-    if not approved:
-        return False
+    # Čekání na schválení (polling), max ~5 minut
+    monitor = xbmc.Monitor()
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        if use_qr and xbmc.getCurrentWindowId() != WINDOW_PICTURES:
+            log("TMDB auth: uživatel zavřel QR okno")
+            return False
+        session_id = tmdb_create_session(api_key, request_token)
+        if session_id:
+            _addon.setSetting('tmdb_access_token', session_id)
+            popinfo("Úspěšně připojeno k TMDB!", sound=True)
+            if use_qr:
+                xbmc.executebuiltin('Action(Back)')
+            return True
+        if monitor.waitForAbort(4):
+            return False
 
-    response = _session.post(
-        f'{TMDB_API_URL}/3/authentication/session/new',
-        params={'api_key': api_key},
-        json={'request_token': request_token},
-        timeout=15
-    )
-
-    if response.status_code == 200 and response.json().get('session_id'):
-        _addon.setSetting('tmdb_access_token', response.json()['session_id'])
-        popinfo("Úspěšně připojeno k TMDB!")
-        return True
-
-    log(f"TMDB auth error: {response.status_code} {response.text}", xbmc.LOGERROR)
-    popinfo("Připojení k TMDB se nezdařilo", icon=xbmcgui.NOTIFICATION_ERROR)
+    popinfo("Čas na ověření vypršel.", icon=xbmcgui.NOTIFICATION_ERROR)
     return False
 
 @handle_errors
