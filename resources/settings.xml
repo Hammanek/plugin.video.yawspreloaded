@@ -22,6 +22,7 @@
         <setting id="tmdb_sort" type="select" label="Řazení watchlistu" values="Abecedně|Naposledy přidané|Podle hodnocení|Podle roku premiéry" default="0"/>
         <setting id="tmdb_hide_unreleased" type="bool" label="Skrýt zatím nevydané filmy" default="false"/>
         <setting id="tmdb_access_token" type="text" label="TMDB Access Token" visible="false" default=""/>
+        <setting id="tmdb_view_defaulted" type="bool" visible="false" default="false"/>
         <setting id="tmdb_account_id" type="text" label="TMDB Account ID" visible="false" default=""/>
     </category>
 </settings>
