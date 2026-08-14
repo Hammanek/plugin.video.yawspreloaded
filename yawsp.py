@@ -9,7 +9,8 @@ import xbmcvfs
 import requests
 from xml.etree import ElementTree as ET
 import hashlib
-import base64
+import zlib
+import struct
 from md5crypt import md5crypt
 import traceback
 import json
@@ -888,35 +889,36 @@ def router(paramstring):
         db(params)
     elif action == 'tmdb_watchlist':
         tmdb_watchlist(params)
+    elif action == 'tmdb_auth':
+        tmdb_authenticate()
+        xbmcplugin.setResolvedUrl(_handle, False, xbmcgui.ListItem())
     elif action == 'searchdb':
         searchdb(params)
     else:
         menu()
 
-def tmdb_get_read_token():
-    return _addon.getSetting('tmdb_read_token').strip()
-
 def tmdb_get_api_key():
-    """Z Read Access Tokenu (JWT) vytáhne v3 API klíč z pole 'aud'"""
-    try:
-        payload = tmdb_get_read_token().split('.')[1]
-        payload += '=' * (-len(payload) % 4)
-        return json.loads(base64.b64decode(payload))['aud']
-    except Exception:
-        return ''
+    """API klíč (v3 auth) z nastavení doplňku"""
+    return _addon.getSetting('tmdb_api_key').strip()
 
-def tmdb_headers(token=None):
-    return {
-        'accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token or tmdb_get_read_token()}'
-    }
+def tmdb_get_session():
+    return _addon.getSetting('tmdb_access_token').strip()
 
-def tmdb_request(method, path, params=None, json_data=None, token=None, query_params=None):
-    """Společný request na TMDB s retry při rate limitu (429)"""
+def tmdb_request(method, path, params=None, json_data=None, query_params=None):
+    """Společný request na TMDB s retry při rate limitu (429).
+
+    Autentizace: api_key (+ session_id, pokud je uživatel připojen)."""
     query = {'language': 'cs-CZ'}
     if params:
         query.update(params)
+
+    headers = {'accept': 'application/json', 'Content-Type': 'application/json'}
+    api_key = tmdb_get_api_key()
+    if api_key:
+        query['api_key'] = api_key
+    session_id = tmdb_get_session()
+    if session_id:
+        query['session_id'] = session_id
     if query_params:
         query.update(query_params)
 
@@ -924,7 +926,7 @@ def tmdb_request(method, path, params=None, json_data=None, token=None, query_pa
         response = _session.request(
             method,
             TMDB_API_URL + path,
-            headers=tmdb_headers(token),
+            headers=headers,
             params=query,
             json=json_data,
             timeout=15
@@ -938,16 +940,15 @@ def tmdb_request(method, path, params=None, json_data=None, token=None, query_pa
         return response
     return response
 
-def tmdb_get(path, params=None, token=None):
-    return tmdb_request('GET', path, params=params, token=token).json()
+def tmdb_get(path, params=None):
+    return tmdb_request('GET', path, params=params).json()
 
-def tmdb_set_watchlist(media_type, media_id, watchlist, session_id):
+def tmdb_set_watchlist(media_type, media_id, watchlist):
     """Zápis do watchlistu přes v3 session (429-safe)"""
     response = tmdb_request(
         'POST',
         f'/3/account/{tmdb_get_account_id()}/watchlist',
-        json_data={'media_type': media_type, 'media_id': media_id, 'watchlist': watchlist},
-        query_params={'api_key': tmdb_get_api_key(), 'session_id': session_id}
+        json_data={'media_type': media_type, 'media_id': media_id, 'watchlist': watchlist}
     )
     return response.status_code in (200, 201) and response.json().get('success')
 
@@ -1072,31 +1073,89 @@ def tmdb_prefetch_shows(show_ids):
         list(executor.map(tmdb_show_next, missing))
     tmdb_save_shows()
 
-def tmdb_get_write_token():
-    token = _addon.getSetting('tmdb_access_token').strip()
-    if not token and tmdb_authenticate():
-        token = _addon.getSetting('tmdb_access_token').strip()
-    return token or None
+def tmdb_ensure_session():
+    """Vrátí True, pokud je k dispozici session (případně po spuštění auth flow)"""
+    if tmdb_get_session():
+        return True
+    return bool(tmdb_authenticate() and tmdb_get_session())
+
+def tmdb_qr_png(url):
+    """Vytvoří PNG s QR kódem odkazu (vlevo na plátně, dialog ho nezakryje). Vrátí cestu nebo None."""
+    try:
+        import qrcodegen
+        qr = qrcodegen.QrCode.encode_text(url, qrcodegen.QrCode.Ecc.MEDIUM)
+
+        scale = 10
+        n = qr.get_size()
+        qr_px = n * scale
+        canvas_w, canvas_h = 1280, 720
+        offx = max(20, (canvas_w // 2 - qr_px) // 2)
+        offy = (canvas_h - qr_px) // 2
+        if offy < 0:
+            scale = max(1, (canvas_h - 40) // n)
+            qr_px = n * scale
+            offy = 20
+
+        rows = [bytearray(b'\xff' * canvas_w * 3) for _ in range(canvas_h)]
+        for my in range(n):
+            for mx in range(n):
+                if qr.get_module(mx, my):
+                    for dy in range(scale):
+                        row = rows[offy + my * scale + dy]
+                        base = (offx + mx * scale) * 3
+                        for dx in range(scale):
+                            row[base + dx * 3:base + dx * 3 + 3] = b'\x00\x00\x00'
+
+        def chunk(tag, data):
+            raw = tag + data
+            return struct.pack('>I', len(data)) + raw + struct.pack('>I', zlib.crc32(raw) & 0xffffffff)
+
+        raw = b''.join(b'\x00' + bytes(r) for r in rows)
+        png = (b'\x89PNG\r\n\x1a\n'
+               + chunk(b'IHDR', struct.pack('>IIBBBBB', canvas_w, canvas_h, 8, 2, 0, 0, 0))
+               + chunk(b'IDAT', zlib.compress(raw, 6))
+               + chunk(b'IEND', b''))
+
+        os.makedirs(_profile, exist_ok=True)
+        path = os.path.join(_profile, 'tmdb_qr.png')
+        with io.open(path, 'wb') as f:
+            f.write(png)
+        return path
+    except Exception as e:
+        log(f"QR generation failed: {str(e)}", xbmc.LOGERROR)
+        return None
 
 @handle_errors
 def tmdb_authenticate():
     """Handle TMDB user authentication (v3 session flow)"""
     api_key = tmdb_get_api_key()
     if not api_key:
-        popinfo("Neplatný Read Access Token v nastavení.", icon=xbmcgui.NOTIFICATION_ERROR)
+        popinfo("Nejprve vyplňte API Key v nastavení doplňku.", icon=xbmcgui.NOTIFICATION_ERROR)
+        _addon.openSettings()
         return False
 
     response = _session.get(f'{TMDB_API_URL}/3/authentication/token/new', params={'api_key': api_key}, timeout=15)
     response.raise_for_status()
     request_token = response.json()['request_token']
+    log(f"TMDB auth odkaz: {TMDB_AUTH_URL}{request_token}", xbmc.LOGINFO)
 
     url = f'{TMDB_AUTH_URL}{request_token}'
     dialog = xbmcgui.Dialog()
+
+    qr_path = tmdb_qr_png(url)
+    if qr_path:
+        dialog.ok(
+            'TMDB ověření',
+            "Nyní se zobrazí QR kód. Naskenujte ho telefonem, přihlaste se\n"
+            "k TMDB a klikněte Approve. Potom se vraťte zpět a pokračujte."
+        )
+        xbmc.executebuiltin(f'ShowPicture({qr_path})')
+
     approved = dialog.yesno(
         'TMDB ověření',
-        f"1. Otevřete v prohlížeči: [B]{url}[/B]\n"
-        "2. Přihlaste se a klikněte Approve.\n\n"
-        "Po schválení zvolte OK."
+        "Schválili jste přístup v telefonu?\n\n"
+        f"Odkaz pro ruční zadání: [B]{url}[/B]\n"
+        "(najdete ho také v kodi.log)"
     )
     if not approved:
         return False
@@ -1121,46 +1180,42 @@ def tmdb_authenticate():
 def tmdb_watchlist(params):
     xbmcplugin.setPluginCategory(_handle, "TMDB Watchlist")
 
-    if not tmdb_get_read_token():
-        popinfo("Pro připojení k TMDB je třeba vyplnit Read Access Token v nastavení.", sound=True)
+    if not tmdb_get_api_key():
+        popinfo("Pro připojení k TMDB je třeba vyplnit API Key v nastavení.", sound=True)
         _addon.openSettings()
         xbmcplugin.endOfDirectory(_handle)
         return
 
-    # Připojení k TMDB (zápisový token)
-    if 'reauth' in params:
-        if tmdb_authenticate():
-            xbmc.executebuiltin('Container.Refresh()')
-        return
+    has_session = bool(tmdb_get_session())
 
     if 'category' not in params:
-        # Movies folder
-        listitem = xbmcgui.ListItem(label="Filmy")
-        listitem.setArt({'icon': 'DefaultMovies.png'})
-        xbmcplugin.addDirectoryItem(
-            _handle,
-            get_url(action='tmdb_watchlist', category='movies'),
-            listitem,
-            True
-        )
+        if has_session:
+            # Movies folder
+            listitem = xbmcgui.ListItem(label="Filmy")
+            listitem.setArt({'icon': 'DefaultMovies.png'})
+            xbmcplugin.addDirectoryItem(
+                _handle,
+                get_url(action='tmdb_watchlist', category='movies'),
+                listitem,
+                True
+            )
 
-        # TV Shows folder
-        listitem = xbmcgui.ListItem(label="Seriály")
-        listitem.setArt({'icon': 'DefaultTVShows.png'})
-        xbmcplugin.addDirectoryItem(
-            _handle,
-            get_url(action='tmdb_watchlist', category='shows'),
-            listitem,
-            True
-        )
-
-        # Authentication item
-        if not _addon.getSetting('tmdb_access_token'):
-            listitem = xbmcgui.ListItem(label="Připojit k TMDB (zápis do watchlistu)...")
+            # TV Shows folder
+            listitem = xbmcgui.ListItem(label="Seriály")
+            listitem.setArt({'icon': 'DefaultTVShows.png'})
+            xbmcplugin.addDirectoryItem(
+                _handle,
+                get_url(action='tmdb_watchlist', category='shows'),
+                listitem,
+                True
+            )
+        else:
+            # Navigate to settings (connect happens there)
+            listitem = xbmcgui.ListItem(label="Připojit k TMDB v nastavení doplňku...")
             listitem.setArt({'icon': 'DefaultAddonService.png'})
             xbmcplugin.addDirectoryItem(
                 _handle,
-                get_url(action='tmdb_watchlist', reauth=1),
+                get_url(action='settings'),
                 listitem,
                 False
             )
@@ -1168,17 +1223,22 @@ def tmdb_watchlist(params):
         xbmcplugin.endOfDirectory(_handle)
         return
 
+    if not has_session:
+        popinfo("Pro zobrazení watchlistu se připoj k TMDB v nastavení doplňku.", icon=xbmcgui.NOTIFICATION_WARNING)
+        _addon.openSettings()
+        xbmcplugin.endOfDirectory(_handle)
+        return
+
     try:
         # Označení jako zhlédnuté = zároveň odstranění z watchlistu (musí být PRVNÍ před načtením seznamu)
         if 'watched' in params:
-            session_id = tmdb_get_write_token()
-            if not session_id:
+            if not tmdb_ensure_session():
                 popinfo("Pro tuto akci je třeba se nejprve připojit k TMDB.", icon=xbmcgui.NOTIFICATION_ERROR)
                 xbmc.executebuiltin('Container.Refresh()')
                 return
 
             media_type = 'movie' if params['category'] == 'movies' else 'tv'
-            if tmdb_set_watchlist(media_type, int(params['watched']), False, session_id):
+            if tmdb_set_watchlist(media_type, int(params['watched']), False):
                 popinfo("Zhlédnuto a odstraněno z watchlistu")
             else:
                 popinfo("Chyba při odstraňování z watchlistu", icon=xbmcgui.NOTIFICATION_ERROR)
@@ -1310,7 +1370,11 @@ def tmdb_watchlist(params):
 
     except Exception as e:
         log(f"TMDB chyba: {str(e)}", xbmc.LOGERROR)
-        popinfo("Chyba při načítání", icon=xbmcgui.NOTIFICATION_ERROR)
+        if isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code == 401:
+            popinfo("Neplatný TMDB API klíč nebo vypršené přihlášení – zkontroluj nastavení.", icon=xbmcgui.NOTIFICATION_ERROR, sound=True)
+            _addon.openSettings()
+        else:
+            popinfo("Chyba při načítání", icon=xbmcgui.NOTIFICATION_ERROR)
         traceback.print_exc()
 
     xbmcplugin.setContent(_handle, 'movies' if params.get('category') == 'movies' else 'tvshows')

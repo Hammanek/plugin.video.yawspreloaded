@@ -17,8 +17,9 @@
 		<setting label="30044" id="dnevery" type="select" values="1%|5%|10%|20%|25%|50%" default="10%" visible="eq(-1,true)" />
     </category>
     <category label="TMDB">
-        <setting id="tmdb_read_token" type="text" label="TMDB Read Access Token" default=""/>
-        <setting type="lsep" label="Pro pouhé čtení watchlistu stačí Read Access Token. Připojení přes položku 'Připojit k TMDB...' je potřeba jen pro označení jako zhlédnuté (odebrání z watchlistu)."/>
+        <setting id="tmdb_api_key" type="text" label="TMDB API Key (v3 auth)" default=""/>
+        <setting type="lsep" label="Vyplňte krátký API Key (v3 auth) a pak klikněte na 'Připojit k TMDB' – zobrazí se QR kód pro schválení v telefonu."/>
+        <setting id="tmdb_connect" type="action" label="Připojit k TMDB..." action="RunPlugin(plugin://plugin.video.yawspreloaded/?action=tmdb_auth)" option="close"/>
         <setting id="tmdb_sort" type="select" label="Řazení watchlistu" values="Abecedně|Naposledy přidané|Podle hodnocení|Podle roku premiéry" default="0"/>
         <setting id="tmdb_hide_unreleased" type="bool" label="Skrýt zatím nevydané filmy" default="false"/>
         <setting id="tmdb_access_token" type="text" label="TMDB Access Token" visible="false" default=""/>

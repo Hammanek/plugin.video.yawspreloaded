@@ -1,6 +1,6 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.3.0-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-1.3.1-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
@@ -31,11 +31,17 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 ## ⚙️ Nastavení TMDB
 
 1. Přihlaste se na TMDB a na [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) si **vyžádejte API klíč** (typ *Developer*, schválení je okamžité a zdarma).
-2. Na stejné stránce zkopírujte **API Read Access Token** (dlouhý token začínající `eyJ...`).
-3. Vložte jej v nastavení doplňku (sekce **TMDB**) do pole **TMDB Read Access Token** – tím funguje čtení watchlistu.
-4. *(Volitelné)* Pro **označení jako zhlédnuté** (odebrání z watchlistu) zvolte v menu doplňku **Připojit k TMDB...** a schvalte zobrazený odkaz v prohlížeči. Kód z odkazu najdete v případě potřeby také v `kodi.log`.
+2. Zkopírujte krátký **API Key (v3 auth)** – 32 znaků, pohodlně se zadává i na TV.
+3. Vložte jej v nastavení doplňku (sekce **TMDB**) do pole **TMDB API Key (v3 auth)**.
+4. Ve stejné sekci klikněte **Připojit k TMDB...** – zobrazí se **QR kód**, ten naskenujte telefonem a schvalte přístup (jednorázově). Odkaz lze případně opsat ručně, najdete ho i v `kodi.log`.
 
 ## 📝 Changelog
+
+### 1.3.1
+- Zjednodušené nastavení TMDB: stačí krátký **API Key (v3 auth)** místo dlouhého tokenu.
+- Připojení k TMDB přímo v nastavení doplňku, včetně **QR kódu** pro schválení telefonem.
+- Srozumitelná hláška při neplatném TMDB klíči (401) místo obecné chyby.
+- Oprava varování "AddonVersion is not a valid version".
 
 ### 1.3.0
 - Trakt.tv nahrazen TMDB (Trakt API je nově zpoplatněné).
