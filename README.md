@@ -1,6 +1,6 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.3.1-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-1.3.2-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
@@ -36,6 +36,9 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 4. Ve stejné sekci klikněte **Připojit k TMDB...** – zobrazí se **QR kód**, ten naskenujte telefonem a schvalte přístup (jednorázově). Odkaz lze případně opsat ručně, najdete ho i v `kodi.log`.
 
 ## 📝 Changelog
+
+### 1.3.2
+- Oprava závislosti `script.module.unidecode` (požadavek 1.4.0 nebyl v repozitáři Kodi dostupný).
 
 ### 1.3.1
 - Zjednodušené nastavení TMDB: stačí krátký **API Key (v3 auth)** místo dlouhého tokenu.
