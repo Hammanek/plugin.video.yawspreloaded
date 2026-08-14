@@ -1,4 +1,4 @@
-import io
+﻿import io
 import os
 import sys
 import xbmc
@@ -6,9 +6,10 @@ import xbmcgui
 import xbmcplugin
 import xbmcaddon
 import xbmcvfs
-import requests.cookies
+import requests
 from xml.etree import ElementTree as ET
 import hashlib
+import base64
 from md5crypt import md5crypt
 import traceback
 import json
@@ -18,9 +19,9 @@ from datetime import date
 import re
 import zipfile
 import uuid
-import json
 from functools import wraps
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     from urllib import urlencode
@@ -46,12 +47,18 @@ SEARCH_HISTORY = 'search_history'
 NONE_WHAT = '%#NONE#%'
 BACKUP_DB = 'D1iIcURxlR'
 
-# Trakt OAuth constants
-TRAKT_OAUTH_URL = 'https://api.trakt.tv/oauth/'
-TRAKT_AUTHORIZE_URL = TRAKT_OAUTH_URL + 'authorize'
-TRAKT_TOKEN_URL = TRAKT_OAUTH_URL + 'token'
-TRAKT_DEVICE_CODE_URL = TRAKT_OAUTH_URL + 'device/code'
-TRAKT_DEVICE_TOKEN_URL = TRAKT_OAUTH_URL + 'device/token'
+# TMDB API constants
+TMDB_API_URL = 'https://api.themoviedb.org'
+TMDB_IMAGE_URL = 'https://image.tmdb.org/t/p/'
+TMDB_AUTH_URL = 'https://www.themoviedb.org/authenticate/'
+TMDB_TRAILERS_FILE = 'tmdb_trailers.json'
+TMDB_SHOWS_FILE = 'tmdb_shows.json'
+TMDB_SHOWS_TTL = 86400
+_TMDB_GENRES_CACHE = {}
+_TMDB_TRAILERS_CACHE = {}
+_TMDB_TRAILERS_LOADED = False
+_TMDB_SHOWS_CACHE = {}
+_TMDB_SHOWS_LOADED = False
 
 # Plugin setup
 _url = sys.argv[0]
@@ -842,10 +849,10 @@ def menu():
     listitem.setArt({'icon': 'DefaultAddonsZip.png'})
     xbmcplugin.addDirectoryItem(_handle, get_url(action='db'), listitem, True)
 
-    # Trakt Watchlist
-    listitem = xbmcgui.ListItem(label='Trakt Watchlist')
+    # TMDB Watchlist
+    listitem = xbmcgui.ListItem(label='TMDB Watchlist')
     listitem.setArt({'icon': 'DefaultVideoPlaylists.png'})
-    xbmcplugin.addDirectoryItem(_handle, get_url(action='trakt_watchlist'), listitem, True)
+    xbmcplugin.addDirectoryItem(_handle, get_url(action='tmdb_watchlist'), listitem, True)
 
     # Settings
     listitem = xbmcgui.ListItem(label=_addon.getLocalizedString(30204))
@@ -879,522 +886,433 @@ def router(paramstring):
         download(params)
     elif action == 'db':
         db(params)
-    elif action == 'trakt_watchlist':
-        trakt_watchlist(params)
+    elif action == 'tmdb_watchlist':
+        tmdb_watchlist(params)
     elif action == 'searchdb':
         searchdb(params)
     else:
         menu()
 
-def trakt_watchlist(params):
-    xbmcplugin.setPluginCategory(_handle, f"Trakt Watchlist")
-    
-    # Check authentication first
-    if 'reauth' in params:
-        if trakt_authenticate():
-            xbmc.executebuiltin('Container.Refresh()')
+def tmdb_get_read_token():
+    return _addon.getSetting('tmdb_read_token').strip()
+
+def tmdb_get_api_key():
+    """Z Read Access Tokenu (JWT) vytáhne v3 API klíč z pole 'aud'"""
+    try:
+        payload = tmdb_get_read_token().split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        return json.loads(base64.b64decode(payload))['aud']
+    except Exception:
+        return ''
+
+def tmdb_headers(token=None):
+    return {
+        'accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {token or tmdb_get_read_token()}'
+    }
+
+def tmdb_request(method, path, params=None, json_data=None, token=None, query_params=None):
+    """Společný request na TMDB s retry při rate limitu (429)"""
+    query = {'language': 'cs-CZ'}
+    if params:
+        query.update(params)
+    if query_params:
+        query.update(query_params)
+
+    for attempt in range(3):
+        response = _session.request(
+            method,
+            TMDB_API_URL + path,
+            headers=tmdb_headers(token),
+            params=query,
+            json=json_data,
+            timeout=15
+        )
+        if response.status_code == 429 and attempt < 2:
+            retry_after = min(int(response.headers.get('Retry-After', 1)), 5)
+            log(f"TMDB rate limit, retry za {retry_after}s")
+            time.sleep(retry_after)
+            continue
+        response.raise_for_status()
+        return response
+    return response
+
+def tmdb_get(path, params=None, token=None):
+    return tmdb_request('GET', path, params=params, token=token).json()
+
+def tmdb_set_watchlist(media_type, media_id, watchlist, session_id):
+    """Zápis do watchlistu přes v3 session (429-safe)"""
+    response = tmdb_request(
+        'POST',
+        f'/3/account/{tmdb_get_account_id()}/watchlist',
+        json_data={'media_type': media_type, 'media_id': media_id, 'watchlist': watchlist},
+        query_params={'api_key': tmdb_get_api_key(), 'session_id': session_id}
+    )
+    return response.status_code in (200, 201) and response.json().get('success')
+
+def tmdb_get_account_id():
+    account_id = _addon.getSetting('tmdb_account_id').strip()
+    if account_id:
+        return account_id
+    data = tmdb_get('/3/account')
+    account_id = str(data.get('id', ''))
+    _addon.setSetting('tmdb_account_id', account_id)
+    log(f"TMDB account_id: {account_id}")
+    return account_id
+
+def tmdb_genres(media):
+    if media not in _TMDB_GENRES_CACHE:
+        data = tmdb_get(f'/3/genre/{media}/list')
+        _TMDB_GENRES_CACHE[media] = {g['id']: g['name'] for g in data.get('genres', [])}
+    return _TMDB_GENRES_CACHE[media]
+
+def tmdb_load_trailers():
+    global _TMDB_TRAILERS_LOADED
+    if _TMDB_TRAILERS_LOADED:
         return
-    
-    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
-    if not trakt_client_id:
-        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID v nastavení.", sound=True)
+    _TMDB_TRAILERS_LOADED = True
+    try:
+        path = os.path.join(_profile, TMDB_TRAILERS_FILE)
+        if os.path.exists(path):
+            with io.open(path, 'r', encoding='utf-8') as f:
+                for key, value in json.load(f).items():
+                    media, media_id = key.split(':', 1)
+                    _TMDB_TRAILERS_CACHE[(media, int(media_id))] = value or None
+    except Exception as e:
+        log(f"Error loading trailer cache: {str(e)}", xbmc.LOGERROR)
+
+def tmdb_save_trailers():
+    try:
+        os.makedirs(_profile, exist_ok=True)
+        data = {f"{media}:{media_id}": yt for (media, media_id), yt in _TMDB_TRAILERS_CACHE.items()}
+        with io.open(os.path.join(_profile, TMDB_TRAILERS_FILE), 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+    except Exception as e:
+        log(f"Error saving trailer cache: {str(e)}", xbmc.LOGERROR)
+
+def tmdb_trailer(media, media_id):
+    tmdb_load_trailers()
+    cache_key = (media, media_id)
+    if cache_key not in _TMDB_TRAILERS_CACHE:
+        youtube_id = None
+        try:
+            data = tmdb_get(f'/3/{media}/{media_id}/videos', {'language': 'en-US'})
+            videos = [v for v in data.get('results', []) if v.get('site') == 'YouTube']
+            trailers = [v for v in videos if v.get('type') == 'Trailer']
+            official = [v for v in trailers if v.get('official')]
+            best = (official or trailers or videos or [None])[0]
+            if best:
+                youtube_id = best.get('key')
+        except Exception as e:
+            log(f"TMDB trailer error ({media} {media_id}): {str(e)}", xbmc.LOGERROR)
+        _TMDB_TRAILERS_CACHE[cache_key] = youtube_id
+    return _TMDB_TRAILERS_CACHE[cache_key]
+
+def tmdb_prefetch_trailers(media, media_ids):
+    """Paralelně načte trailery pro všechny položky bez cache"""
+    tmdb_load_trailers()
+    missing = [(media, media_id) for media_id in media_ids if (media, media_id) not in _TMDB_TRAILERS_CACHE]
+    if not missing:
+        return
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda m: tmdb_trailer(*m), missing))
+    tmdb_save_trailers()
+
+def tmdb_load_shows():
+    global _TMDB_SHOWS_LOADED
+    if _TMDB_SHOWS_LOADED:
+        return
+    _TMDB_SHOWS_LOADED = True
+    try:
+        path = os.path.join(_profile, TMDB_SHOWS_FILE)
+        if os.path.exists(path):
+            with io.open(path, 'r', encoding='utf-8') as f:
+                _TMDB_SHOWS_CACHE.update({int(k): v for k, v in json.load(f).items()})
+    except Exception as e:
+        log(f"Error loading shows cache: {str(e)}", xbmc.LOGERROR)
+
+def tmdb_save_shows():
+    try:
+        os.makedirs(_profile, exist_ok=True)
+        with io.open(os.path.join(_profile, TMDB_SHOWS_FILE), 'w', encoding='utf-8') as f:
+            json.dump(_TMDB_SHOWS_CACHE, f)
+    except Exception as e:
+        log(f"Error saving shows cache: {str(e)}", xbmc.LOGERROR)
+
+def tmdb_show_next(show_id):
+    """Vrátí info o další epizodě {'season','episode','air_date'} nebo None (cache 24h)"""
+    entry = _TMDB_SHOWS_CACHE.get(show_id)
+    if not entry or time.time() - entry.get('ts', 0) > TMDB_SHOWS_TTL:
+        nxt = None
+        try:
+            data = tmdb_get(f'/3/tv/{show_id}')
+            ne = data.get('next_episode_to_air')
+            if ne:
+                nxt = {
+                    'season': ne.get('season_number'),
+                    'episode': ne.get('episode_number'),
+                    'air_date': ne.get('air_date') or ''
+                }
+        except Exception as e:
+            log(f"TMDB show detail error ({show_id}): {str(e)}", xbmc.LOGERROR)
+        entry = {'ts': time.time(), 'next': nxt}
+        _TMDB_SHOWS_CACHE[show_id] = entry
+    return entry.get('next')
+
+def tmdb_prefetch_shows(show_ids):
+    """Paralelně načte detaily seriálů (další díl) bez platné cache"""
+    tmdb_load_shows()
+    now = time.time()
+    missing = [sid for sid in show_ids
+               if sid not in _TMDB_SHOWS_CACHE or now - _TMDB_SHOWS_CACHE[sid].get('ts', 0) > TMDB_SHOWS_TTL]
+    if not missing:
+        return
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(tmdb_show_next, missing))
+    tmdb_save_shows()
+
+def tmdb_get_write_token():
+    token = _addon.getSetting('tmdb_access_token').strip()
+    if not token and tmdb_authenticate():
+        token = _addon.getSetting('tmdb_access_token').strip()
+    return token or None
+
+@handle_errors
+def tmdb_authenticate():
+    """Handle TMDB user authentication (v3 session flow)"""
+    api_key = tmdb_get_api_key()
+    if not api_key:
+        popinfo("Neplatný Read Access Token v nastavení.", icon=xbmcgui.NOTIFICATION_ERROR)
+        return False
+
+    response = _session.get(f'{TMDB_API_URL}/3/authentication/token/new', params={'api_key': api_key}, timeout=15)
+    response.raise_for_status()
+    request_token = response.json()['request_token']
+
+    url = f'{TMDB_AUTH_URL}{request_token}'
+    dialog = xbmcgui.Dialog()
+    approved = dialog.yesno(
+        'TMDB ověření',
+        f"1. Otevřete v prohlížeči: [B]{url}[/B]\n"
+        "2. Přihlaste se a klikněte Approve.\n\n"
+        "Po schválení zvolte OK."
+    )
+    if not approved:
+        return False
+
+    response = _session.post(
+        f'{TMDB_API_URL}/3/authentication/session/new',
+        params={'api_key': api_key},
+        json={'request_token': request_token},
+        timeout=15
+    )
+
+    if response.status_code == 200 and response.json().get('session_id'):
+        _addon.setSetting('tmdb_access_token', response.json()['session_id'])
+        popinfo("Úspěšně připojeno k TMDB!")
+        return True
+
+    log(f"TMDB auth error: {response.status_code} {response.text}", xbmc.LOGERROR)
+    popinfo("Připojení k TMDB se nezdařilo", icon=xbmcgui.NOTIFICATION_ERROR)
+    return False
+
+@handle_errors
+def tmdb_watchlist(params):
+    xbmcplugin.setPluginCategory(_handle, "TMDB Watchlist")
+
+    if not tmdb_get_read_token():
+        popinfo("Pro připojení k TMDB je třeba vyplnit Read Access Token v nastavení.", sound=True)
         _addon.openSettings()
         xbmcplugin.endOfDirectory(_handle)
         return
-    
-    try:
-        if 'category' not in params:
-            # Movies folder
-            listitem = xbmcgui.ListItem(label="Filmy")
-            listitem.setArt({'icon': 'DefaultMovies.png'})
-            xbmcplugin.addDirectoryItem(
-                _handle,
-                get_url(action='trakt_watchlist', category='movies'),
-                listitem,
-                True
-            )
-            
-            # TV Shows folder
-            listitem = xbmcgui.ListItem(label="Seriály")
-            listitem.setArt({'icon': 'DefaultTVShows.png'})
-            xbmcplugin.addDirectoryItem(
-                _handle,
-                get_url(action='trakt_watchlist', category='shows'),
-                listitem,
-                True
-            )
-            
-            # Authentication item
-            if not _addon.getSetting('trakt_access_token'):
-                listitem = xbmcgui.ListItem(label="Připojit k Traktu...")
-                listitem.setArt({'icon': 'DefaultAddonService.png'})
-                xbmcplugin.addDirectoryItem(
-                    _handle,
-                    get_url(action='trakt_watchlist', reauth=1),
-                    listitem,
-                    False
-                )
-            
-            xbmcplugin.endOfDirectory(_handle)
-            return
-        
-        # Check if we're removing an item - musí být PRVNÍ před načtením seznamu
-        if 'remove' in params:
-            access_token = _addon.getSetting('trakt_access_token').strip()
-            if not access_token:
-                popinfo("Pro tuto akci je třeba se nejprve připojit k Traktu.", icon=xbmcgui.NOTIFICATION_ERROR)
-                xbmc.executebuiltin('Container.Refresh()')
-                return
-                
-            media_type = 'movie' if params['category'] == 'movies' else 'show'
-            remove_url = f'https://api.trakt.tv/sync/watchlist/remove'
-            remove_data = {
-                media_type + 's': [{'ids': {'trakt': int(params['remove'])}}]
-            }
-            
-            response = _session.post(remove_url, headers=trakt_get_headers(write=True), json=remove_data, timeout=10)
-            
-            if response.status_code == 401:
-                # Token might be expired - try to refresh
-                if trakt_refresh_token():
-                    response = _session.post(remove_url, headers=trakt_get_headers(write=True), json=remove_data, timeout=10)
-            
-            if response.status_code == 200:
-                popinfo("Položka odstraněna z watchlistu", icon=xbmcgui.NOTIFICATION_INFO)
-                # Force refresh instead of update
-                xbmc.executebuiltin('Container.Refresh()')
-                return
-            elif response.status_code == 401:
-                popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
-            else:
-                popinfo(f"Chyba při odstraňování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-            
+
+    # Připojení k TMDB (zápisový token)
+    if 'reauth' in params:
+        if tmdb_authenticate():
             xbmc.executebuiltin('Container.Refresh()')
-            return
-        
-        # Check if we're marking as watched/unwatched - musí být PŘED načtením seznamu
-        if 'watched' in params or 'unwatched' in params:
-            access_token = _addon.getSetting('trakt_access_token').strip()
-            if not access_token:
-                popinfo("Pro tuto akci je třeba se nejprve připojit k Traktu.", icon=xbmcgui.NOTIFICATION_ERROR)
-                xbmc.executebuiltin('Container.Refresh()')
-                return
-                
-            if 'watched' in params:
-                # Mark as watched
-                if params['category'] == 'movies':
-                    # For movies - simple case
-                    watched_url = f'https://api.trakt.tv/sync/history'
-                    watched_data = {
-                        'movies': [{'ids': {'trakt': int(params['watched'])}}]
-                    }
-                    
-                    response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=10)
-                    
-                    if response.status_code == 401:
-                        if trakt_refresh_token():
-                            response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=10)
-                    
-                    if response.status_code == 201:
-                        popinfo("Film označen jako zhlédnutý", icon=xbmcgui.NOTIFICATION_INFO)
-                    elif response.status_code == 401:
-                        popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
-                    else:
-                        popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-                        
-                elif params['category'] == 'shows':
-                    # For shows - we need to mark all episodes as watched
-                    show_id = params['watched']
-                    
-                    # First, get all seasons and episodes for this show
-                    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
-                    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
-                    
-                    if seasons_response.status_code != 200:
-                        popinfo("Chyba při načítání sezón seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
-                        xbmc.executebuiltin('Container.Refresh()')
-                        return
-                    
-                    seasons = seasons_response.json()
-                    episodes_data = []
-                    
-                    # Collect all episodes
-                    for season in seasons:
-                        season_num = season['number']
-                        for episode in season.get('episodes', []):
-                            episodes_data.append({
-                                'ids': episode['ids']
-                            })
-                    
-                    if episodes_data:
-                        # Mark all episodes as watched
-                        watched_url = f'https://api.trakt.tv/sync/history'
-                        watched_data = {
-                            'episodes': episodes_data
-                        }
-                        
-                        response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=30)
-                        
-                        if response.status_code == 401:
-                            if trakt_refresh_token():
-                                response = _session.post(watched_url, headers=trakt_get_headers(write=True), json=watched_data, timeout=30)
-                        
-                        if response.status_code == 201:
-                            popinfo(f"Seriál označen jako zhlédnutý ({len(episodes_data)} epizod)", icon=xbmcgui.NOTIFICATION_INFO)
-                        elif response.status_code == 401:
-                            popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
-                        else:
-                            popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-                    else:
-                        popinfo("Seriál nemá žádné epizody", icon=xbmcgui.NOTIFICATION_WARNING)
-            
-            elif 'unwatched' in params:
-                # Mark as unwatched
-                if params['category'] == 'movies':
-                    # For movies - simple case
-                    unwatched_url = f'https://api.trakt.tv/sync/history/remove'
-                    unwatched_data = {
-                        'movies': [{'ids': {'trakt': int(params['unwatched'])}}]
-                    }
-                    
-                    response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=10)
-                    
-                    if response.status_code == 401:
-                        if trakt_refresh_token():
-                            response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=10)
-                    
-                    if response.status_code == 200:
-                        popinfo("Film označen jako nezhlednutý", icon=xbmcgui.NOTIFICATION_INFO)
-                    elif response.status_code == 401:
-                        popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
-                    else:
-                        popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-                        
-                elif params['category'] == 'shows':
-                    # For shows - we need to mark all episodes as unwatched
-                    show_id = params['unwatched']
-                    
-                    # First, get all seasons and episodes for this show
-                    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
-                    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
-                    
-                    if seasons_response.status_code != 200:
-                        popinfo("Chyba při načítání sezón seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
-                        xbmc.executebuiltin('Container.Refresh()')
-                        return
-                    
-                    seasons = seasons_response.json()
-                    episodes_data = []
-                    
-                    # Collect all episodes
-                    for season in seasons:
-                        season_num = season['number']
-                        for episode in season.get('episodes', []):
-                            episodes_data.append({
-                                'ids': episode['ids']
-                            })
-                    
-                    if episodes_data:
-                        # Mark all episodes as unwatched
-                        unwatched_url = f'https://api.trakt.tv/sync/history/remove'
-                        unwatched_data = {
-                            'episodes': episodes_data
-                        }
-                        
-                        response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=30)
-                        
-                        if response.status_code == 401:
-                            if trakt_refresh_token():
-                                response = _session.post(unwatched_url, headers=trakt_get_headers(write=True), json=unwatched_data, timeout=30)
-                        
-                        if response.status_code == 200:
-                            popinfo(f"Seriál označen jako nezhlednutý ({len(episodes_data)} epizod)", icon=xbmcgui.NOTIFICATION_INFO)
-                        elif response.status_code == 401:
-                            popinfo("Připojení k Traktu vypršelo", icon=xbmcgui.NOTIFICATION_ERROR)
-                        else:
-                            popinfo(f"Chyba při označování: {response.status_code}", icon=xbmcgui.NOTIFICATION_ERROR)
-                    else:
-                        popinfo("Seriál nemá žádné epizody", icon=xbmcgui.NOTIFICATION_WARNING)
-            
-            # Force refresh instead of update
-            xbmc.executebuiltin('Container.Refresh()')
-            return
-        
-        # Handle seasons listing for a show
-        if 'show_id' in params and 'season' not in params:
-            return list_seasons(params)
-        
-        # Handle episodes listing for a season
-        if 'show_id' in params and 'season' in params:
-            return list_episodes(params)
-        
-        # Fetch watchlist with images - added limit to show more than 10 items
-        url = f'https://api.trakt.tv/users/me/watchlist/{params["category"]}?extended=full,images&limit=1000'
-        response = _session.get(url, headers=trakt_get_headers(), timeout=10)
-        
-        response = handle_trakt_401(url)
-        if not response or response.status_code != 200:
-            return
-        
-        items = response.json()
-        items = sorted(items, key=lambda x: x['movie']['title'] if 'movie' in x else x['show']['title'])
-        
-        # Fetch watched items to check status - OPRAVENÉ
-        watched_url = f'https://api.trakt.tv/sync/watched/{params["category"]}'
-        watched_response = _session.get(watched_url, headers=trakt_get_headers(), timeout=10)
-        
-        watched_ids = set()
-        if watched_response.status_code == 200:
-            watched_items = watched_response.json()
-            if params['category'] == 'movies':
-                # Pro filmy - sbíráme ID zhlédnutých filmů
-                for item in watched_items:
-                    if 'movie' in item and 'ids' in item['movie']:
-                        watched_ids.add(item['movie']['ids']['trakt'])
-            elif params['category'] == 'shows':
-                # Pro seriály - sbíráme ID zhlédnutých seriálů
-                for item in watched_items:
-                    if 'show' in item and 'ids' in item['show']:
-                        watched_ids.add(item['show']['ids']['trakt'])
+        return
 
-        # Přidejte tento řádek po načtení watched_ids
-        log(f"Zhlédnuté ID: {watched_ids}", xbmc.LOGDEBUG)
-        
-        for item in items:
-            if params['category'] == 'movies' and 'movie' in item:
-                media = item['movie']
-                media_type = 'movie'
-                media_id = media['ids']['trakt']
-                
-                # Check if movie is watched - OPRAVENÉ
-                is_watched = media_id in watched_ids
-                
-                # Try to get Czech translation
-                try:
-                    translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
-                    translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
-                    if translation_response.status_code == 200:
-                        translation = translation_response.json()
-                        if translation and isinstance(translation, list):
-                            title = translation[0].get('title', media.get('title', 'Neznámý název'))
-                            plot = translation[0].get('overview', media.get('overview', ''))
-                        else:
-                            title = media.get('title', 'Neznámý název')
-                            plot = media.get('overview', '')
-                    else:
-                        title = media.get('title', 'Neznámý název')
-                        plot = media.get('overview', '')
-                except Exception as e:
-                    log(f"Chyba při načítání překladu: {str(e)}", xbmc.LOGERROR)
-                    title = media.get('title', 'Neznámý název')
-                    plot = media.get('overview', '')
+    if 'category' not in params:
+        # Movies folder
+        listitem = xbmcgui.ListItem(label="Filmy")
+        listitem.setArt({'icon': 'DefaultMovies.png'})
+        xbmcplugin.addDirectoryItem(
+            _handle,
+            get_url(action='tmdb_watchlist', category='movies'),
+            listitem,
+            True
+        )
 
-                # Fallback to original title if translation fails
-                if not title:
-                    title = media.get('title', 'Neznámý název')
-                
-                # Add year if available
-                year = media.get('year', '')
-                if year:
-                    title = f"{title} ({year})"
-                
-                artwork = {}
-                if isinstance(media.get('images'), dict):
-                    images = media['images']
-                    if isinstance(images.get('poster'), list) and len(images['poster']) > 0:
-                        poster_url = images['poster'][0]
-                        artwork['poster'] = f"https://{poster_url}" if not poster_url.startswith('http') else poster_url
-                    if isinstance(images.get('fanart'), list) and len(images['fanart']) > 0:
-                        fanart_url = images['fanart'][0]
-                        artwork['fanart'] = f"https://{fanart_url}" if not fanart_url.startswith('http') else fanart_url
-                    artwork['thumb'] = artwork.get('poster', '')
-                          
-                # Create list item
-                listitem = xbmcgui.ListItem(label=title)
-                if artwork:
-                    listitem.setArt(artwork)
+        # TV Shows folder
+        listitem = xbmcgui.ListItem(label="Seriály")
+        listitem.setArt({'icon': 'DefaultTVShows.png'})
+        xbmcplugin.addDirectoryItem(
+            _handle,
+            get_url(action='tmdb_watchlist', category='shows'),
+            listitem,
+            True
+        )
 
-                # Create context menu items
-                context_menu_items = []
-                
-                if media.get('trailer'):
-                    trailer_url = media['trailer']
-                    if 'youtube.com' in trailer_url or 'youtu.be' in trailer_url:
-                        video_id = trailer_url.split('v=')[-1].split('&')[0]
-                        youtube_plugin_url = f'plugin://plugin.video.youtube/play/?video_id={video_id}'
-                        context_menu_items.append((
-                            "Přehrát trailer",
-                            f'PlayMedia({youtube_plugin_url})'
-                        ))    
-
-                context_menu_items.append((
-                    'Vyhledat původní název', 
-                    f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
-                ))
-                
-                # Add "Mark as watched/unwatched" option based on current status
-                if is_watched:
-                    context_menu_items.append((
-                        'Označit jako nezhlednuté',
-                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], unwatched=media_id)})'
-                    ))
-                else:
-                    context_menu_items.append((
-                        'Označit jako zhlédnuté',
-                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], watched=media_id)})'
-                    ))
-                
-                context_menu_items.append((
-                    'Odstranit z watchlistu',
-                    f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], remove=media_id)})'
-                ))
-                
-                listitem.addContextMenuItems(context_menu_items)
-
-                info = {
-                    'title': title,
-                    'mediatype': media_type,
-                    'plot': plot,
-                    'year': int(year) if year else 0,
-                    'genre': " / ".join(media.get('genres', [])),
-                    'duration': (media.get('runtime') or 0) * 60,
-                    'trailer': media.get('trailer'),
-                    'rating': float(media.get('rating') or 0),
-                }
-                listitem.setInfo('video', info)
-                
-                xbmcplugin.addDirectoryItem(
-                    _handle,
-                    get_url(action='search', what=title),
-                    listitem,
-                    True
-                )
-                
-            elif params['category'] == 'shows' and 'show' in item:
-                media = item['show']
-                media_type = 'show'
-                media_id = media['ids']['trakt']
-                
-                # Check if show is fully watched - OPRAVENÉ
-                is_watched = media_id in watched_ids
-                
-                # Try to get Czech translation
-                try:
-                    translation_url = f'https://api.trakt.tv/{media_type}s/{media_id}/translations/cs'
-                    translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
-                    if translation_response.status_code == 200:
-                        translation = translation_response.json()
-                        if translation and isinstance(translation, list):
-                            title = translation[0].get('title', media.get('title', 'Neznámý název'))
-                            plot = translation[0].get('overview', media.get('overview', ''))
-                        else:
-                            title = media.get('title', 'Neznámý název')
-                            plot = media.get('overview', '')
-                    else:
-                        title = media.get('title', 'Neznámý název')
-                        plot = media.get('overview', '')
-                except Exception as e:
-                    log(f"Chyba při načítání překladu: {str(e)}", xbmc.LOGERROR)
-                    title = media.get('title', 'Neznámý název')
-                    plot = media.get('overview', '')
-
-                # Fallback to original title if translation fails
-                if not title:
-                    title = media.get('title', 'Neznámý název')
-                
-                # Add year if available
-                year = media.get('year', '')
-                if year:
-                    title = f"{title} ({year})"
-                
-                artwork = {}
-                if isinstance(media.get('images'), dict):
-                    images = media['images']
-                    if isinstance(images.get('poster'), list) and len(images['poster']) > 0:
-                        poster_url = images['poster'][0]
-                        artwork['poster'] = f"https://{poster_url}" if not poster_url.startswith('http') else poster_url
-                    if isinstance(images.get('fanart'), list) and len(images['fanart']) > 0:
-                        fanart_url = images['fanart'][0]
-                        artwork['fanart'] = f"https://{fanart_url}" if not fanart_url.startswith('http') else fanart_url
-                    artwork['thumb'] = artwork.get('poster', '')
-                          
-                # Create list item
-                listitem = xbmcgui.ListItem(label=title)
-                if artwork:
-                    listitem.setArt(artwork)
-
-                # Create context menu items
-                context_menu_items = []
-                
-                if media.get('trailer'):
-                    trailer_url = media['trailer']
-                    if 'youtube.com' in trailer_url or 'youtu.be' in trailer_url:
-                        video_id = trailer_url.split('v=')[-1].split('&')[0]
-                        youtube_plugin_url = f'plugin://plugin.video.youtube/play/?video_id={video_id}'
-                        context_menu_items.append((
-                            "Přehrát trailer",
-                            f'PlayMedia({youtube_plugin_url})'
-                        ))    
-
-                context_menu_items.append((
-                    'Vyhledat původní název', 
-                    f'Container.Update({get_url(action="search", what=media.get("title", ""))})'
-                ))
-                
-                # Add "Mark as watched/unwatched" option for shows based on current status
-                if is_watched:
-                    context_menu_items.append((
-                        'Označit jako nezhlednuté',
-                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], unwatched=media_id)})'
-                    ))
-                else:
-                    context_menu_items.append((
-                        'Označit jako zhlédnuté',
-                        f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], watched=media_id)})'
-                    ))
-                
-                context_menu_items.append((
-                    'Odstranit z watchlistu',
-                    f'RunPlugin({get_url(action="trakt_watchlist", category=params["category"], remove=media_id)})'
-                ))
-                
-                listitem.addContextMenuItems(context_menu_items)
-
-                info = {
-                    'title': title,
-                    'mediatype': media_type,
-                    'plot': plot,
-                    'year': int(year) if year else 0,
-                    'genre': " / ".join(media.get('genres', [])),
-                    'status': media.get('status', ''),
-                    'rating': float(media.get('rating') or 0),
-                }
-                listitem.setInfo('video', info)
-                
-                # For shows, link to seasons listing
-                xbmcplugin.addDirectoryItem(
-                    _handle,
-                    get_url(action='trakt_watchlist', show_id=media_id, category='shows'),
-                    listitem,
-                    True
-                )
-                
-        # Add authentication item if not authenticated
-        if not _addon.getSetting('trakt_access_token'):
-            listitem = xbmcgui.ListItem(label="Připojit k Traktu...")
+        # Authentication item
+        if not _addon.getSetting('tmdb_access_token'):
+            listitem = xbmcgui.ListItem(label="Připojit k TMDB (zápis do watchlistu)...")
             listitem.setArt({'icon': 'DefaultAddonService.png'})
             xbmcplugin.addDirectoryItem(
                 _handle,
-                get_url(action='trakt_watchlist', reauth=1),
+                get_url(action='tmdb_watchlist', reauth=1),
                 listitem,
                 False
             )
-        
+
+        xbmcplugin.endOfDirectory(_handle)
+        return
+
+    try:
+        # Označení jako zhlédnuté = zároveň odstranění z watchlistu (musí být PRVNÍ před načtením seznamu)
+        if 'watched' in params:
+            session_id = tmdb_get_write_token()
+            if not session_id:
+                popinfo("Pro tuto akci je třeba se nejprve připojit k TMDB.", icon=xbmcgui.NOTIFICATION_ERROR)
+                xbmc.executebuiltin('Container.Refresh()')
+                return
+
+            media_type = 'movie' if params['category'] == 'movies' else 'tv'
+            if tmdb_set_watchlist(media_type, int(params['watched']), False, session_id):
+                popinfo("Zhlédnuto a odstraněno z watchlistu")
+            else:
+                popinfo("Chyba při odstraňování z watchlistu", icon=xbmcgui.NOTIFICATION_ERROR)
+
+            xbmc.executebuiltin('Container.Refresh()')
+            return
+
+        # Handle seasons listing for a show
+        if 'show_id' in params and 'season' not in params:
+            return list_seasons(params)
+
+        # Handle episodes listing for a season
+        if 'show_id' in params and 'season' in params:
+            return list_episodes(params)
+
+        # Načtení watchlistu (všechny stránky, česky)
+        media = 'movie' if params['category'] == 'movies' else 'tv'
+        watchlist_media = 'movies' if params['category'] == 'movies' else 'tv'
+        is_movie = params['category'] == 'movies'
+        sort_mode = int(_addon.getSetting('tmdb_sort') or 0)
+
+        page_params = {'sort_by': 'created_at.desc'} if sort_mode == 1 else {}
+        results = []
+        page = 1
+        while True:
+            data = tmdb_get(f'/3/account/{tmdb_get_account_id()}/watchlist/{watchlist_media}', dict(page_params, page=page))
+            results.extend(data.get('results', []))
+            if page >= data.get('total_pages', 1):
+                break
+            page += 1
+
+        # Filtr zatím nevydaných filmů
+        if is_movie and _addon.getSetting('tmdb_hide_unreleased') == 'true':
+            today_str = str(datetime.now().date())
+            results = [it for it in results if not it.get('release_date') or it['release_date'] <= today_str]
+
+        # Řazení (0 = abecedně, 1 = pořadí z API = naposledy přidané)
+        if sort_mode == 0:
+            results = sorted(results, key=lambda x: (x.get('title') or x.get('name') or '').lower())
+        elif sort_mode == 2:
+            results = sorted(results, key=lambda x: float(x.get('vote_average') or 0), reverse=True)
+        elif sort_mode == 3:
+            results = sorted(results, key=lambda x: x.get('release_date') or x.get('first_air_date') or '', reverse=True)
+
+        genres = tmdb_genres(media)
+        tmdb_prefetch_trailers(media, [item['id'] for item in results])
+        if not is_movie:
+            tmdb_prefetch_shows([item['id'] for item in results])
+
+        for item in results:
+            media_id = item['id']
+            title = item.get('title') if is_movie else item.get('name')
+            original_title = item.get('original_title') if is_movie else item.get('original_name')
+            title = title or original_title or 'Neznámý název'
+            plot = item.get('overview', '')
+            year = (item.get('release_date') or item.get('first_air_date') or '')[:4]
+            label = f"{title} ({year})" if year else title
+
+            # Info o další epizodě u seriálů
+            if not is_movie:
+                nxt = tmdb_show_next(media_id)
+                if nxt:
+                    next_str = f"S{int(nxt.get('season') or 0):02d}E{int(nxt.get('episode') or 0):02d}"
+                    if nxt.get('air_date'):
+                        try:
+                            ny, nm, nd = map(int, nxt['air_date'].split('-'))
+                            next_str += f" ({nd}. {nm}. {ny})"
+                        except Exception:
+                            pass
+                    label += f" [COLOR gray]→ {next_str}[/COLOR]"
+
+            artwork = {}
+            if item.get('poster_path'):
+                artwork['poster'] = f"{TMDB_IMAGE_URL}w500{item['poster_path']}"
+                artwork['thumb'] = artwork['poster']
+            if item.get('backdrop_path'):
+                artwork['fanart'] = f"{TMDB_IMAGE_URL}w780{item['backdrop_path']}"
+
+            listitem = xbmcgui.ListItem(label=label)
+            if artwork:
+                listitem.setArt(artwork)
+
+            context_menu_items = [(
+                'Vyhledat původní název',
+                f'Container.Update({get_url(action="search", what=original_title or title)})'
+            )]
+
+            youtube_id = tmdb_trailer(media, media_id)
+            if youtube_id:
+                context_menu_items.append((
+                    "Přehrát trailer",
+                    f'PlayMedia(plugin://plugin.video.youtube/play/?video_id={youtube_id})'
+                ))
+
+            if _addon.getSetting('tmdb_access_token').strip():
+                context_menu_items.append((
+                    'Označit jako zhlédnuté',
+                    f'RunPlugin({get_url(action="tmdb_watchlist", category=params["category"], watched=media_id)})'
+                ))
+
+            listitem.addContextMenuItems(context_menu_items)
+
+            info = {
+                'title': label,
+                'mediatype': 'movie' if is_movie else 'tvshow',
+                'plot': plot,
+                'year': int(year) if year else 0,
+                'genre': ' / '.join(genres[g] for g in item.get('genre_ids', []) if g in genres),
+                'rating': float(item.get('vote_average') or 0),
+            }
+            listitem.setInfo('video', info)
+
+            if is_movie:
+                url = get_url(action='search', what=title)
+            else:
+                url = get_url(action='tmdb_watchlist', show_id=media_id, category='shows')
+
+            xbmcplugin.addDirectoryItem(_handle, url, listitem, True)
+
+        if not results:
+            listitem = xbmcgui.ListItem(label="Watchlist je prázdný")
+            listitem.setArt({'icon': 'DefaultVideoPlaylists.png'})
+            xbmcplugin.addDirectoryItem(
+                _handle,
+                get_url(action='tmdb_watchlist', category=params['category']),
+                listitem,
+                False
+            )
+
     except Exception as e:
-        log(f"Trakt chyba: {str(e)}", xbmc.LOGERROR)
+        log(f"TMDB chyba: {str(e)}", xbmc.LOGERROR)
         popinfo("Chyba při načítání", icon=xbmcgui.NOTIFICATION_ERROR)
         traceback.print_exc()
-        
+
     xbmcplugin.setContent(_handle, 'movies' if params.get('category') == 'movies' else 'tvshows')
     xbmcplugin.endOfDirectory(_handle)
 
@@ -1402,69 +1320,38 @@ def trakt_watchlist(params):
 def list_seasons(params):
     """List all seasons for a show"""
     show_id = params['show_id']
-    
-    # Get show details
-    show_url = f'https://api.trakt.tv/shows/{show_id}?extended=full,images'
-    show_response = _session.get(show_url, headers=trakt_get_headers(), timeout=10)
-    
-    if show_response.status_code != 200:
-        popinfo("Chyba při načítání detailu seriálu", icon=xbmcgui.NOTIFICATION_ERROR)
-        return
-    
-    show = show_response.json()
-    
-    # Get Czech title if available
-    try:
-        translation_url = f'https://api.trakt.tv/shows/{show_id}/translations/cs'
-        translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
-        if translation_response.status_code == 200:
-            translation = translation_response.json()
-            if translation and isinstance(translation, list):
-                title = translation[0].get('title', show.get('title', 'Neznámý název'))
-            else:
-                title = show.get('title', 'Neznámý název')
-        else:
-            title = show.get('title', 'Neznámý název')
-    except Exception:
-        title = show.get('title', 'Neznámý název')
-    
-    # Get all seasons
-    seasons_url = f'https://api.trakt.tv/shows/{show_id}/seasons?extended=episodes'
-    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
-    
-    if seasons_response.status_code != 200:
-        popinfo("Chyba při načítání sezón", icon=xbmcgui.NOTIFICATION_ERROR)
-        return
-    
-    seasons = seasons_response.json()
-    
-    # Set plugin category to show title
-    xbmcplugin.setPluginCategory(_handle, f"{title}")
-        
+
+    show = tmdb_get(f'/3/tv/{show_id}')
+    title = show.get('name') or show.get('original_name') or 'Neznámý název'
+    original_title = show.get('original_name') or title
+
+    xbmcplugin.setPluginCategory(_handle, title)
+
     # Add each season
-    for season in sorted(seasons, key=lambda x: x['number']):
-        season_num = season['number']
-        episode_count = len(season.get('episodes', []))
-        
+    for season in sorted(show.get('seasons', []), key=lambda x: x.get('season_number', 0)):
+        season_num = season.get('season_number', 0)
+        episode_count = season.get('episode_count', 0)
+
         listitem = xbmcgui.ListItem(label=f"Sezóna {season_num} ({episode_count} epizod)")
-        listitem.setArt({'icon': 'DefaultSeason.png'})
-        
-        # Add season info
-        info = {
+        if season.get('poster_path'):
+            listitem.setArt({'poster': f"{TMDB_IMAGE_URL}w500{season['poster_path']}", 'icon': 'DefaultSeason.png'})
+        else:
+            listitem.setArt({'icon': 'DefaultSeason.png'})
+
+        listitem.setInfo('video', {
             'title': f"Sezóna {season_num}",
             'mediatype': 'season',
             'season': season_num,
             'episode': episode_count,
-        }
-        listitem.setInfo('video', info)
-        
+        })
+
         xbmcplugin.addDirectoryItem(
             _handle,
-            get_url(action='trakt_watchlist', show_id=show_id, season=season_num, series_title=show.get('title'),category='shows'),
+            get_url(action='tmdb_watchlist', show_id=show_id, season=season_num, series_title=original_title, category='shows'),
             listitem,
             True
         )
-    
+
     xbmcplugin.setContent(_handle, 'seasons')
     xbmcplugin.endOfDirectory(_handle)
 
@@ -1477,73 +1364,31 @@ def list_episodes(params):
 
     xbmcplugin.setPluginCategory(_handle, f"{_addon.getAddonInfo('name')} / Sezóna {season_num}")
 
-    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
-    if not trakt_client_id:
-        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID v nastavení.", sound=True)
-        _addon.openSettings()
-        xbmcplugin.endOfDirectory(_handle)
-        return
-
-    token = revalidate()
-
-    # 1. Načtení základního seznamu epizod (pro čísla)
-    seasons_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}?extended=episodes"
-    seasons_response = _session.get(seasons_url, headers=trakt_get_headers(), timeout=10)
-    
-    seasons_response = handle_trakt_401(seasons_url)
-    if not seasons_response or seasons_response.status_code != 200:
-        return
-
-    episodes = seasons_response.json()
+    data = tmdb_get(f'/3/tv/{show_id}/season/{season_num}')
+    episodes = data.get('episodes', [])
     today = datetime.now().date()
 
     for episode in episodes:
-        ep_num = episode.get('number')
-        
-        # 2. Detailní informace o epizodě (zvlášť, kvůli extended=full)
-        episode_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}?extended=full"
-        episode_response = _session.get(episode_url, headers=trakt_get_headers(), timeout=10)
-        
-        if episode_response.status_code != 200:
-            log(f"Chyba při načítání epizody S{season_num}E{ep_num}: {episode_response.status_code}", xbmc.LOGERROR)
-            continue
-
-        ep_data = episode_response.json()
-        ep_title = ep_data.get('title', 'Neznámý název')
-        ep_air_date = ep_data.get('first_aired')
-        ep_plot = ep_data.get('overview', '')
-        ep_rating = ep_data.get('rating') or 0
-        ep_runtime = ep_data.get('runtime') or 0
-
-        # Načtení českého překladu (pokud existuje)
-        try:
-            translation_url = f"https://api.trakt.tv/shows/{show_id}/seasons/{season_num}/episodes/{ep_num}/translations/cs"
-            translation_response = _session.get(translation_url, headers=trakt_get_headers(), timeout=10)
-            if translation_response.status_code == 200:
-                translations = translation_response.json()
-                if translations and isinstance(translations, list):
-                    ep_title = translations[0].get('title', ep_title)
-                    ep_plot = translations[0].get('overview', ep_plot)
-        except Exception as e:
-            log(f"Chyba při načítání překladu epizody: {str(e)}", xbmc.LOGERROR)
+        ep_num = episode.get('episode_number')
+        ep_title = episode.get('name', 'Neznámý název')
+        ep_air_date = episode.get('air_date')
+        ep_plot = episode.get('overview', '')
+        ep_rating = episode.get('vote_average') or 0
+        ep_runtime = episode.get('runtime') or 0
 
         # Formátování data (pokud epizoda ještě nebyla vysílána)
         air_date_str = ""
         is_future = False
         if ep_air_date:
             try:
-                # Nejprve odstraníme časovou část
-                date_part = ep_air_date.split('T')[0]
-                # Rozdělení na komponenty data
-                year, month, day = map(int, date_part.split('-'))
+                year, month, day = map(int, ep_air_date.split('-'))
                 air_date_obj = date(year, month, day)
-                
+
                 if air_date_obj > today:
                     is_future = True
-                    air_date_str = f" ({day:02d}.{month:02d}.{year})"
+                air_date_str = f" ({day:02d}.{month:02d}.{year})"
             except Exception as e:
                 log(f"Chyba při zpracování data {ep_air_date}: {str(e)}", xbmc.LOGERROR)
-                air_date_str = " [Datum neznámé]"
 
         # Vytvoření popisku
         label = f"{ep_title}"
@@ -1553,19 +1398,24 @@ def list_episodes(params):
             label += f" [COLOR gray]{air_date_str}[/COLOR]"
 
         # Vytvoření položky v seznamu
-        listitem = xbmcgui.ListItem(label="label")
+        listitem = xbmcgui.ListItem(label=label)
+
+        if episode.get('still_path'):
+            listitem.setArt({'thumb': f"{TMDB_IMAGE_URL}w300{episode['still_path']}"})
+
         info = {
             'title': label,
+            'mediatype': 'episode',
             'plot': ep_plot,
             'season': int(season_num),
             'episode': int(ep_num),
-            'duration': ep_runtime * 60,  # převod minut na sekundy (pro Kodi)
+            'duration': ep_runtime * 60,
             'rating': float(ep_rating),
         }
-        
+
         if ep_air_date:
-            info['aired'] = ep_air_date[:10]
-            
+            info['aired'] = ep_air_date
+
         listitem.setInfo('video', info)
 
         # Přidání do seznamu
@@ -1578,179 +1428,6 @@ def list_episodes(params):
 
     xbmcplugin.addSortMethod(_handle, xbmcplugin.SORT_METHOD_EPISODE)
     xbmcplugin.endOfDirectory(_handle)
-
-
-@handle_errors
-def trakt_authenticate():
-    """Handle Trakt OAuth authentication using device flow"""
-    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
-    trakt_client_secret = _addon.getSetting('trakt_client_secret').strip()
-    
-    if not trakt_client_id or not trakt_client_secret:
-        popinfo("Pro připojení k Traktu je třeba vyplnit Client ID a Client Secret v nastavení.", sound=True)
-        _addon.openSettings()
-        return False
-    
-    # Step 1: Get device code
-    data = {
-        'client_id': trakt_client_id
-    }
-    
-    try:
-        response = _session.post(TRAKT_DEVICE_CODE_URL, data=data, timeout=30)
-        response.raise_for_status()
-        device_data = response.json()
-        
-        # Show user the verification info
-        dialog = xbmcgui.Dialog()
-        dialog.textviewer(
-            'Trakt ověření',
-            f"1. Otevřete v prohlížeči: [B]{device_data['verification_url']}[/B]\n"
-            f"2. Zadejte tento kód: [B]{device_data['user_code']}[/B]\n\n"
-            f"Kód platí {device_data['expires_in']//60} minut.\n"
-            "Po ověření zmáčkněte ESC/zpět."
-        )
-        
-        # Step 2: Poll for token
-        data = {
-            'client_id': trakt_client_id,
-            'client_secret': trakt_client_secret,
-            'code': device_data['device_code']
-        }
-        
-        interval = device_data['interval']
-        expires_in = device_data['expires_in']
-        start_time = time.time()
-        
-        progress = xbmcgui.DialogProgress()
-        progress.create('Trakt ověření', 'Čekání na uživatelské ověření...')
-        
-        while (time.time() - start_time) < expires_in:
-            if progress.iscanceled():
-                break
-                
-            progress.update(int(((time.time() - start_time) / expires_in) * 100))
-            
-            try:
-                response = _session.post(TRAKT_DEVICE_TOKEN_URL, data=data, timeout=30)
-                
-                if response.status_code == 200:
-                    token_data = response.json()
-                    _addon.setSetting('trakt_access_token', token_data['access_token'])
-                    _addon.setSetting('trakt_refresh_token', token_data['refresh_token'])
-                    progress.close()
-                    popinfo("Úspěšně připojeno k Traktu!")
-                    return True
-                
-                elif response.status_code == 400:
-                    # Still pending - wait and try again
-                    time.sleep(interval)
-                
-                else:
-                    response.raise_for_status()
-                    
-            except Exception as e:
-                log(f"Trakt authentication error: {str(e)}", xbmc.LOGERROR)
-                break
-        
-        progress.close()
-        popinfo("Čas na ověření vypršel nebo došlo k chybě.", icon=xbmcgui.NOTIFICATION_ERROR)
-        
-    except Exception as e:
-        log(f"Trakt authentication failed: {str(e)}", xbmc.LOGERROR)
-        popinfo("Chyba při připojování k Traktu", icon=xbmcgui.NOTIFICATION_ERROR)
-    
-    return False
-
-@handle_errors
-def trakt_refresh_token():
-    trakt_client_id = _addon.getSetting('trakt_client_id').strip()
-    trakt_client_secret = _addon.getSetting('trakt_client_secret').strip()
-    trakt_refresh_token = _addon.getSetting('trakt_refresh_token').strip()
-
-    if not all([trakt_client_id, trakt_client_secret, trakt_refresh_token]):
-        log("Chybí údaje pro refresh tokenu", xbmc.LOGERROR)
-        return False
-
-    data = {
-        'client_id': trakt_client_id,
-        'client_secret': trakt_client_secret,
-        'refresh_token': trakt_refresh_token,
-        'grant_type': 'refresh_token',
-        'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob'
-    }
-
-    try:
-        response = _session.post(TRAKT_TOKEN_URL, data=data, timeout=30)
-        log(f"Refresh token response: {response.status_code} - {response.text}", xbmc.LOGDEBUG)
-
-        if response.status_code == 401:
-            # Kompletně neplatné údaje - nutná nová autentizace
-            _addon.setSetting('trakt_access_token', '')
-            _addon.setSetting('trakt_refresh_token', '')
-            popinfo("Přihlášení vypršelo, proveďte novou autentizaci", icon=xbmcgui.NOTIFICATION_WARNING)
-            return False
-
-        response.raise_for_status()
-        token_data = response.json()
-
-        _addon.setSetting('trakt_access_token', token_data['access_token'])
-        _addon.setSetting('trakt_refresh_token', token_data['refresh_token'])
-        log("Token úspěšně obnoven", xbmc.LOGINFO)
-        return True
-
-    except Exception as e:
-        log(f"CHYBA při refreshi tokenu: {str(e)}", xbmc.LOGERROR)
-        return False
-
-def trakt_get_headers(write=False):
-    headers = {
-        'Content-Type': 'application/json',
-        'trakt-api-version': '2',
-        'trakt-api-key': _addon.getSetting('trakt_client_id').strip(),
-        'Accept-Language': 'cs'
-    }
-
-    log(f"Trakt headers: {_addon.getSetting('trakt_access_token')}", xbmc.LOGDEBUG)
-    
-    if write:
-        access_token = _addon.getSetting('trakt_access_token').strip()
-        if not access_token:
-            # Pokus o obnovení tokenu, pokud chybí
-            trakt_refresh_token()
-            access_token = _addon.getSetting('trakt_access_token').strip()
-        
-        if access_token:
-            headers['Authorization'] = f'Bearer {access_token}'
-        else:
-            log("Chybí Trakt access token!", xbmc.LOGERROR)
-    
-    return headers
-
-def handle_trakt_401(url, method='GET', data=None):
-    """Specializovaný handler pro 401 chyby"""
-    for attempt in range(2):  # 2 pokusy (1x refresh + 1x nový pokus)
-        headers = trakt_get_headers(write=True)
-        response = _session.request(
-            method,
-            url,
-            headers=headers,
-            json=data,
-            timeout=15
-        )
-        
-        log(f"Trakt API attempt {attempt}: {response.status_code}", xbmc.LOGDEBUG)
-        
-        if response.status_code != 401:
-            return response
-            
-        if not trakt_refresh_token():
-            break  # Refresh se nepovedl
-    
-    # Pokud jsme se sem dostali, selhalo vše
-    popinfo("Vyžaduje nové přihlášení k Traktu", icon=xbmcgui.NOTIFICATION_WARNING)
-    trakt_authenticate()
-    return None
 
 
 if __name__ == '__main__':
