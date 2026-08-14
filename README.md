@@ -1,6 +1,6 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.3.3-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-1.3.4-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
@@ -37,43 +37,7 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 
 ## 📝 Changelog
 
-### 1.3.3
-- Kosmetika v nastavení TMDB (čištění popisků).
-
-### 1.3.2
-- Oprava závislosti `script.module.unidecode` (požadavek 1.4.0 nebyl v repozitáři Kodi dostupný).
-
-### 1.3.1
-- Zjednodušené nastavení TMDB: stačí krátký **API Key** místo dlouhého tokenu.
-- Připojení k TMDB přímo v nastavení doplňku, včetně **QR kódu** pro schválení telefonem.
-- Srozumitelná hláška při neplatném TMDB klíči (401) místo obecné chyby.
-- Oprava varování "AddonVersion is not a valid version".
-
-### 1.3.0
-- Trakt.tv nahrazen TMDB (Trakt API je nově zpoplatněné).
-- Watchlist filmů a seriálů z TMDB v češtině včetně sezón a epizod.
-- Označení jako zhlédnuté zároveň odebere položku z TMDB watchlistu.
-- Trailery se načítají z TMDB (YouTube), cachují se pro rychlé načítání.
-- U seriálů se zobrazuje číslo a datum další epizody.
-- Řazení watchlistu v nastavení + filtr zatím nevydaných filmů.
-- Vyhledávání z watchlistu hledá název bez roku (lepší výsledky).
-- API klíče přesunuty z kódu do nastavení doplňku.
-
-### 1.2.5
-- Oprava pádu Trakt watchlistu (TypeError: NoneType).
-- Navýšen limit položek ve watchlistu na 1000.
-
-### 1.2.4
-- Opravy chyb v rozhraní.
-- Implementace funkce trailerů.
-
-### 1.1
-- Přidáno vyhledávání v DB.
-
-### 1.0
-- Základní verze "Reloaded".
-- Integrace Trakt.tv.
-- Různá vylepšení stability.
+Historie změn je v [GitHub releasesech](https://github.com/Hammanek/plugin.video.yawspreloaded/releases).
 
 ## 💬 Kontakt a podpora
 

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window>
+    <defaultcontrol always="true">102</defaultcontrol>
+    <coordinates>
+        <system>1</system>
+        <posx>190</posx>
+        <posy>40</posy>
+    </coordinates>
+    <controls>
+        <control type="image">
+            <description>pozadi</description>
+            <posx>0</posx>
+            <posy>0</posy>
+            <width>900</width>
+            <height>640</height>
+            <texture border="20">special://home/addons/plugin.video.yawspreloaded/resources/skins/Default/media/white.png</texture>
+        </control>
+        <control type="image" id="100">
+            <description>QR kod</description>
+            <posx>50</posx>
+            <posy>50</posy>
+            <width>540</width>
+            <height>540</height>
+            <aspectratio>keep</aspectratio>
+            <texture></texture>
+        </control>
+        <control type="label" id="101">
+            <description>info</description>
+            <posx>630</posx>
+            <posy>100</posy>
+            <width>230</width>
+            <height>400</height>
+            <align>left</align>
+            <aligny>top</aligny>
+            <font>font13</font>
+            <textcolor>FF1A1A1A</textcolor>
+            <wrapmultiline>true</wrapmultiline>
+        </control>
+        <control type="button" id="102">
+            <description>Zavrit</description>
+            <posx>350</posx>
+            <posy>560</posy>
+            <width>200</width>
+            <height>44</height>
+            <font>font13</font>
+            <textcolor>FF1A1A1A</textcolor>
+            <focusedcolor>FF1A1A1A</focusedcolor>
+            <texturefocus border="12">special://home/addons/plugin.video.yawspreloaded/resources/skins/Default/media/focus.png</texturefocus>
+            <texturenofocus border="12">special://home/addons/plugin.video.yawspreloaded/resources/skins/Default/media/grey.png</texturenofocus>
+            <label>Zavřít</label>
+        </control>
+    </controls>
+</window>

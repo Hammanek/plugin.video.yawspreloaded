@@ -1080,29 +1080,25 @@ def tmdb_ensure_session():
     return bool(tmdb_authenticate() and tmdb_get_session())
 
 def tmdb_qr_png(url):
-    """Vytvoří PNG s QR kódem odkazu (vlevo na plátně, dialog ho nezakryje). Vrátí cestu nebo None."""
+    """Vytvoří čtvercové PNG s QR kódem odkazu. Vrátí cestu nebo None."""
     try:
         import qrcodegen
         qr = qrcodegen.QrCode.encode_text(url, qrcodegen.QrCode.Ecc.MEDIUM)
 
-        scale = 10
-        n = qr.get_size()
-        qr_px = n * scale
-        canvas_w, canvas_h = 1280, 720
-        offx = max(20, (canvas_w // 2 - qr_px) // 2)
-        offy = (canvas_h - qr_px) // 2
-        if offy < 0:
-            scale = max(1, (canvas_h - 40) // n)
-            qr_px = n * scale
-            offy = 20
+        scale = 8
+        border = 4
+        size = qr.get_size() + 2 * border
+        px = size * scale
 
-        rows = [bytearray(b'\xff' * canvas_w * 3) for _ in range(canvas_h)]
-        for my in range(n):
-            for mx in range(n):
+        rows = [bytearray(b'\xff' * px * 3) for _ in range(px)]
+        for my in range(qr.get_size()):
+            for mx in range(qr.get_size()):
                 if qr.get_module(mx, my):
+                    my0 = (my + border) * scale
+                    mx0 = (mx + border) * scale
                     for dy in range(scale):
-                        row = rows[offy + my * scale + dy]
-                        base = (offx + mx * scale) * 3
+                        row = rows[my0 + dy]
+                        base = mx0 * 3
                         for dx in range(scale):
                             row[base + dx * 3:base + dx * 3 + 3] = b'\x00\x00\x00'
 
@@ -1112,7 +1108,7 @@ def tmdb_qr_png(url):
 
         raw = b''.join(b'\x00' + bytes(r) for r in rows)
         png = (b'\x89PNG\r\n\x1a\n'
-               + chunk(b'IHDR', struct.pack('>IIBBBBB', canvas_w, canvas_h, 8, 2, 0, 0, 0))
+               + chunk(b'IHDR', struct.pack('>IIBBBBB', px, px, 8, 2, 0, 0, 0))
                + chunk(b'IDAT', zlib.compress(raw, 6))
                + chunk(b'IEND', b''))
 
@@ -1124,6 +1120,34 @@ def tmdb_qr_png(url):
     except Exception as e:
         log(f"QR generation failed: {str(e)}", xbmc.LOGERROR)
         return None
+
+class TmdbQRDialog(xbmcgui.WindowXMLDialog):
+    """Vlastní okno s QR kódem pro TMDB ověření"""
+    CONTROL_IMAGE = 100
+    CONTROL_LABEL = 101
+    CONTROL_CLOSE = 102
+
+    def __init__(self, image_path, url):
+        super().__init__('tmdb-qr.xml', _addon.getAddonInfo('path'), 'Default', '720p')
+        self.image_path = image_path
+        self.url = url
+
+    def onInit(self):
+        self.getControl(self.CONTROL_IMAGE).setImage(self.image_path)
+        self.getControl(self.CONTROL_LABEL).setLabel(
+            "Naskenujte QR kód telefonem, přihlaste se k TMDB a klikněte Approve.\n\n"
+            f"[B]Nebo ručně zadejte odkaz:[/B]\n{self.url}\n\n"
+            "(odkaz najdete také v kodi.log)"
+        )
+        self.setFocusId(self.CONTROL_CLOSE)
+
+    def onClick(self, controlId):
+        if controlId == self.CONTROL_CLOSE:
+            self.close()
+
+    def onAction(self, action):
+        if action.getId() in (9, 10, 92):  # previous menu / nav back / backspace
+            self.close()
 
 @handle_errors
 def tmdb_authenticate():
@@ -1144,12 +1168,7 @@ def tmdb_authenticate():
 
     qr_path = tmdb_qr_png(url)
     if qr_path:
-        dialog.ok(
-            'TMDB ověření',
-            "Nyní se zobrazí QR kód. Naskenujte ho telefonem, přihlaste se\n"
-            "k TMDB a klikněte Approve. Potom se vraťte zpět a pokračujte."
-        )
-        xbmc.executebuiltin(f'ShowPicture({qr_path})')
+        TmdbQRDialog(qr_path, url).doModal()
 
     approved = dialog.yesno(
         'TMDB ověření',
