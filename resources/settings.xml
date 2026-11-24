@@ -5,6 +5,7 @@
         <setting label="30031" id="wsuser" type="text" default="" />
         <setting label="30032" id="wspass" type="text" default="" option="hidden" />
         <setting id="token" type="text" visible="false" />
+        <setting id="duuid" type="text" visible="false" default="" />
         <setting type="lsep" label="30010" />
         <setting label="30011" id="scategory" type="select" lvalues="30012|30013|30014|30015|30016|30017|30018" default="1"/>
         <setting label="30020" id="ssort" type="select" lvalues="30021|30022|30023|30024|30025" default="0"/>
