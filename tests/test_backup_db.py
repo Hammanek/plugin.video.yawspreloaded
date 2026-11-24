@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 from requests import HTTPError
@@ -161,6 +162,50 @@ class BackupDBTests(unittest.TestCase):
 
         self.assertTrue(self.store.ensure_installed(lambda: next(archives)))
         self.assertEqual(self.store.load("A.txt")[0]["title"], "Film")
+
+    def test_double_replacement_failure_preserves_and_recovers_previous_database(self):
+        os.mkdir(self.dbdir)
+        original = b'{"data": ['
+        original_path = os.path.join(self.dbdir, "A.txt")
+        with open(original_path, "wb") as legacy:
+            legacy.write(original)
+        real_replace = os.replace
+
+        def fail_promotion_and_rollback(source, destination):
+            if destination == self.dbdir and source.endswith("staged-db"):
+                raise OSError("forced promotion failure")
+            if destination == self.dbdir and source.endswith("previous-db"):
+                raise OSError("forced rollback failure")
+            return real_replace(source, destination)
+
+        with mock.patch(
+            "yawsp_app.backup_db.os.replace", side_effect=fail_promotion_and_rollback
+        ):
+            with self.assertRaises(BackupDBError) as raised:
+                self.store.ensure_installed(lambda: archive_bytes())
+
+        message = str(raised.exception)
+        self.assertIn("promotion failed", message)
+        self.assertIn("rollback failed", message)
+        recovery_path = os.path.join(
+            self.profile, ".backup-db-recovery", "previous-db", "A.txt"
+        )
+        with open(recovery_path, "rb") as recovered:
+            self.assertEqual(recovered.read(), original)
+        self.assertFalse(os.path.exists(self.dbdir))
+
+        bytes_seen_by_retry = []
+
+        def recover_then_load_archive():
+            with open(original_path, "rb") as recovered:
+                bytes_seen_by_retry.append(recovered.read())
+            return archive_bytes()
+
+        recovered_store = BackupDBStore(self.profile)
+        self.assertTrue(recovered_store.ensure_installed(recover_then_load_archive))
+        self.assertEqual(bytes_seen_by_retry, [original])
+        self.assertEqual(recovered_store.load("A.txt"), [{"id": 1, "title": "Film"}])
+        self.assertEqual(os.listdir(self.profile), ["db"])
 
     def test_new_manifest_detects_a_missing_data_file(self):
         self.store.ensure_installed(

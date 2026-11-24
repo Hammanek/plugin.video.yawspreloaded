@@ -11,6 +11,8 @@ import zipfile
 
 
 _DATABASE_DIRECTORY = "db"
+_RECOVERY_DIRECTORY = ".backup-db-recovery"
+_PREVIOUS_DATABASE = "previous-db"
 _MANIFEST_FILENAME = ".manifest.json"
 _MANIFEST_VERSION = 1
 
@@ -171,6 +173,49 @@ class BackupDBStore:
     def __init__(self, profile):
         self.profile = os.path.abspath(os.fspath(profile))
         self.dbdir = os.path.join(self.profile, _DATABASE_DIRECTORY)
+        self.recovery_dir = os.path.join(self.profile, _RECOVERY_DIRECTORY)
+        self.previous_database = os.path.join(
+            self.recovery_dir, _PREVIOUS_DATABASE
+        )
+
+    def _remove_empty_recovery_directory(self):
+        try:
+            os.rmdir(self.recovery_dir)
+        except OSError:
+            pass
+
+    def _discard_previous_database(self):
+        if os.path.isdir(self.previous_database) and not os.path.islink(
+            self.previous_database
+        ):
+            shutil.rmtree(self.previous_database)
+        else:
+            os.remove(self.previous_database)
+        self._remove_empty_recovery_directory()
+
+    def _recover_previous_database(self):
+        if not os.path.lexists(self.previous_database):
+            return
+        if os.path.lexists(self.dbdir):
+            if not self.is_valid():
+                raise BackupDBError(
+                    "Backup DB recovery and an invalid current installation both exist; "
+                    "neither was removed"
+                )
+            try:
+                self._discard_previous_database()
+            except OSError as error:
+                raise BackupDBError("Cannot discard recovered Backup DB state") from error
+            return
+        try:
+            os.replace(self.previous_database, self.dbdir)
+        except OSError as error:
+            raise BackupDBError(
+                "Cannot restore Backup DB from {0}: {1}".format(
+                    self.previous_database, error
+                )
+            ) from error
+        self._remove_empty_recovery_directory()
 
     def is_valid(self):
         try:
@@ -181,6 +226,7 @@ class BackupDBStore:
 
     def ensure_installed(self, archive_loader):
         """Install one fully validated archive, leaving old state intact on failure."""
+        self._recover_previous_database()
         if self.is_valid():
             return True
 
@@ -199,26 +245,35 @@ class BackupDBStore:
 
             staged_database = os.path.join(temporary_directory, "staged-db")
             os.replace(source_database, staged_database)
-            previous_database = os.path.join(temporary_directory, "previous-db")
             previous_moved = False
-            installed = False
             try:
                 if os.path.lexists(self.dbdir):
-                    os.replace(self.dbdir, previous_database)
+                    os.makedirs(self.recovery_dir, exist_ok=True)
+                    os.replace(self.dbdir, self.previous_database)
                     previous_moved = True
                 os.replace(staged_database, self.dbdir)
-                installed = True
-            finally:
+            except Exception as promotion_error:
                 if (
                     previous_moved
-                    and not installed
-                    and os.path.lexists(previous_database)
+                    and os.path.lexists(self.previous_database)
                     and not os.path.lexists(self.dbdir)
                 ):
                     try:
-                        os.replace(previous_database, self.dbdir)
-                    except OSError:
-                        pass
+                        os.replace(self.previous_database, self.dbdir)
+                    except OSError as rollback_error:
+                        raise BackupDBError(
+                            "Backup DB promotion failed ({0}); rollback failed ({1}). "
+                            "Original database remains at {2}".format(
+                                promotion_error,
+                                rollback_error,
+                                self.previous_database,
+                            )
+                        ) from rollback_error
+                    previous_moved = False
+                    self._remove_empty_recovery_directory()
+                raise
+            if previous_moved:
+                self._discard_previous_database()
             return True
         except BackupDBError:
             raise

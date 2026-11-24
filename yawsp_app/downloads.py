@@ -52,12 +52,33 @@ def _remove_partial(file_ops, partial_path):
         pass
 
 
+def _write_all(output, chunk, display_name):
+    offset = 0
+    while offset < len(chunk):
+        remaining = chunk[offset:]
+        written = output.write(remaining)
+        if (
+            isinstance(written, bool)
+            or not isinstance(written, int)
+            or written <= 0
+            or written > len(remaining)
+        ):
+            raise DownloadError(
+                "Invalid download write progress for {0}: {1!r}".format(
+                    display_name, written
+                )
+            )
+        offset += written
+    return offset
+
+
 def stream_download(response, destination, display_name, file_ops, progress=None):
     """Stream a valid response to a unique sibling file, then atomically promote it.
 
     ``progress`` is an optional callable receiving ``(percent, display_name)``.
     Its optional integer ``interval`` attribute controls percentage intervals and
-    is clamped to at least one. No completion notification is emitted here.
+    is clamped to at least one. A 100-percent update is emitted only after
+    successful validation and atomic replacement; no Kodi notification is sent.
     """
     partial_path = None
     try:
@@ -74,14 +95,13 @@ def stream_download(response, destination, display_name, file_ops, progress=None
             for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
                 if not chunk:
                     continue
-                output.write(chunk)
-                bytes_written += len(chunk)
+                bytes_written += _write_all(output, chunk, display_name)
                 if (
                     progress is not None
                     and declared_length is not None
                     and declared_length > 0
                 ):
-                    percent = (bytes_written * 100) // declared_length
+                    percent = min(99, (bytes_written * 100) // declared_length)
                     if percent % interval == 0 and percent != last_percent:
                         progress(percent, display_name)
                         last_percent = percent
@@ -97,6 +117,8 @@ def stream_download(response, destination, display_name, file_ops, progress=None
 
         file_ops.replace(partial_path, destination)
         partial_path = None
+        if progress is not None and declared_length:
+            progress(100, display_name)
         return DownloadReceipt(destination=destination, bytes_written=bytes_written)
     except Exception:
         _remove_partial(file_ops, partial_path)
