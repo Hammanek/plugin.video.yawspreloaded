@@ -18,19 +18,29 @@ class FakeResponse:
         chunks=None,
         json_data=_JSON_NOT_PROVIDED,
         url="https://example.invalid/",
+        stream_error=None,
+        forbid_content=False,
     ):
         if isinstance(content, str):
             content = content.encode("utf-8")
-        self.content = bytes(content)
+        self._content = bytes(content)
         self.status_code = status_code
         self.headers = dict(headers or {})
         self.url = url
         self.closed = False
         self.raise_for_status_calls = 0
         self._chunks = None if chunks is None else [bytes(chunk) for chunk in chunks]
-        if self._chunks is not None and not self.content:
-            self.content = b"".join(self._chunks)
+        if self._chunks is not None and not self._content:
+            self._content = b"".join(self._chunks)
         self._json_data = json_data
+        self._stream_error = stream_error
+        self._forbid_content = forbid_content
+
+    @property
+    def content(self):
+        if self._forbid_content:
+            raise AssertionError("response.content access is forbidden for streaming")
+        return self._content
 
     @property
     def text(self):
@@ -53,12 +63,14 @@ class FakeResponse:
             raise ValueError("chunk_size must be a positive integer")
         chunks = self._chunks
         if chunks is None:
-            chunks = [self.content] if self.content else []
+            chunks = [self._content] if self._content else []
         for chunk in chunks:
             if decode_unicode:
                 yield chunk.decode("utf-8", errors="replace")
             else:
                 yield chunk
+        if self._stream_error is not None:
+            raise self._stream_error
 
     def close(self):
         self.closed = True
