@@ -212,3 +212,19 @@ msgstr "Stahování dokončeno - "
 msgctxt "#30304"
 msgid "Unknown error - "
 msgstr "Neznámá chyba - "
+
+msgctxt "#30054"
+msgid "Alphabetical"
+msgstr "Abecedně"
+
+msgctxt "#30055"
+msgid "Recently added"
+msgstr "Naposledy přidané"
+
+msgctxt "#30056"
+msgid "By rating"
+msgstr "Podle hodnocení"
+
+msgctxt "#30057"
+msgid "By release year"
+msgstr "Podle roku premiéry"

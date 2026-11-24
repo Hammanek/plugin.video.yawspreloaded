@@ -103,7 +103,7 @@ msgstr ""
 
 msgctxt "#30043"
 msgid "Notify progress"
-msgstr "Oznamovaù priebeh"
+msgstr "OznamovaÔøΩ priebeh"
 
 msgctxt "#30044"
 msgid "Notify every"
@@ -211,5 +211,21 @@ msgstr ""
 
 msgctxt "#30304"
 msgid "Unknown error - "
+msgstr ""
+
+msgctxt "#30054"
+msgid "Alphabetical"
+msgstr ""
+
+msgctxt "#30055"
+msgid "Recently added"
+msgstr ""
+
+msgctxt "#30056"
+msgid "By rating"
+msgstr ""
+
+msgctxt "#30057"
+msgid "By release year"
 msgstr ""
 

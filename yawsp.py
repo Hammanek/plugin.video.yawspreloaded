@@ -990,8 +990,11 @@ def tmdb_load_trailers():
         if os.path.exists(path):
             with io.open(path, 'r', encoding='utf-8') as f:
                 for key, value in json.load(f).items():
-                    media, media_id = key.split(':', 1)
-                    _TMDB_TRAILERS_CACHE[(media, int(media_id))] = value or None
+                    try:
+                        media, media_id = key.split(':', 1)
+                        _TMDB_TRAILERS_CACHE[(media, int(media_id))] = value or None
+                    except (ValueError, TypeError):
+                        log(f"Skipping invalid trailer cache key: {key!r}", xbmc.LOGWARNING)
     except Exception as e:
         log(f"Error loading trailer cache: {str(e)}", xbmc.LOGERROR)
 
@@ -1041,7 +1044,11 @@ def tmdb_load_shows():
         path = os.path.join(_profile, TMDB_SHOWS_FILE)
         if os.path.exists(path):
             with io.open(path, 'r', encoding='utf-8') as f:
-                _TMDB_SHOWS_CACHE.update({int(k): v for k, v in json.load(f).items()})
+                for k, v in json.load(f).items():
+                    try:
+                        _TMDB_SHOWS_CACHE[int(k)] = v
+                    except (ValueError, TypeError):
+                        log(f"Skipping invalid shows cache key: {k!r}", xbmc.LOGWARNING)
     except Exception as e:
         log(f"Error loading shows cache: {str(e)}", xbmc.LOGERROR)
 
@@ -1281,7 +1288,10 @@ def tmdb_watchlist(params):
         media = 'movie' if params['category'] == 'movies' else 'tv'
         watchlist_media = 'movies' if params['category'] == 'movies' else 'tv'
         is_movie = params['category'] == 'movies'
-        sort_mode = int(_addon.getSetting('tmdb_sort') or 0)
+        try:
+            sort_mode = int(_addon.getSetting('tmdb_sort') or 0)
+        except ValueError:
+            sort_mode = 0
 
         page_params = {'sort_by': 'created_at.desc'} if sort_mode == 1 else {}
         results = []
@@ -1324,7 +1334,12 @@ def tmdb_watchlist(params):
             if not is_movie:
                 nxt = tmdb_show_next(media_id)
                 if nxt:
-                    next_str = f"S{int(nxt.get('season') or 0):02d}E{int(nxt.get('episode') or 0):02d}"
+                    try:
+                        next_season = int(nxt.get('season') or 0)
+                        next_episode = int(nxt.get('episode') or 0)
+                    except (ValueError, TypeError):
+                        next_season, next_episode = 0, 0
+                    next_str = f"S{next_season:02d}E{next_episode:02d}"
                     if nxt.get('air_date'):
                         try:
                             ny, nm, nd = map(int, nxt['air_date'].split('-'))
@@ -1368,7 +1383,7 @@ def tmdb_watchlist(params):
                 'title': label,
                 'mediatype': 'movie' if is_movie else 'tvshow',
                 'plot': plot,
-                'year': int(year) if year else 0,
+                'year': int(year) if year and str(year).isdigit() else 0,
                 'genre': ' / '.join(genres[g] for g in item.get('genre_ids', []) if g in genres),
                 'rating': float(item.get('vote_average') or 0),
             }

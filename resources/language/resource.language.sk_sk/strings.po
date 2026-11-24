@@ -213,3 +213,19 @@ msgctxt "#30304"
 msgid "Unknown error - "
 msgstr "Neznáma chyba - "
 
+msgctxt "#30054"
+msgid "Alphabetical"
+msgstr "Abecedne"
+
+msgctxt "#30055"
+msgid "Recently added"
+msgstr "Naposledy pridané"
+
+msgctxt "#30056"
+msgid "By rating"
+msgstr "Podľa hodnotenia"
+
+msgctxt "#30057"
+msgid "By release year"
+msgstr "Podľa roku premiéry"
+
