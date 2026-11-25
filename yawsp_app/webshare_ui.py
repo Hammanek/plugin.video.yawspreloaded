@@ -648,15 +648,22 @@ def build_webshare_handlers(
         runtime.set_category(
             "{0} / {1}".format(runtime.addon_info("name"), runtime.localized(30201))
         )
-        token = token_or_notify()
-        if not token:
-            return DirectoryResult(succeeded=False)
+        token = None
+
+        def lazy_token():
+            nonlocal token
+            if token is None:
+                token = token_or_notify()
+            return token
 
         update_listing = False
         if "remove" in params:
             remove_search(params["remove"])
             update_listing = True
         if "toqueue" in params:
+            token = lazy_token()
+            if not token:
+                return DirectoryResult(succeeded=False)
             to_queue(params["toqueue"], token)
             update_listing = True
 
@@ -680,6 +687,9 @@ def build_webshare_handlers(
             sort = params.get("sort", _SORTS[int(runtime.get_setting("ssort") or 0)])
             limit = int(params.get("limit", 500))
             offset = int(params.get("offset", 0))
+            token = lazy_token()
+            if not token:
+                return DirectoryResult(succeeded=False)
             present_search(params, token, what, category, sort, limit, offset)
         else:
             runtime.set_setting("slast", _BROWSING_SENTINEL)

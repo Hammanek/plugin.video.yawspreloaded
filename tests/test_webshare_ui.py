@@ -366,6 +366,30 @@ class WebshareUITests(unittest.TestCase):
 
         self.assertTrue(result.succeeded)
         self.assertEqual(self.plugin.items[0]["listitem"].getLabel(), "Movie.mkv (?)")
+        self.assertEqual(self.client.revalidate_calls, 1)
+        self.assertEqual(len(self.client.search_calls), 1)
+
+    def test_search_menu_without_query_skips_authentication_and_network(self):
+        with io.open(os.path.join(self.profile, "search_history"), "w", encoding="utf-8") as output:
+            json.dump(["Movie", "Old"], output)
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["search"]({"action": "search", "ask": 1})
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertFalse(result.update_listing)
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["New search", "Latest", "Largest", "Movie", "Old"],
+        )
+        self.assertEqual(self.addon.getSetting("slast"), "%#NONE#%")
+        self.assertEqual(self.client.revalidate_calls, 0)
+        self.assertEqual(self.client.search_calls, [])
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(self.events, ["end"])
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
 
     def test_cancelled_search_input_returns_through_directory_adapter_once(self):
         self.keyboard_values = [None]
@@ -376,7 +400,40 @@ class WebshareUITests(unittest.TestCase):
 
         self.assertTrue(result.succeeded)
         self.assertTrue(result.update_listing)
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["New search", "Latest", "Largest"],
+        )
+        self.assertEqual(self.client.revalidate_calls, 0)
         self.assertEqual(self.client.search_calls, [])
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(self.events, ["keyboard", "end"])
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+
+    def test_local_search_history_removal_skips_authentication_and_network(self):
+        history_path = os.path.join(self.profile, "search_history")
+        with io.open(history_path, "w", encoding="utf-8") as output:
+            json.dump(["Movie", "Old"], output)
+        self.keyboard_values = [None]
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["search"]({"action": "search", "remove": "Movie"})
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(result.update_listing)
+        with io.open(history_path, "r", encoding="utf-8") as source:
+            self.assertEqual(json.load(source), ["Old"])
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["New search", "Latest", "Largest", "Old"],
+        )
+        self.assertEqual(self.client.revalidate_calls, 0)
+        self.assertEqual(self.client.search_calls, [])
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(self.events, ["keyboard", "end"])
         self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
 
     def test_failed_token_stops_before_search_api_and_returns_directory_result(self):
@@ -386,6 +443,7 @@ class WebshareUITests(unittest.TestCase):
 
         self.assertIsInstance(result, DirectoryResult)
         self.assertFalse(result.succeeded)
+        self.assertEqual(self.client.revalidate_calls, 1)
         self.assertEqual(self.client.search_calls, [])
         self.assertEqual(self.client.api_calls, [])
 
@@ -453,8 +511,11 @@ class WebshareUITests(unittest.TestCase):
         result = self.handlers["search"](params)
 
         self.assertTrue(result.update_listing)
+        self.assertEqual(self.client.revalidate_calls, 1)
         self.assertEqual(self.client.api_calls[0][0], "queue_file")
         self.assertEqual(self.client.api_calls[0][1]["wst"], "token")
+        self.assertEqual(len(self.client.search_calls), 1)
+        self.assertEqual(self.client.search_calls[0][0], "token")
         self.assertEqual(self.client.search_calls[0][-2:], (2, 2))
         item = self.find_item("Show.S01E02.mkv (?)")
         queue_command = next(
