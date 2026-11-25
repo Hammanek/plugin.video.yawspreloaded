@@ -12,7 +12,7 @@ from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
-from tests.test_webshare_ui import FakeClient, archive_bytes, xml
+from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, archive_bytes, xml
 from yawsp_app import router as production_router
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
@@ -125,6 +125,7 @@ def install_kodi_stubs():
     xbmc.translatePath = lambda value: value
     xbmc.log = lambda *args: None
     xbmc.executebuiltin = recorder.executeBuiltin
+    xbmc.Keyboard = lambda default, heading: CompatibleKeyboard(default, recorder.calls)
     xbmc._language = "en"
     xbmc.getLanguage = lambda: xbmc._language
     xbmc.getCondVisibility = lambda condition: True
@@ -237,6 +238,43 @@ class EntrypointTests(unittest.TestCase):
 
         self.assertTrue(callable(yawsp.router))
         self.assertIs(yawsp.router, production_router.router)
+
+    def test_production_keyboard_factory_uses_xbmc_keyboard_compatible_api(self):
+        created = []
+
+        class RealKeyboard:
+            def __init__(self, default, heading):
+                self.default = default
+                self.heading = heading
+                self.modal = False
+                created.append(self)
+
+            def doModal(self):
+                self.modal = True
+
+            def isConfirmed(self):
+                return True
+
+            def getText(self):
+                return self.default
+
+        with install_kodi_stubs(), mock.patch.object(
+            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
+        ), tempfile.TemporaryDirectory() as profile:
+            sys.modules["xbmc"].Keyboard = RealKeyboard
+            del sys.modules["xbmcgui"].Keyboard
+            sys.modules["xbmc"].translatePath = lambda value: profile
+            sys.modules["xbmcvfs"].translatePath = lambda value: profile
+            production_router.close()
+            owner = production_router._ProductionOwner()
+            try:
+                answer = owner.runtime.ask("Movie", "Search")
+                self.assertEqual(answer, "Movie")
+                self.assertEqual(len(created), 1)
+                self.assertTrue(created[0].modal)
+                self.assertEqual(created[0].heading, "Search")
+            finally:
+                owner.close()
 
     def test_complete_legacy_action_matrix_completes_exactly_once(self):
         owner = Owner()

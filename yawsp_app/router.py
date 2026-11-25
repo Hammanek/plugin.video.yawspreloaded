@@ -150,7 +150,7 @@ class _ProductionOwner:
             "session": self.session,
             "profile": self.profile,
             "listitem_factory": xbmcgui.ListItem,
-            "keyboard_factory": xbmcgui.Keyboard,
+            "keyboard_factory": xbmc.Keyboard,
             "textviewer": xbmcgui.Dialog().textviewer,
             "logger": _LOGGER,
             "label_sort_method": xbmcplugin.SORT_METHOD_LABEL,
