@@ -9,6 +9,10 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: en\n"
 
+msgctxt "#30007"
+msgid "Search"
+msgstr ""
+
 msgctxt "#30010"
 msgid "Search"
 msgstr ""
@@ -103,7 +107,7 @@ msgstr ""
 
 msgctxt "#30043"
 msgid "Notify progress"
-msgstr "Oznamova� priebeh"
+msgstr ""
 
 msgctxt "#30044"
 msgid "Notify every"
@@ -197,6 +201,10 @@ msgctxt "#30215"
 msgid "Remove from Queue"
 msgstr ""
 
+msgctxt "#30216"
+msgid "Search in Backup DB"
+msgstr ""
+
 msgctxt "#30301"
 msgid "Downloading, but don't know file length, please wait - "
 msgstr ""
@@ -227,5 +235,137 @@ msgstr ""
 
 msgctxt "#30057"
 msgid "By release year"
+msgstr ""
+
+msgctxt "#30400"
+msgid "To connect to TMDB, enter an API key in the settings."
+msgstr ""
+
+msgctxt "#30401"
+msgid "Invalid TMDB API key or expired session; check the settings."
+msgstr ""
+
+msgctxt "#30402"
+msgid "Error loading"
+msgstr ""
+
+msgctxt "#30403"
+msgid "Scan the QR code with your phone and approve access"
+msgstr ""
+
+msgctxt "#30404"
+msgid "Approve access in your browser: {0}"
+msgstr ""
+
+msgctxt "#30405"
+msgid "Successfully connected to TMDB!"
+msgstr ""
+
+msgctxt "#30406"
+msgid "Authentication timed out."
+msgstr ""
+
+msgctxt "#30407"
+msgid "Could not connect to TMDB: {0}"
+msgstr ""
+
+msgctxt "#30408"
+msgid "Unknown title"
+msgstr ""
+
+msgctxt "#30409"
+msgid "Season {0} ({1} episodes)"
+msgstr ""
+
+msgctxt "#30410"
+msgid "Season {0}"
+msgstr ""
+
+msgctxt "#30411"
+msgid "Connect to TMDB before using this action."
+msgstr ""
+
+msgctxt "#30412"
+msgid "Error removing from watchlist"
+msgstr ""
+
+msgctxt "#30413"
+msgid "Watched and removed from watchlist"
+msgstr ""
+
+msgctxt "#30414"
+msgid "Search original title"
+msgstr ""
+
+msgctxt "#30415"
+msgid "Play trailer"
+msgstr ""
+
+msgctxt "#30416"
+msgid "Mark as watched"
+msgstr ""
+
+msgctxt "#30417"
+msgid "Watchlist is empty"
+msgstr ""
+
+msgctxt "#30418"
+msgid "TMDB Watchlist"
+msgstr ""
+
+msgctxt "#30419"
+msgid "Connect to TMDB in the add-on settings..."
+msgstr ""
+
+msgctxt "#30420"
+msgid "Connect to TMDB in the add-on settings to view your watchlist."
+msgstr ""
+
+msgctxt "#30421"
+msgid "Movies"
+msgstr ""
+
+msgctxt "#30422"
+msgid "TV shows"
+msgstr ""
+
+msgctxt "#30423"
+msgid "No trailer was found."
+msgstr ""
+
+msgctxt "#30424"
+msgid "The trailer could not be loaded."
+msgstr ""
+
+msgctxt "#30425"
+msgid "Install the YouTube add-on to play trailers."
+msgstr ""
+
+msgctxt "#30426"
+msgid "TMDB"
+msgstr ""
+
+msgctxt "#30427"
+msgid "TMDB API Key"
+msgstr ""
+
+msgctxt "#30428"
+msgid "Connect to TMDB..."
+msgstr ""
+
+msgctxt "#30429"
+msgid "Watchlist sort order"
+msgstr ""
+
+msgctxt "#30430"
+msgid "Hide unreleased movies"
+msgstr ""
+
+msgctxt "#30431"
+msgid "TMDB Access Token"
+msgstr ""
+
+msgctxt "#30432"
+msgid "TMDB Account ID"
 msgstr ""
 

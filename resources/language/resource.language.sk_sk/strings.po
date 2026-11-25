@@ -9,6 +9,10 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: sk\n"
 
+msgctxt "#30007"
+msgid "Search"
+msgstr "Vyhľadávanie"
+
 msgctxt "#30010"
 msgid "Search"
 msgstr "Vyhľadávanie"
@@ -197,6 +201,10 @@ msgctxt "#30215"
 msgid "Remove from Queue"
 msgstr "Zmazať z Chcem si stiahnuť"
 
+msgctxt "#30216"
+msgid "Search in Backup DB"
+msgstr "Hľadať v Backup DB"
+
 msgctxt "#30301"
 msgid "Downloading, but don't know file length, please wait - "
 msgstr "Sťahujem, ale neviem dĺžku súboru, čakajte - "
@@ -228,4 +236,136 @@ msgstr "Podľa hodnotenia"
 msgctxt "#30057"
 msgid "By release year"
 msgstr "Podľa roku premiéry"
+
+msgctxt "#30400"
+msgid "To connect to TMDB, enter an API key in the settings."
+msgstr "Na pripojenie k TMDB je potrebné vyplniť API Key v nastavení."
+
+msgctxt "#30401"
+msgid "Invalid TMDB API key or expired session; check the settings."
+msgstr "Neplatný TMDB API kľúč alebo vypršané prihlásenie – skontroluj nastavenie."
+
+msgctxt "#30402"
+msgid "Error loading"
+msgstr "Chyba pri načítavaní"
+
+msgctxt "#30403"
+msgid "Scan the QR code with your phone and approve access"
+msgstr "Naskenujte QR kód telefónom a schváľte prístup"
+
+msgctxt "#30404"
+msgid "Approve access in your browser: {0}"
+msgstr "Schváľte prístup v prehliadači: {0}"
+
+msgctxt "#30405"
+msgid "Successfully connected to TMDB!"
+msgstr "Úspešne pripojené k TMDB!"
+
+msgctxt "#30406"
+msgid "Authentication timed out."
+msgstr "Čas na overenie vypršal."
+
+msgctxt "#30407"
+msgid "Could not connect to TMDB: {0}"
+msgstr "Pripojenie k TMDB sa nepodarilo: {0}"
+
+msgctxt "#30408"
+msgid "Unknown title"
+msgstr "Neznámy názov"
+
+msgctxt "#30409"
+msgid "Season {0} ({1} episodes)"
+msgstr "Séria {0} ({1} epizód)"
+
+msgctxt "#30410"
+msgid "Season {0}"
+msgstr "Séria {0}"
+
+msgctxt "#30411"
+msgid "Connect to TMDB before using this action."
+msgstr "Pre túto akciu sa najprv pripojte k TMDB."
+
+msgctxt "#30412"
+msgid "Error removing from watchlist"
+msgstr "Chyba pri odstraňovaní z watchlistu"
+
+msgctxt "#30413"
+msgid "Watched and removed from watchlist"
+msgstr "Zhliadnuté a odstránené z watchlistu"
+
+msgctxt "#30414"
+msgid "Search original title"
+msgstr "Vyhľadať pôvodný názov"
+
+msgctxt "#30415"
+msgid "Play trailer"
+msgstr "Prehrať trailer"
+
+msgctxt "#30416"
+msgid "Mark as watched"
+msgstr "Označiť ako zhliadnuté"
+
+msgctxt "#30417"
+msgid "Watchlist is empty"
+msgstr "Watchlist je prázdny"
+
+msgctxt "#30418"
+msgid "TMDB Watchlist"
+msgstr "TMDB Watchlist"
+
+msgctxt "#30419"
+msgid "Connect to TMDB in the add-on settings..."
+msgstr "Pripojiť k TMDB v nastavení doplnku..."
+
+msgctxt "#30420"
+msgid "Connect to TMDB in the add-on settings to view your watchlist."
+msgstr "Pre zobrazenie watchlistu sa pripojte k TMDB v nastavení doplnku."
+
+msgctxt "#30421"
+msgid "Movies"
+msgstr "Filmy"
+
+msgctxt "#30422"
+msgid "TV shows"
+msgstr "Seriály"
+
+msgctxt "#30423"
+msgid "No trailer was found."
+msgstr "Trailer nebol nájdený."
+
+msgctxt "#30424"
+msgid "The trailer could not be loaded."
+msgstr "Trailer sa nepodarilo načítať."
+
+msgctxt "#30425"
+msgid "Install the YouTube add-on to play trailers."
+msgstr "Na prehratie traileru nainštalujte doplnok YouTube."
+
+msgctxt "#30426"
+msgid "TMDB"
+msgstr "TMDB"
+
+msgctxt "#30427"
+msgid "TMDB API Key"
+msgstr "TMDB API Key"
+
+msgctxt "#30428"
+msgid "Connect to TMDB..."
+msgstr "Pripojiť k TMDB..."
+
+msgctxt "#30429"
+msgid "Watchlist sort order"
+msgstr "Zoradenie watchlistu"
+
+msgctxt "#30430"
+msgid "Hide unreleased movies"
+msgstr "Skryť zatiaľ nevydané filmy"
+
+msgctxt "#30431"
+msgid "TMDB Access Token"
+msgstr "TMDB Access Token"
+
+msgctxt "#30432"
+msgid "TMDB Account ID"
+msgstr "TMDB Account ID"
 

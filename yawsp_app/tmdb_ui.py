@@ -207,7 +207,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def valid_configuration():
         if not runtime.get_setting("tmdb_api_key").strip():
-            runtime.notify("Pro připojení k TMDB je třeba vyplnit API Key v nastavení.")
+            runtime.notify(runtime.localized(30400))
             runtime.open_settings()
             return False
         return True
@@ -215,10 +215,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     def report_listing_error(error):
         runtime.logger.exception("TMDB listing failed: %s", error)
         if not runtime.get_setting("tmdb_access_token").strip():
-            runtime.notify("Neplatný TMDB API klíč nebo vypršené přihlášení – zkontroluj nastavení.")
+            runtime.notify(runtime.localized(30401))
             runtime.open_settings()
         else:
-            runtime.notify("Chyba při načítání")
+            runtime.notify(runtime.localized(30402))
 
     def set_default_view(params):
         if params.get("category") not in ("movies", "shows"):
@@ -248,9 +248,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             if qr_path:
                 viewer_active = True
                 runtime.execute_builtin("ShowPicture({0})".format(qr_path))
-                runtime.notify("Naskenujte QR kód telefonem a schvalte přístup")
+                runtime.notify(runtime.localized(30403))
             else:
-                runtime.notify("Schvalte přístup v prohlížeči: {0}".format(url))
+                runtime.notify(runtime.localized(30404).format(url))
 
             monitor = runtime.monitor_factory()
             deadline = runtime.clock() + _AUTH_TIMEOUT
@@ -269,16 +269,16 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     # the newly authorized account.
                     client.invalidate_identity()
                     runtime.set_setting("tmdb_access_token", session_id)
-                    runtime.notify("Úspěšně připojeno k TMDB!")
+                    runtime.notify(runtime.localized(30405))
                     return ActionResult(handled=True)
                 if monitor.waitForAbort(_AUTH_POLL_INTERVAL):
                     return ActionResult(handled=False)
 
-            runtime.notify("Čas na ověření vypršel.")
+            runtime.notify(runtime.localized(30406))
             return ActionResult(handled=False)
         except Exception as error:
             runtime.logger.exception("TMDB authentication failed")
-            runtime.notify("Připojení k TMDB se nezdařilo: {0}".format(error))
+            runtime.notify(runtime.localized(30407).format(error))
             return ActionResult(handled=False)
         finally:
             if viewer_active:
@@ -291,7 +291,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     def list_seasons(params):
         show_id = params["show_id"]
         show = client.get("/3/tv/{0}".format(show_id))
-        title = show.get("name") or show.get("original_name") or "Neznámý název"
+        title = show.get("name") or show.get("original_name") or runtime.localized(30408)
         original_title = show.get("original_name") or title
         runtime.set_category(title)
         for season in sorted(
@@ -300,7 +300,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             season_number = season.get("season_number", 0)
             episode_count = season.get("episode_count", 0)
             item = runtime.list_item(
-                label="Sezóna {0} ({1} epizod)".format(season_number, episode_count)
+                label=runtime.localized(30409).format(season_number, episode_count)
             )
             artwork = {"icon": "DefaultSeason.png"}
             if season.get("poster_path"):
@@ -309,7 +309,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             item.setInfo(
                 "video",
                 {
-                    "title": "Sezóna {0}".format(season_number),
+                    "title": runtime.localized(30410).format(season_number),
                     "mediatype": "season",
                     "season": season_number,
                     "episode": episode_count,
@@ -333,15 +333,17 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     def list_episodes(params):
         show_id = params["show_id"]
         season_number = int(params["season"])
-        series_title = params.get("series_title") or "Neznámý název"
+        series_title = params.get("series_title") or runtime.localized(30408)
         runtime.set_category(
-            "{0} / Sezóna {1}".format(runtime.addon_info("name"), season_number)
+            "{0} / {1}".format(
+                runtime.addon_info("name"), runtime.localized(30410).format(season_number)
+            )
         )
         data = client.get("/3/tv/{0}/season/{1}".format(show_id, season_number))
         today = runtime.today()
         for episode in data.get("episodes", []):
             episode_number = int(episode.get("episode_number"))
-            title = episode.get("name") or "Neznámý název"
+            title = episode.get("name") or runtime.localized(30408)
             air_date = episode.get("air_date")
             label = title
             if air_date:
@@ -385,19 +387,19 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def watched(params):
         if not runtime.get_setting("tmdb_access_token").strip():
-            runtime.notify("Pro tuto akci se nejprve připojte k TMDB.")
+            runtime.notify(runtime.localized(30411))
             runtime.open_settings()
             return ActionResult(handled=False)
         media = "movie" if params.get("category") == "movies" else "tv"
         try:
             if not _set_watchlist(client, media, params["watched"]):
-                runtime.notify("Chyba při odstraňování z watchlistu")
+                runtime.notify(runtime.localized(30412))
                 return ActionResult(handled=False)
-            runtime.notify("Zhlédnuto a odstraněno z watchlistu")
+            runtime.notify(runtime.localized(30413))
             return ActionResult(handled=True, refresh=True)
         except Exception:
             runtime.logger.exception("TMDB watched action failed")
-            runtime.notify("Chyba při odstraňování z watchlistu")
+            runtime.notify(runtime.localized(30412))
             return ActionResult(handled=False)
 
     def list_watchlist(params):
@@ -470,7 +472,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     if is_movie
                     else value.get("original_name")
                 )
-                title = title or original_title or "Neznámý název"
+                title = title or original_title or runtime.localized(30408)
                 year = (value.get("release_date") or value.get("first_air_date") or "")[:4]
                 label = "{0} ({1})".format(title, year) if year else title
                 if not is_movie:
@@ -488,7 +490,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
                 commands = [
                     (
-                        "Vyhledat původní název",
+                        runtime.localized(30414),
                         "Container.Update({0})".format(
                             _url(
                                 runtime,
@@ -513,10 +515,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                             id=media_id,
                         )
                     )
-                commands.append(("Přehrát trailer", trailer_command))
+                commands.append((runtime.localized(30415), trailer_command))
                 commands.append(
                     (
-                        "Označit jako zhlédnuté",
+                        runtime.localized(30416),
                         "RunPlugin({0})".format(
                             _url(
                                 runtime,
@@ -556,7 +558,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 runtime.add_item(url, item, True)
 
             if not results:
-                item = runtime.list_item(label="Watchlist je prázdný")
+                item = runtime.list_item(label=runtime.localized(30417))
                 item.setArt({"icon": "DefaultVideoPlaylists.png"})
                 runtime.add_item(
                     _url(runtime, action="tmdb_watchlist", category=category),
@@ -579,7 +581,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             return DirectoryResult(succeeded=False)
 
     def watchlist(params):
-        runtime.set_category("TMDB Watchlist")
+        runtime.set_category(runtime.localized(30418))
         watched_action = bool(params.get("watched"))
         if not valid_configuration():
             if watched_action:
@@ -589,18 +591,18 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             return watched(params)
         if not runtime.get_setting("tmdb_access_token").strip():
             if "category" not in params:
-                item = runtime.list_item(label="Připojit k TMDB v nastavení doplňku...")
+                item = runtime.list_item(label=runtime.localized(30419))
                 item.setArt({"icon": "DefaultAddonService.png"})
                 runtime.add_item(_url(runtime, action="settings"), item)
                 return DirectoryResult()
-            runtime.notify("Pro zobrazení watchlistu se připojte k TMDB v nastavení doplňku.")
+            runtime.notify(runtime.localized(30420))
             runtime.open_settings()
             return DirectoryResult(succeeded=False)
 
         if "category" not in params:
             for label, category, icon in (
-                ("Filmy", "movies", "DefaultMovies.png"),
-                ("Seriály", "shows", "DefaultTVShows.png"),
+                (runtime.localized(30421), "movies", "DefaultMovies.png"),
+                (runtime.localized(30422), "shows", "DefaultTVShows.png"),
             ):
                 item = runtime.list_item(label=label)
                 item.setArt({"icon": icon})
@@ -622,13 +624,13 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         lookup = trailer_repository.lookup(params["media"], params["id"])
         if lookup.status != "hit" or not lookup.youtube_id:
             runtime.notify(
-                "Trailer nebyl nalezen."
+                runtime.localized(30423)
                 if lookup.status == "missing"
-                else "Trailer se nepodařilo načíst."
+                else runtime.localized(30424)
             )
             return ActionResult(handled=False)
         if not runtime.addon_available("plugin.video.youtube"):
-            runtime.notify("Pro přehrání traileru nainstalujte doplněk YouTube.")
+            runtime.notify(runtime.localized(30425))
             return ActionResult(handled=False)
         return ActionResult(
             handled=True,
@@ -638,7 +640,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         )
 
     def menu(params):
-        item = runtime.list_item(label="TMDB Watchlist")
+        item = runtime.list_item(label=runtime.localized(30418))
         item.setArt({"icon": "DefaultVideoPlaylists.png"})
         runtime.add_item(_url(runtime, action="tmdb_watchlist"), item, True)
         return DirectoryResult()
