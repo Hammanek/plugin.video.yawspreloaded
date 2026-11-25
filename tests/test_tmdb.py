@@ -71,6 +71,15 @@ class ManualWorker:
             function(*args)
 
 
+class ShutdownWorker(ManualWorker):
+    def __init__(self):
+        super().__init__()
+        self.shutdown_calls = []
+
+    def shutdown(self, wait=True):
+        self.shutdown_calls.append(wait)
+
+
 def json_response(data, status_code=200, headers=None):
     return FakeResponse(json_data=data, status_code=status_code, headers=headers)
 
@@ -677,6 +686,32 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertEqual(created, [session])
         self.assertEqual(session.calls, [])
+        self.assertTrue(session.closed)
+
+    def test_close_shuts_down_shared_executor_once_and_rejects_later_submissions(self):
+        worker = ShutdownWorker()
+        background, _ = self.make_background([], worker)
+
+        background.close(wait=False)
+        background.close(wait=False)
+
+        self.assertEqual(worker.shutdown_calls, [False])
+        self.assertEqual(background.submit_shows([31]), 0)
+        self.assertEqual(worker.jobs, [])
+
+    def test_close_prevents_queued_http_work_while_owned_sessions_still_close(self):
+        session = FakeSession(
+            [json_response({"id": 30, "next_episode_to_air": None})]
+        )
+        worker = ShutdownWorker()
+        background, created = self.make_background([session], worker)
+        background.submit_shows([30])
+
+        background.close(wait=False)
+        worker.run_all()
+
+        self.assertEqual(session.calls, [])
+        self.assertEqual(created, [session])
         self.assertTrue(session.closed)
 
     def test_no_ui_refresh_is_performed_by_background_completion(self):

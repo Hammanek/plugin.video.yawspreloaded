@@ -120,6 +120,17 @@ class ActionRunnerTests(unittest.TestCase):
         )
         self.assertEqual(self.plugin.resolved_url_calls, [])
 
+    def test_directory_post_completion_hook_runs_after_the_only_end(self):
+        def handler():
+            self.events.append("handler")
+            return DirectoryResult(post_complete=lambda: self.events.append("after"))
+
+        result = self.runner.run_directory(handler)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.events, ["handler", "end", "after"])
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+
     def test_directory_failure_and_exception_both_end_unsuccessfully_once(self):
         results = (
             self.runner.run_directory(lambda: DirectoryResult(succeeded=False)),

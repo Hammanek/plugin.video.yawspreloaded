@@ -1,9 +1,11 @@
 """Injected Kodi presentation adapters and single-completion action runners."""
 
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 import logging
 import os
+import time
 from typing import Optional
 
 
@@ -21,6 +23,7 @@ class DirectoryResult:
     succeeded: bool = True
     update_listing: bool = False
     cache_to_disc: bool = True
+    post_complete: object = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,11 @@ class ActionRunner:
                 updateListing=completed.update_listing,
                 cacheToDisc=completed.cache_to_disc,
             )
+        if result.succeeded and result.post_complete is not None:
+            try:
+                result.post_complete()
+            except Exception as error:
+                self._report("directory post-completion", error)
         return result
 
     def run_play(self, handler):
@@ -168,6 +176,14 @@ class KodiRuntime:
         file_ops=None,
         logger=None,
         label_sort_method=1,
+        episode_sort_method=23,
+        today=None,
+        clock=time.time,
+        monitor_factory=None,
+        current_window_id=None,
+        addon_available=None,
+        skin_dir=None,
+        qr_generator=None,
     ):
         self.plugin = plugin
         self.addon = addon
@@ -181,6 +197,14 @@ class KodiRuntime:
         self.file_ops = file_ops or LocalFileOps()
         self.logger = logger or _LOGGER
         self.label_sort_method = label_sort_method
+        self.episode_sort_method = episode_sort_method
+        self.today = today or date.today
+        self.clock = clock
+        self.monitor_factory = monitor_factory
+        self.current_window_id = current_window_id or (lambda: None)
+        self.addon_available = addon_available or (lambda addon_id: False)
+        self.skin_dir = skin_dir or (lambda: "")
+        self.qr_generator = qr_generator
 
     def get_setting(self, key):
         return self.addon.getSetting(key)
@@ -216,6 +240,15 @@ class KodiRuntime:
 
     def sort_by_label(self):
         self.plugin.addSortMethod(self.handle, self.label_sort_method)
+
+    def sort_by_episode(self):
+        self.plugin.addSortMethod(self.handle, self.episode_sort_method)
+
+    def set_content(self, content):
+        self.plugin.setContent(self.handle, content)
+
+    def execute_builtin(self, command):
+        self.plugin.executeBuiltin(command)
 
     def open_settings(self):
         self.addon.openSettings()

@@ -433,6 +433,12 @@ class BackgroundPrefetch:
         self.logger = logger or _LOGGER
         self._pending = set()
         self._lock = threading.Lock()
+        self._closed = False
+
+    def _abort_requested(self):
+        with self._lock:
+            closed = self._closed
+        return closed or self.abort()
 
     def _client(self, session):
         return TMDBClient(
@@ -442,19 +448,31 @@ class BackgroundPrefetch:
             api_url=self.api_url,
             clock=self.clock,
             sleeper=self.sleeper,
-            abort=self.abort,
+            abort=self._abort_requested,
             logger=self.logger,
         )
 
     def _reserve(self, keys):
         accepted = []
         with self._lock:
+            if self._closed:
+                return []
             for key in keys:
                 if key in self._pending or len(self._pending) >= self.max_pending:
                     continue
                 self._pending.add(key)
                 accepted.append(key)
         return accepted
+
+    def close(self, wait=False):
+        """Stop accepting work and shut down this owner's executor exactly once."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        shutdown = getattr(self.worker, "shutdown", None)
+        if shutdown is not None:
+            shutdown(wait=wait)
 
     def _release(self, keys):
         with self._lock:
@@ -526,7 +544,7 @@ class BackgroundPrefetch:
                 self._client(session), self.trailer_cache, clock=self.clock, logger=self.logger
             )
             for _, cache_key, media, media_id in keys:
-                if self.abort():
+                if self._abort_requested():
                     break
                 repository.lookup(media, media_id)
         except Exception:
@@ -542,7 +560,7 @@ class BackgroundPrefetch:
                 self._client(session), self.show_cache, clock=self.clock, logger=self.logger
             )
             for _, cache_key, show_id in keys:
-                if self.abort():
+                if self._abort_requested():
                     break
                 repository.next_episode(show_id)
         except Exception:
