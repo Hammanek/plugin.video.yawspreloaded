@@ -3,6 +3,7 @@ import io
 import os
 from pathlib import Path
 import subprocess
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -259,6 +260,24 @@ class ReleaseVerificationTests(unittest.TestCase):
                 archive = self.write_archive(fixture.root, entries, name + ".zip")
                 with self.assertRaisesRegex(ReleaseVerificationError, message):
                     validate_archive(archive, fixture.root, ["addon.xml", "main.py"])
+
+    def test_archive_rejects_unix_symlink_members_even_with_expected_bytes(self):
+        fixture = self.make_fixture()
+        entries = [
+            (ADDON_ID + "/addon.xml", (fixture.root / "addon.xml").read_bytes()),
+            (ADDON_ID + "/main.py", (fixture.root / "main.py").read_bytes()),
+        ]
+        archive_path = fixture.root / "symlink.zip"
+        with zipfile.ZipFile(str(archive_path), "w") as archive:
+            for member, content in entries:
+                info = zipfile.ZipInfo(member)
+                info.create_system = 3
+                info.external_attr = (stat.S_IFLNK | 0o777) << 16
+                archive.writestr(info, content)
+        with self.assertRaisesRegex(ReleaseVerificationError, "symlink|regular file"):
+            validate_archive(
+                archive_path, fixture.root, ["addon.xml", "main.py"]
+            )
 
     def test_archive_altered_file_byte_differs_from_checked_out_head_source(self):
         fixture = self.make_fixture()

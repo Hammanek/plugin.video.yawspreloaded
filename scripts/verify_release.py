@@ -285,6 +285,17 @@ def validate_archive(archive_path, source_root, runtime_files, archive_root=ADDO
             infos = archive.infolist()
             actual = []
             for info in infos:
+                if info.create_system == 3:
+                    mode = info.external_attr >> 16
+                    file_type = stat.S_IFMT(mode)
+                    if file_type == stat.S_IFLNK:
+                        raise ReleaseVerificationError(
+                            "archive contains a symlink member: " + info.filename
+                        )
+                    if file_type not in (0, stat.S_IFREG):
+                        raise ReleaseVerificationError(
+                            "archive member is not a regular file: " + info.filename
+                        )
                 member = _archive_member_name(info.filename)
                 if not member.startswith(prefix) or len(member) <= len(prefix):
                     raise ReleaseVerificationError(
