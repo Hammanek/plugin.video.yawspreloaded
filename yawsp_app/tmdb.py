@@ -928,10 +928,10 @@ class BackgroundPrefetch:
                     continue
                 if self._abort_requested():
                     break
-                if len(self._pending) >= self.max_pending:
+                claimed_item = self._claim_deferred_locked(key)
+                if claimed_item is None and len(self._pending) >= self.max_pending:
                     self._condition.wait()
                     continue
-                claimed_item = self._claim_deferred_locked(key)
                 owned_flight = _PendingLookup()
                 self._pending[key] = owned_flight
                 break

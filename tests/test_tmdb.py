@@ -1920,69 +1920,85 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
             {("show", media_id): 1 for media_id in range(1, 101)},
         )
 
-    def test_deferred_on_demand_claim_waits_for_capacity_before_reserving(self):
+    def test_deferred_on_demand_claim_precedes_background_capacity_without_wait(self):
         worker = ManualWorker()
-        background, _, _, _ = self.make_recording_background(worker)
-        background.submit_shows(range(1, 101), missing_known=True)
-        original_schedule = background._schedule_metadata
-        handoff_reached = threading.Event()
-        continue_scheduling = threading.Event()
-
-        def pause_at_handoff():
-            if not handoff_reached.is_set():
-                handoff_reached.set()
-                if not continue_scheduling.wait(2):
-                    raise AssertionError("continuation release was not signalled")
-            return original_schedule()
-
-        background._schedule_metadata = pause_at_handoff
+        background, calls, attempts, sessions = self.make_recording_background(worker)
+        self.assertEqual(
+            background.submit_shows(range(1, 101), missing_known=True), 32
+        )
         on_demand_client, on_demand_session, _, _ = self.make_client(
             [json_response({"next_episode_to_air": None})]
         )
         original_request = on_demand_session.request
-        decision_reached = threading.Event()
         request_recorded = threading.Event()
+        capacity_wait_reached = threading.Event()
         pending_at_request = []
 
         def recording_request(method, url, **kwargs):
             with background._condition:
                 pending_at_request.append(len(background._pending))
-            decision_reached.set()
             request_recorded.set()
             return original_request(method, url, **kwargs)
 
         on_demand_session.request = recording_request
         original_wait = background._condition.wait
 
-        def observed_wait(timeout=None):
-            decision_reached.set()
+        def fail_capacity_wait_before_request(timeout=None):
+            if not request_recorded.is_set():
+                capacity_wait_reached.set()
+                raise AssertionError(
+                    "deferred on-demand lookup waited for background capacity"
+                )
             return original_wait(timeout)
 
-        background._condition.wait = observed_wait
+        background._condition.wait = fail_capacity_wait_before_request
         repository = ShowRepository(on_demand_client, self.show_cache)
         repository._coordinator = background
         results = []
-        direct_thread = threading.Thread(
-            target=lambda: results.append(repository.next_episode(33))
-        )
+        direct_errors = []
+
+        def direct_lookup():
+            try:
+                results.append(repository.next_episode(33))
+            except BaseException as error:
+                direct_errors.append(error)
+
+        direct_thread = threading.Thread(target=direct_lookup)
         direct_thread.start()
-        self.assertTrue(decision_reached.wait(2))
-        worker_thread = threading.Thread(target=worker.run_all)
-        worker_thread.start()
-        self.assertTrue(handoff_reached.wait(2))
-        self.assertTrue(request_recorded.wait(2))
         direct_thread.join(2)
-        continue_scheduling.set()
-        worker_thread.join(2)
+        self.addCleanup(direct_thread.join, 2)
+
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_errors, [])
+        self.assertFalse(capacity_wait_reached.is_set())
+        self.assertEqual(results, [None])
+        self.assertEqual(len(on_demand_session.calls), 1)
+        self.assertEqual(pending_at_request, [33])
+        self.assertEqual(calls, [])
+        self.assertEqual(attempts, {})
+
+        active_counts = [len(background._pending)]
         while worker.jobs:
             worker.run_all()
+            active_counts.append(len(background._pending))
 
-        self.assertFalse(worker_thread.is_alive())
-        self.assertFalse(direct_thread.is_alive())
-        self.assertEqual(results, [None])
-        self.assertEqual(len(pending_at_request), 1)
-        self.assertGreater(pending_at_request[0], 0)
-        self.assertLessEqual(pending_at_request[0], 32)
+        self.assertLessEqual(max(active_counts), 32)
+        self.assertEqual(active_counts[-1], 0)
+        self.assertEqual(len(calls), 99)
+        self.assertEqual(
+            attempts,
+            {
+                ("show", media_id): 1
+                for media_id in range(1, 101)
+                if media_id != 33
+            },
+        )
+        self.assertEqual(
+            set(self.read_cache(self.show_cache)),
+            {str(media_id) for media_id in range(1, 101)},
+        )
+        self.assertEqual(len(background._metadata_queued), 0)
+        self.assertTrue(all(session.closed for session in sessions))
 
     def test_abort_before_first_batch_clears_deferred_legacy_work(self):
         aborted = threading.Event()
