@@ -40,6 +40,25 @@ class RecordingInfoTag:
         self.calls.append(("setFirstAired", first_aired))
 
 
+class Kodi19InfoTag:
+    """Kodi 19 has the video tag and older getters, but not native setters."""
+
+    def __init__(self):
+        self.calls = []
+
+    def getTitle(self):
+        self.calls.append(("getTitle",))
+        return "Older title"
+
+    def getPlot(self):
+        self.calls.append(("getPlot",))
+        return "Older plot"
+
+    def getYear(self):
+        self.calls.append(("getYear",))
+        return 2025
+
+
 class NativeListItem:
     def __init__(self, tag=None):
         self.tag = tag if tag is not None else RecordingInfoTag()
@@ -106,6 +125,25 @@ class MetadataTests(unittest.TestCase):
         self.assertIs(type(values["setDuration"]), int)
         self.assertIs(type(values["setGenres"]), list)
 
+    def test_kodi19_tag_without_native_setters_uses_one_complete_legacy_call(self):
+        item = NativeListItem(Kodi19InfoTag())
+        info = {
+            "title": "Kodi 19",
+            "plot": "Starší přehrávač",
+            "year": 2026,
+            "genre": "Drama / Comedy",
+            "rating": 7.25,
+        }
+
+        result = apply_video_metadata(item, info)
+
+        self.assertIsNone(result)
+        self.assertEqual(item.get_tag_calls, 1)
+        self.assertEqual(item.tag.calls, [])
+        self.assertEqual(len(item.legacy_calls), 1)
+        self.assertEqual(item.legacy_calls[0][0], "video")
+        self.assertIs(item.legacy_calls[0][1], info)
+
     def test_explicit_genre_lists_and_tuples_are_copied_not_aliased(self):
         for original in (["Drama", "Comedy"], ("Drama", "Comedy")):
             with self.subTest(input_type=type(original)):
@@ -134,28 +172,42 @@ class MetadataTests(unittest.TestCase):
         self.assertIs(item.calls[0][1], info)
 
     def test_native_unknown_keys_are_rejected_before_any_supported_setter(self):
-        item = NativeListItem()
+        for tag in (RecordingInfoTag(), Kodi19InfoTag()):
+            with self.subTest(tag_type=type(tag).__name__):
+                item = NativeListItem(tag)
 
-        with self.assertRaisesRegex(ValueError, "Title, unsupported"):
-            apply_video_metadata(
-                item, {"title": "Must not be partially applied", "Title": "Bad", "unsupported": 1}
-            )
+                with self.assertRaisesRegex(ValueError, "Title, unsupported"):
+                    apply_video_metadata(
+                        item,
+                        {
+                            "title": "Must not be partially applied",
+                            "Title": "Bad",
+                            "unsupported": 1,
+                        },
+                    )
 
-        self.assertEqual(item.tag.calls, [])
-        self.assertEqual(item.legacy_calls, [])
-        self.assertEqual(item.get_tag_calls, 1)
+                self.assertEqual(item.tag.calls, [])
+                self.assertEqual(item.legacy_calls, [])
+                self.assertEqual(item.get_tag_calls, 1)
 
-    def test_missing_native_setter_is_not_misreported_as_a_legacy_double(self):
+    def test_one_missing_required_setter_uses_legacy_without_partial_native_updates(self):
         class IncompleteInfoTag:
+            def __init__(self):
+                self.calls = []
+
             def setTitle(self, title):
-                pass
+                self.calls.append(("setTitle", title))
 
         item = NativeListItem(IncompleteInfoTag())
+        info = {"title": "Native-capable title", "plot": "Setter unavailable"}
 
-        with self.assertRaises(AttributeError):
-            apply_video_metadata(item, {"title": "Native", "plot": "No fake setter"})
+        result = apply_video_metadata(item, info)
 
-        self.assertEqual(item.legacy_calls, [])
+        self.assertIsNone(result)
+        self.assertEqual(item.tag.calls, [])
+        self.assertEqual(len(item.legacy_calls), 1)
+        self.assertEqual(item.legacy_calls[0][0], "video")
+        self.assertIs(item.legacy_calls[0][1], info)
         self.assertEqual(item.get_tag_calls, 1)
 
 

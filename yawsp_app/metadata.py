@@ -30,10 +30,19 @@ def apply_video_metadata(listitem, info):
             "Unsupported native video metadata keys: " + ", ".join(unsupported)
         )
 
+    required_setters = []
     for key, setter_name in _VIDEO_SETTERS:
         if key not in info:
             continue
+        setter = getattr(video_tag, setter_name, None)
+        if not callable(setter):
+            # Kodi 19 has getVideoInfoTag but not the v20 dedicated setters.
+            listitem.setInfo("video", info)
+            return
+        required_setters.append((key, setter))
+
+    for key, setter in required_setters:
         value = info[key]
         if key == "genre":
             value = value.split(" / ") if isinstance(value, str) else list(value)
-        getattr(video_tag, setter_name)(value)
+        setter(value)
