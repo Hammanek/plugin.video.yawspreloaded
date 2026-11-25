@@ -401,6 +401,34 @@ class EntrypointTests(unittest.TestCase):
             background.close.assert_called_once_with(wait=False)
             download_jobs.close.assert_called_once_with(wait=False)
 
+    def test_production_owner_schedules_work_on_kodi_invocation_thread(self):
+        with install_kodi_stubs(), mock.patch.object(
+            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
+        ), tempfile.TemporaryDirectory() as profile:
+            sys.modules["xbmc"].translatePath = lambda value: profile
+            sys.modules["xbmcvfs"].translatePath = lambda value: profile
+            production_router.close()
+            owner = production_router._get_owner()
+            entered = threading.Event()
+            release = threading.Event()
+            worker_threads = []
+            invocation_thread = threading.get_ident()
+            try:
+                def scheduled_work():
+                    worker_threads.append(threading.get_ident())
+                    entered.set()
+                    if threading.get_ident() != invocation_thread:
+                        release.wait(2)
+
+                owner.background.worker.submit(scheduled_work)
+
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(worker_threads, [threading.get_ident()])
+            finally:
+                release.set()
+                owner.background.worker.shutdown(wait=True)
+                production_router.close()
+
     def test_production_watched_without_api_key_is_one_clean_action_completion(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=tmdb_watchlist"]
