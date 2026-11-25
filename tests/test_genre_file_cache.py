@@ -305,6 +305,27 @@ class GenreFileCacheTests(unittest.TestCase):
             self.assertEqual(stream.read(), original)
         self.assertTrue(os.path.islink(self.path))
 
+    def test_symlink_shaped_lstat_rejects_before_open_or_save_and_preserves_bytes(self):
+        original = self.json_bytes(
+            {"schema": 1, "genres": {"movie/en-US": {"1": "Original"}}}
+        )
+        self.write_bytes(original)
+        link_metadata = mock.Mock(st_mode=stat.S_IFLNK)
+
+        with mock.patch(
+            "yawsp_app.genre_file_cache.os.lstat", return_value=link_metadata
+        ), mock.patch("yawsp_app.genre_file_cache.os.open") as safe_open, mock.patch.object(
+            AtomicJsonCache, "save"
+        ) as save:
+            cache = self.cache()
+            self.assertEqual(cache.read(), (UNSUPPORTED, None))
+            with self.assertLogs(self.logger, level="ERROR"):
+                self.assertFalse(cache.store("movie", "en-US", {"2": "Replacement"}))
+
+        safe_open.assert_not_called()
+        save.assert_not_called()
+        self.assertEqual(self.read_bytes(), original)
+
     def test_read_admission_uses_lstat_and_nontruncating_nofollow_open(self):
         self.write_bytes(self.json_bytes({"schema": 1, "genres": {}}))
         real_open = os.open
@@ -336,12 +357,14 @@ class GenreFileCacheTests(unittest.TestCase):
         real_replace = os.replace
 
         def observed_replace(source, destination):
+            result = real_replace(source, destination)
             events.append("os.replace")
-            return real_replace(source, destination)
+            return result
 
         with mock.patch("yawsp_app.json_cache.os.replace", side_effect=observed_replace):
-            self.assertTrue(self.cache().store("movie", "en-US", {"28": "Action"}))
+            committed = self.cache().store("movie", "en-US", {"28": "Action"})
 
+        self.assertTrue(committed)
         events.append("reader.created")
         reader = self.cache()
         client = OfflineClient()
@@ -349,6 +372,22 @@ class GenreFileCacheTests(unittest.TestCase):
         self.assertEqual(reader.read()[0], VALID)
         self.assertEqual(events, ["response.close", "os.replace", "reader.created"])
         self.assertFalse(hasattr(client, "requests"))
+
+    def test_replace_event_follows_actual_replacement_and_validated_disk_read(self):
+        events = []
+        real_replace = os.replace
+
+        def observed_replace(source, destination):
+            result = real_replace(source, destination)
+            self.assertEqual(self.cache().get("movie", "en-US"), {"28": "Action"})
+            events.append("os.replace")
+            return result
+
+        with mock.patch("yawsp_app.json_cache.os.replace", side_effect=observed_replace):
+            committed = self.cache().store("movie", "en-US", {"28": "Action"})
+
+        self.assertTrue(committed)
+        self.assertEqual(events, ["os.replace"])
 
     def test_store_preserves_other_allowed_groups_and_returns_detached_values(self):
         self.assertTrue(self.cache().store("movie", "en-US", {"28": "Action"}))
