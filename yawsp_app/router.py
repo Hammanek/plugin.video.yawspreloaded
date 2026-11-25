@@ -252,7 +252,6 @@ class _ProductionOwner:
             notify=lambda message: self.plugin.notification(
                 self.addon.getAddonInfo("name"), message
             ),
-            refresh=lambda: self.plugin.executeBuiltin("Container.Refresh"),
         )
         tmdb = build_tmdb_handlers(
             runtime,

@@ -47,7 +47,6 @@ class DocumentationContractTests(unittest.TestCase):
             "yawsp_app/webshare.py",
             "yawsp_app/search.py",
             "yawsp_app/downloads.py",
-            "yawsp_app/backup_db.py",
             "yawsp_app/json_cache.py",
             "yawsp_app/tmdb.py",
             "yawsp_app/webshare_ui.py",
@@ -102,13 +101,16 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("`yawsp_app/download_jobs.py`", self.readme)
         self.assertRegex(self.readme, r"(?i)přijetí úlohy.{0,100}není.{0,100}dokončení")
         self.assertRegex(self.readme, r"(?i)vzdálené operace|vzdáleného úspěchu")
-        self.assertRegex(self.readme, r"(?i)Container\.Refresh.{0,180}(?:až po|teprve po)")
-        self.assertRegex(self.readme, r"(?i)při chybě.{0,100}(?:neprobehne|žádný)|chybě.{0,100}žádný.{0,30}Refresh")
         self.assertRegex(self.readme, r"(?i)nejvýše čtyři|max_pending=4")
         self.assertRegex(self.readme, r"(?i)idempotentní close|close\(wait=False\)")
         self.assertRegex(self.readme, r"(?i)vlastní HTTP relaci|worker.{0,30}session")
 
-    def test_readme_documents_db_streaming_and_offline_measurement_limits(self):
+    def test_readme_marks_db_evidence_historical_and_documents_safe_retirement(self):
+        self.assertRegex(self.readme, r"(?i)odstraněn\w* Backup DB|Backup DB.{0,40}odstraněn")
+        self.assertIn("`db`", self.readme)
+        self.assertIn("`searchdb`", self.readme)
+        self.assertRegex(self.readme, r"(?i)nemažou ani nemigrují")
+        self.assertNotIn("`yawsp_app/backup_db.py` |", self.readme)
         for phrase in ("mtime_ns", "O(F)", "pouze vybraný soubor", "256 KiB"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.readme)
@@ -147,15 +149,28 @@ class DocumentationContractTests(unittest.TestCase):
         mapped_selectors = [
             selector
             for entry in coverage["requirements"]
-            for selector in entry["mutation_sensitive_tests"]
+            for selector in entry.get("mutation_sensitive_tests", [])
         ]
-        execution = coverage["selector_execution"]
+        execution = coverage["current_selector_execution"]
         self.assertEqual(len(mapped_selectors), execution["mapped_selector_entries"])
         self.assertEqual(len(set(mapped_selectors)), execution["unique_selectors"])
+        self.assertEqual(execution["status"], "OK")
+        self.assertEqual(execution["passed"], execution["mapped_selector_entries"])
+        self.assertTrue(execution["runs"])
+        self.assertEqual(
+            {requirement_id for requirement_id, entry in mappings.items() if entry.get("status") == "removed"},
+            {"PERF-03", "PERF-08"},
+        )
         for requirement_id, entry in mappings.items():
             with self.subTest(requirement=requirement_id):
-                self.assertTrue(entry["production_symbols"])
-                self.assertTrue(entry["mutation_sensitive_tests"])
+                self.assertIn(entry.get("status", "active"), {"active", "removed"})
+                if entry.get("status") == "removed":
+                    self.assertTrue(entry["removal_scope"])
+                    self.assertTrue(entry["historical_production_symbols"])
+                    self.assertTrue(entry["historical_mutation_sensitive_tests"])
+                else:
+                    self.assertTrue(entry["production_symbols"])
+                    self.assertTrue(entry["mutation_sensitive_tests"])
                 self.assertTrue(entry["benchmarks"])
                 self.assertTrue(entry["measured_result"]["summary"])
                 self.assertIn(
@@ -163,7 +178,7 @@ class DocumentationContractTests(unittest.TestCase):
                     {"improved", "unchanged", "tradeoff"},
                 )
                 self.assertTrue(entry["limitations"])
-                for production in entry["production_symbols"]:
+                for production in entry.get("production_symbols", []):
                     definition = module_definition(
                         production["module"], production["symbol"]
                     )
@@ -173,7 +188,7 @@ class DocumentationContractTests(unittest.TestCase):
                             production["module"], production["symbol"]
                         ),
                     )
-                for selector in entry["mutation_sensitive_tests"]:
+                for selector in entry.get("mutation_sensitive_tests", []):
                     match = re.fullmatch(
                         r"(tests\.[A-Za-z0-9_]+)\.([A-Za-z0-9_]+)\.(test_[A-Za-z0-9_]+)",
                         selector,

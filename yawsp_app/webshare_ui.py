@@ -5,7 +5,6 @@ import json
 import ntpath
 import os
 import re
-import tempfile
 
 from unidecode import unidecode
 
@@ -14,12 +13,7 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
-from yawsp_app.backup_db import BackupDBStore
-from yawsp_app.download_jobs import (
-    DownloadOperation,
-    backup_db_job_key,
-    media_job_key,
-)
+from yawsp_app.download_jobs import DownloadOperation, media_job_key
 from yawsp_app.downloads import stream_download
 from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult, is_vfs_path
@@ -31,8 +25,6 @@ _CATEGORIES = ("", "video", "images", "audio", "archives", "docs", "adult")
 _SORTS = ("", "recent", "rating", "largest", "smallest")
 _BROWSING_SENTINEL = "%#NONE#%"
 _SEARCH_HISTORY = "search_history"
-_BACKUP_DB = "D1iIcURxlR"
-_BACKUP_DB_DOWNLOAD_CHUNK_SIZE = 256 * 1024
 
 
 def _is_ok(xml):
@@ -395,126 +387,18 @@ class _MediaDownloadOperation(DownloadOperation):
         self.notify("{0} {1}".format(self.failed_label, self.display_name))
 
 
-class _BackupDatabaseOperation(DownloadOperation):
-    def __init__(
-        self,
-        backup_store,
-        worker_client_factory,
-        notify,
-        refresh,
-        logger,
-        installed_label,
-        failed_label,
-        queue_ident=None,
-        queue_succeeded_label=None,
-        queue_failed_label=None,
-    ):
-        self.backup_store = backup_store
-        self.worker_client_factory = worker_client_factory
-        self.notify = notify
-        self.refresh = refresh
-        self.logger = logger
-        self.installed_label = installed_label
-        self.failed_label = failed_label
-        self.queue_ident = queue_ident
-        self.queue_succeeded_label = queue_succeeded_label
-        self.queue_failed_label = queue_failed_label
-
-    def _load_archive(self, context, client, token):
-        archive_path = None
-        try:
-            context.raise_if_cancelled()
-            link = client.get_link(_BACKUP_DB, token)
-            response = context.session.get(link, stream=True, timeout=60)
-            try:
-                response.raise_for_status()
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    prefix=".backup-db-download-",
-                    suffix=".zip",
-                    dir=self.backup_store.profile,
-                    delete=False,
-                ) as archive_output:
-                    archive_path = archive_output.name
-                    for chunk in response.iter_content(
-                        chunk_size=_BACKUP_DB_DOWNLOAD_CHUNK_SIZE
-                    ):
-                        context.raise_if_cancelled()
-                        if chunk:
-                            archive_output.write(chunk)
-                    context.raise_if_cancelled()
-            finally:
-                response.close()
-            return archive_path
-        except Exception:
-            if archive_path is not None:
-                try:
-                    os.remove(archive_path)
-                except OSError:
-                    pass
-            raise
-
-    def run(self, context):
-        client = self.worker_client_factory(context.session)
-        token = client.revalidate()
-        if not token:
-            raise WebshareError("Backup DB installation requires authentication")
-        context.raise_if_cancelled()
-        self.backup_store.ensure_installed(
-            lambda: self._load_archive(context, client, token)
-        )
-        if self.queue_ident:
-            context.raise_if_cancelled()
-            try:
-                xml = client._post(
-                    "queue_file", {"ident": self.queue_ident, "wst": token}
-                )
-                queue_message = (
-                    self.queue_succeeded_label
-                    if _is_ok(xml)
-                    else self.queue_failed_label
-                )
-            except Exception as error:
-                self.logger.error("Backup DB queue action failed: %s", error)
-                queue_message = self.queue_failed_label
-            context.raise_if_cancelled()
-            try:
-                self.notify(queue_message)
-            except Exception:
-                self.logger.exception("Backup DB queue notification failed")
-        context.raise_if_cancelled()
-        return True
-
-    def succeeded(self, installed):
-        try:
-            self.refresh()
-        except Exception:
-            self.logger.exception("Backup DB completion refresh failed")
-        try:
-            self.notify(self.installed_label)
-        except Exception:
-            self.logger.exception("Backup DB installed notification failed")
-
-    def failed(self, error):
-        self.logger.error("Backup DB installation failed: %s", error)
-        self.notify(self.failed_label)
-
-
 def build_webshare_handlers(
     runtime,
     client_factory,
     download_jobs=None,
     worker_client_factory=None,
     notify=None,
-    refresh=None,
 ):
     """Build Webshare handlers; none calls Kodi directory/playback completion."""
     client = client_factory()
-    backup_store = BackupDBStore(runtime.profile)
     history_path = os.path.join(runtime.profile, _SEARCH_HISTORY)
     worker_client_factory = worker_client_factory or (lambda session: client_factory())
     notify = notify or runtime.notify
-    refresh = refresh or (lambda: runtime.execute_builtin("Container.Refresh"))
 
     def token_or_notify():
         token = client.revalidate()
@@ -862,160 +746,12 @@ def build_webshare_handlers(
             runtime.notify("{0} {1}".format(runtime.localized(30433), display_name))
         return ActionResult()
 
-    def database_status_item():
-        item = runtime.list_item(label=runtime.localized(30434))
-        item.setArt({"icon": "DefaultAddonsZip.png"})
-        _add_item(runtime, _url(runtime, action="db"), item)
-
-    def ensure_database_available(params):
-        if backup_store.is_valid():
-            return True
-        key = backup_db_job_key(runtime.profile)
-        status = download_jobs.status(key) if download_jobs is not None else None
-        if status in ("queued", "running"):
-            database_status_item()
-            return False
-        if status == "succeeded" and backup_store.is_valid():
-            return True
-        operation = _BackupDatabaseOperation(
-            backup_store=backup_store,
-            worker_client_factory=worker_client_factory,
-            notify=notify,
-            refresh=refresh,
-            logger=runtime.logger,
-            installed_label=runtime.localized(30435),
-            failed_label=runtime.localized(30436),
-            queue_ident=params.get("toqueue"),
-            queue_succeeded_label=runtime.localized(30105),
-            queue_failed_label=runtime.localized(30107),
-        )
-        accepted = download_jobs is not None and download_jobs.submit(key, operation)
-        if accepted or (
-            download_jobs is not None
-            and download_jobs.status(key) in ("queued", "running")
-        ):
-            database_status_item()
-            return False
-        runtime.notify(runtime.localized(30436))
-        raise WebshareError("Backup DB installation could not be queued")
-
-    def database_listing(params, token=None):
-        if not ensure_database_available(params):
-            return DirectoryResult()
-        update_listing = False
-        if "toqueue" in params:
-            if token is None:
-                token = token_or_notify()
-            if not token:
-                return DirectoryResult(succeeded=False)
-            to_queue(params["toqueue"], token)
-            update_listing = True
-
-        search_query = params.get("search", "").casefold()
-        if "file" in params and "key" in params:
-            data = backup_store.load(params["file"])
-            selected = next((item for item in data if item.get("id") == params["key"]), None)
-            if selected is not None:
-                for stream in selected.get("streams", []):
-                    file_data = {
-                        "ident": stream["ident"],
-                        "name": "{0} - {1}{2}".format(
-                            stream["quality"], stream["lang"], stream.get("ainfo", "")
-                        ),
-                        "sizelized": stream["size"],
-                    }
-                    queue_url = _listing_url(
-                        runtime,
-                        params,
-                        action="db",
-                        toqueue=stream["ident"],
-                    )
-                    commands = [
-                        (
-                            runtime.localized(30214),
-                            "Container.Update({0})".format(queue_url),
-                        )
-                    ]
-                    item = runtime.list_item(label=_label(file_data))
-                    apply_video_metadata(item, {"title": selected["title"]})
-                    item.setProperty("IsPlayable", "true")
-                    item.addContextMenuItems(commands)
-                    _add_item(
-                        runtime,
-                        _url(
-                            runtime,
-                            action="play",
-                            ident=stream["ident"],
-                            name=selected["title"],
-                        ),
-                        item,
-                    )
-            runtime.sort_by_label()
-        elif "file" in params:
-            for data_item in backup_store.load(params["file"]):
-                title = data_item.get("title", "")
-                if search_query and search_query not in title.casefold():
-                    continue
-                item = runtime.list_item(label=title)
-                if "plot" in data_item:
-                    apply_video_metadata(item, {"title": title, "plot": data_item["plot"]})
-                _add_item(
-                    runtime,
-                    _url(
-                        runtime,
-                        action="db",
-                        file=params["file"],
-                        key=data_item["id"],
-                    ),
-                    item,
-                    True,
-                )
-            runtime.sort_by_label()
-        else:
-            if not search_query:
-                item = runtime.list_item(label=runtime.localized(30010))
-                item.setArt({"icon": "DefaultAddonsSearch.png"})
-                _add_item(runtime, _url(runtime, action="searchdb"), item, True)
-            if os.path.isdir(backup_store.dbdir):
-                for filename in sorted(os.listdir(backup_store.dbdir)):
-                    if not filename.lower().endswith(".txt"):
-                        continue
-                    if not os.path.isfile(os.path.join(backup_store.dbdir, filename)):
-                        continue
-                    item = runtime.list_item(label=os.path.splitext(filename)[0])
-                    _add_item(
-                        runtime,
-                        _url(runtime, action="db", file=filename),
-                        item,
-                        True,
-                    )
-        return DirectoryResult(update_listing=update_listing)
-
-    def db(params):
-        return database_listing(params)
-
-    def searchdb(params):
-        query = params.get("query")
-        if query is None:
-            query = runtime.ask("", runtime.localized(30216))
-        if query is not None:
-            query = query.strip()
-        if not query:
-            return DirectoryResult()
-        return database_listing(
-            {
-                "search": query,
-                "file": backup_store.group_for_query(query),
-            }
-        )
-
     def menu(params):
         runtime.set_category(runtime.addon_info("name"))
         entries = (
             (runtime.localized(30201), "search", "DefaultAddonsSearch.png"),
             (runtime.localized(30202), "queue", "DefaultPlaylist.png"),
             (runtime.localized(30203), "history", "DefaultAddonsUpdates.png"),
-            ("Backup DB", "db", "DefaultAddonsZip.png"),
         )
         for label, action, icon in entries:
             item = runtime.list_item(label=label)
@@ -1035,6 +771,4 @@ def build_webshare_handlers(
         "info": info,
         "play": play,
         "download": download,
-        "db": db,
-        "searchdb": searchdb,
     }

@@ -84,12 +84,6 @@ TMDB_IDS = {entry[0] for entry in TMDB_STRINGS}
 JOB_STRINGS = (
     (30433, "Download queued", "Stahování zařazeno do fronty",
      "Sťahovanie zaradené do fronty"),
-    (30434, "Backup DB installation in progress", "Instalace Backup DB probíhá",
-     "Inštalácia Backup DB prebieha"),
-    (30435, "Backup DB installed", "Backup DB byla nainstalována",
-     "Backup DB bola nainštalovaná"),
-    (30436, "Backup DB installation failed", "Instalace Backup DB se nezdařila",
-     "Inštalácia Backup DB zlyhala"),
     (30437, "Download could not be queued",
      "Stahování se nepodařilo zařadit do fronty",
      "Sťahovanie sa nepodarilo zaradiť do fronty"),
@@ -224,10 +218,11 @@ class ResourceContractTests(unittest.TestCase):
                             self.assertEqual(entries[string_id]["msgstr"], expected)
 
     def test_sequential_download_job_ids_have_exact_wording_in_real_catalogs(self):
-        self.assertEqual(JOB_IDS, set(range(30433, 30438)))
+        self.assertEqual(JOB_IDS, {30433, 30437})
         for language, translation_index in (("cs_CZ", 2), ("sk_SK", 3), ("en_GB", None)):
             with self.subTest(language=language):
                 _, entries = load_catalog(language)
+                self.assertTrue({30434, 30435, 30436}.isdisjoint(entries))
                 for string_id, msgid, czech, slovak in JOB_STRINGS:
                     with self.subTest(language=language, string_id=string_id):
                         self.assertEqual(entries[string_id]["msgid"], msgid)
@@ -275,7 +270,6 @@ class ResourceContractTests(unittest.TestCase):
             unresolved.extend((str(path),) + item for item in file_unresolved)
         self.assertEqual([], unresolved)
         self.assertIn(30007, references)
-        self.assertIn(30216, references)
         self.assertTrue(TMDB_IDS - set(range(30426, 30433)) <= references)
         self.assertTrue(JOB_IDS <= references)
         self.assertTrue(UX_IDS <= references)

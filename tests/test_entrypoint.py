@@ -12,7 +12,7 @@ from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
-from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, archive_bytes, xml
+from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, xml
 from yawsp_app import router as production_router
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
@@ -79,8 +79,6 @@ class Owner:
             "search": directory,
             "queue": directory,
             "history": directory,
-            "db": directory,
-            "searchdb": directory,
             "tmdb_watchlist": watchlist,
             "play": play,
             "settings": action,
@@ -104,9 +102,6 @@ def install_kodi_stubs():
             30303: "Downloaded",
             30304: "Download failed",
             30433: "Download queued",
-            30434: "Backup DB installation in progress",
-            30435: "Backup DB installed",
-            30436: "Backup DB installation failed",
             30437: "Download could not be queued",
             30438: "Refresh",
         },
@@ -528,90 +523,6 @@ class EntrypointTests(unittest.TestCase):
                 self.assertTrue(vfs.open_files[0].closed)
                 self.assertEqual(len(vfs.deleted), 1)
                 self.assertTrue(response.closed)
-
-    def test_production_cold_database_uses_worker_session_and_one_post_promote_refresh(self):
-        with install_kodi_stubs(), mock.patch.object(
-            sys,
-            "argv",
-            ["plugin://plugin.video.yawspreloaded/", "17", "?action=db"],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
-            production_router.requests, "Session"
-        ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
-            ui_session = FakeSession()
-            ui_session.headers = {}
-            payload = archive_bytes()
-            response = FakeResponse(content=payload, forbid_content=True)
-            worker_session = FakeSession([response])
-            worker_session.headers = {}
-            session_type.side_effect = [ui_session, worker_session]
-            client = FakeClient()
-            client.link_results = ["https://cdn.invalid/db.zip"]
-            client_type.return_value = client
-            entered = threading.Event()
-            release = threading.Event()
-
-            def blocked_stream(chunk_size=1, decode_unicode=False):
-                entered.set()
-                if not release.wait(2):
-                    raise AssertionError("production database stream was not released")
-                yield payload
-
-            response.iter_content = blocked_stream
-            with tempfile.TemporaryDirectory() as profile:
-                translate = lambda value: profile
-                sys.modules["xbmc"].translatePath = translate
-                sys.modules["xbmcvfs"].translatePath = translate
-                production_router.close()
-                owner = production_router._get_owner()
-                recorder = sys.modules["xbmcplugin"]._recorder
-                refreshed = threading.Event()
-                execute_builtin = recorder.executeBuiltin
-
-                def observed_refresh(command):
-                    execute_builtin(command)
-                    if command == "Container.Refresh":
-                        refreshed.set()
-
-                recorder.executeBuiltin = observed_refresh
-                sys.modules["xbmc"].executebuiltin = observed_refresh
-                returned = threading.Event()
-                results = []
-
-                def invoke():
-                    results.append(production_router.router("action=db&file=A.txt"))
-                    returned.set()
-
-                invocation = threading.Thread(target=invoke)
-                invocation.start()
-                self.assertTrue(returned.wait(2), "production DB handoff blocked on its archive")
-                invocation.join(2)
-                self.assertTrue(entered.wait(2))
-                self.assertTrue(results[0].succeeded)
-                self.assertEqual(len(recorder.end_of_directory_calls), 1)
-                self.assertEqual(len(recorder.items), 1)
-                self.assertEqual(
-                    recorder.items[0]["listitem"].label,
-                    "Backup DB installation in progress",
-                )
-                self.assertFalse(refreshed.is_set())
-                self.assertEqual(ui_session.calls, [])
-
-                release.set()
-
-                self.assertTrue(refreshed.wait(2))
-                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
-                self.assertEqual(len(recorder.end_of_directory_calls), 1)
-                self.assertTrue(response.closed)
-                warm = production_router.router("action=db&file=A.txt")
-                self.assertTrue(warm.succeeded)
-                self.assertTrue(
-                    any(item["listitem"].label == "Film" for item in recorder.items)
-                )
-                self.assertEqual(client.revalidate_calls, 1)
-                self.assertEqual(len(worker_session.calls), 1)
-                self.assertEqual(ui_session.calls, [])
-                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
-                self.assertEqual(len(recorder.end_of_directory_calls), 2)
 
     def test_real_owner_rebuilds_runtime_and_runner_for_sequential_invocations(self):
         with install_kodi_stubs(), mock.patch.object(

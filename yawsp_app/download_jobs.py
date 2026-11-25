@@ -1,4 +1,4 @@
-"""Dedicated bounded jobs for media downloads and profile database installs."""
+"""Dedicated bounded jobs for media downloads."""
 
 from collections import deque
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ class DownloadJobKey:
     identifier: str
 
     def __post_init__(self):
-        if self.kind not in ("media", "backup_db"):
+        if self.kind != "media":
             raise ValueError("Unknown download job family: {0}".format(self.kind))
         if not isinstance(self.identifier, str) or not self.identifier:
             raise ValueError("Download job keys require a destination identifier")
@@ -40,15 +40,6 @@ def media_job_key(destination):
     if not is_vfs_path(destination):
         destination = os.path.normcase(os.path.realpath(destination))
     return DownloadJobKey("media", destination)
-
-
-def backup_db_job_key(profile):
-    profile = os.fspath(profile)
-    if not is_vfs_path(profile):
-        profile = os.path.normcase(os.path.realpath(profile))
-    else:
-        profile = profile.rstrip("/")
-    return DownloadJobKey("backup_db", profile)
 
 
 @dataclass(frozen=True)

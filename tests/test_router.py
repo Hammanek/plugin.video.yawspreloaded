@@ -32,8 +32,6 @@ class RouterTests(unittest.TestCase):
             "search": directory,
             "queue": directory,
             "history": directory,
-            "db": directory,
-            "searchdb": directory,
             "play": lambda params: PlaybackResult(False, ListItem()),
             "settings": lambda params: ActionResult(),
             "download": lambda params: ActionResult(),
@@ -117,10 +115,10 @@ class RouterTests(unittest.TestCase):
 
     def test_cancelled_directory_and_unexpected_exception_still_complete_once(self):
         self.handlers["search"] = lambda params: DirectoryResult()
-        self.handlers["db"] = lambda params: (_ for _ in ()).throw(ValueError("bad"))
+        self.handlers["history"] = lambda params: (_ for _ in ()).throw(ValueError("bad"))
 
         dispatch("action=search", self.handlers, self.runner)
-        dispatch("action=db", self.handlers, self.runner)
+        dispatch("action=history", self.handlers, self.runner)
 
         self.assertEqual(len(self.plugin.end_of_directory_calls), 2)
         self.assertEqual(

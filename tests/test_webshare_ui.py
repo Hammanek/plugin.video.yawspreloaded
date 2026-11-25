@@ -6,7 +6,6 @@ import threading
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
-import zipfile
 from xml.etree import ElementTree as ET
 
 from tests.support.http_stubs import FakeResponse, FakeSession
@@ -205,28 +204,6 @@ def xml(text):
     return ET.fromstring(text)
 
 
-def archive_bytes(filename="A.txt", plot=None):
-    output = io.BytesIO()
-    item = {
-        "id": "movie-1",
-        "title": "Film",
-        "streams": [
-            {
-                "ident": "stream-1",
-                "quality": "HD",
-                "lang": "CZ",
-                "size": "1 MB",
-            }
-        ],
-    }
-    if plot is not None:
-        item["plot"] = plot
-    payload = json.dumps({"data": [item]}).encode("utf-8")
-    with zipfile.ZipFile(output, "w") as archive:
-        archive.writestr(filename, payload)
-    return output.getvalue()
-
-
 def url_params(url):
     return {key: values[-1] for key, values in parse_qs(urlsplit(url).query).items()}
 
@@ -254,7 +231,6 @@ class WebshareUITests(unittest.TestCase):
             },
             strings={
                 30007: "Search",
-                30010: "Search DB",
                 30101: "Login required",
                 30102: "Request failed",
                 30104: "History removed",
@@ -275,15 +251,11 @@ class WebshareUITests(unittest.TestCase):
                 30213: "Remove",
                 30214: "Queue",
                 30215: "Dequeue",
-                30216: "Search for",
                 30301: "Unknown size",
                 30302: "Downloading",
                 30303: "Downloaded",
                 30304: "Download failed",
                 30433: "Download queued",
-                30434: "Backup DB installation in progress",
-                30435: "Backup DB installed",
-                30436: "Backup DB installation failed",
                 30437: "Download could not be queued",
                 30440: "No matching files found",
             },
@@ -319,17 +291,7 @@ class WebshareUITests(unittest.TestCase):
         def background_notify(message):
             self.job_messages.append(message)
             self.runtime.notify(message)
-            if message.startswith(("Downloaded", "Download failed", "Backup DB installation failed")):
-                self.job_event.set()
-            if (
-                message.startswith("Backup DB installed")
-                and "Container.Refresh" in self.plugin.builtin_commands
-            ):
-                self.job_event.set()
-
-        def background_refresh():
-            self.plugin.executeBuiltin("Container.Refresh")
-            if any(message.startswith("Backup DB installed") for message in self.job_messages):
+            if message.startswith(("Downloaded", "Download failed")):
                 self.job_event.set()
 
         self.handlers = build_webshare_handlers(
@@ -338,7 +300,6 @@ class WebshareUITests(unittest.TestCase):
             download_jobs=self.download_jobs,
             worker_client_factory=lambda session: self.client,
             notify=background_notify,
-            refresh=background_refresh,
         )
         self.errors = []
         self.runner = ActionRunner(
@@ -406,29 +367,6 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(item.art["thumb"], "https://img.invalid/thumb.jpg")
         self.assertEqual(item.properties["IsPlayable"], "true")
         self.assertEqual(self.client.revalidate_calls, 1)
-
-    def test_native_backup_rows_preserve_selected_title_and_plot(self):
-        from yawsp_app.backup_db import BackupDBStore
-
-        BackupDBStore(self.profile).ensure_installed(
-            lambda: archive_bytes(plot="Vybraný popisek filmu")
-        )
-        self.runtime.listitem_factory = NativeListItem
-
-        self.handlers["db"]({"file": "A.txt"})
-        movie = self.find_item("Film")["listitem"]
-        self.assertEqual(
-            movie.video_tag.calls,
-            [("setTitle", "Film"), ("setPlot", "Vybraný popisek filmu")],
-        )
-
-        self.plugin.items.clear()
-        self.handlers["db"]({"file": "A.txt", "key": "movie-1"})
-        stream = self.find_item("HD - CZ (1 MB)")["listitem"]
-        self.assertEqual(stream.video_tag.calls, [("setTitle", "Film")])
-        self.assertEqual(stream.properties["IsPlayable"], "true")
-        self.assertEqual(self.client.revalidate_calls, 0)
-        self.assertEqual(len(self.client.search_calls), 0)
 
     def test_search_menu_without_query_skips_authentication_and_network(self):
         with io.open(os.path.join(self.profile, "search_history"), "w", encoding="utf-8") as output:
@@ -682,58 +620,14 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(self.session.calls, [])
         self.assertEqual(
             [item["listitem"].label for item in self.plugin.items],
-            ["Search", "Queue", "History", "Backup DB", "Settings"],
+            ["Search", "Queue", "History", "Settings"],
         )
         self.assertEqual(
             [url_params(item["url"])["action"] for item in self.plugin.items],
-            ["search", "queue", "history", "db", "settings"],
+            ["search", "queue", "history", "settings"],
         )
         self.assertEqual(self.plugin.notifications, [])
         self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
-
-    def test_installed_database_root_group_and_detail_do_not_authenticate(self):
-        from yawsp_app.backup_db import BackupDBStore
-
-        BackupDBStore(self.profile).ensure_installed(lambda: archive_bytes())
-        self.client.token = None
-
-        for params, expected_label in (
-            ({"action": "db"}, "A"),
-            ({"action": "db", "file": "A.txt"}, "Film"),
-            (
-                {"action": "db", "file": "A.txt", "key": "movie-1"},
-                "HD - CZ (1 MB)",
-            ),
-        ):
-            with self.subTest(params=params):
-                self.plugin.items.clear()
-                result = self.handlers["db"](params)
-                self.assertTrue(result.succeeded)
-                self.assertTrue(self.find_item(expected_label))
-
-        self.assertEqual(self.client.revalidate_calls, 0)
-        self.assertEqual(self.client.api_calls, [])
-        self.assertEqual(self.session.calls, [])
-        self.assertEqual(self.worker_session.calls, [])
-        self.assertEqual(self.plugin.notifications, [])
-
-    def test_installed_database_queue_still_authenticates_at_use(self):
-        from yawsp_app.backup_db import BackupDBStore
-
-        BackupDBStore(self.profile).ensure_installed(lambda: archive_bytes())
-        self.client.api_responses["queue_file"] = [
-            xml("<response><status>OK</status></response>")
-        ]
-
-        result = self.handlers["db"]({"action": "db", "toqueue": "stream-1"})
-
-        self.assertTrue(result.succeeded)
-        self.assertTrue(result.update_listing)
-        self.assertEqual(self.client.revalidate_calls, 1)
-        self.assertEqual(
-            self.client.api_calls,
-            [("queue_file", {"ident": "stream-1", "wst": "token"})],
-        )
 
     def test_history_dedup_uses_canonical_whole_content_and_first_occurrence(self):
         from yawsp_app import webshare_ui
@@ -1083,172 +977,6 @@ class WebshareUITests(unittest.TestCase):
             self.assertEqual(downloaded.read(), b"movie")
         self.assertEqual(len(self.worker_session.responses), 0)
 
-    def test_whitespace_only_searchdb_is_cancelled_without_downloading_database(self):
-        self.keyboard_values = [" \t "]
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(FakeResponse(content=archive_bytes()))
-
-        result = self.runner.run_directory(
-            lambda: self.handlers["searchdb"]({"action": "searchdb"})
-        )
-
-        self.assertTrue(result.succeeded)
-        self.assertEqual(self.client.api_calls, [])
-        self.assertEqual(self.session.calls, [])
-        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
-        self.assertTrue(self.plugin.end_of_directory_calls[0]["succeeded"])
-
-    def test_padded_searchdb_query_uses_trimmed_group_and_filter(self):
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(
-            FakeResponse(content=archive_bytes("F.txt"), forbid_content=True)
-        )
-
-        result = self.runner.run_directory(
-            lambda: self.handlers["searchdb"](
-                {"action": "searchdb", "query": "  Film  "}
-            )
-        )
-
-        self.assertTrue(result.succeeded)
-        self.assertEqual(len(self.plugin.items), 1)
-        self.assertIn("Backup DB installed", self.wait_for_job())
-        warm = self.runner.run_directory(
-            lambda: self.handlers["searchdb"](
-                {"action": "searchdb", "query": "  Film  "}
-            )
-        )
-        self.assertTrue(warm.succeeded)
-        self.assertTrue(self.find_item("Film"))
-        self.assertEqual(len(self.plugin.end_of_directory_calls), 2)
-        self.assertTrue(all(call["succeeded"] for call in self.plugin.end_of_directory_calls))
-
-    def test_cancelled_and_empty_searchdb_complete_without_loading_database(self):
-        self.keyboard_values = [None, ""]
-        self.addon.setSetting("dfolder", "")
-
-        cancelled = self.runner.run_directory(lambda: self.handlers["searchdb"]({"action": "searchdb"}))
-        empty = self.runner.run_directory(lambda: self.handlers["searchdb"]({"action": "searchdb"}))
-
-        self.assertTrue(cancelled.succeeded)
-        self.assertTrue(empty.succeeded)
-        self.assertEqual(self.client.api_calls, [])
-        self.assertEqual(len(self.plugin.end_of_directory_calls), 2)
-        self.assertTrue(all(call["succeeded"] for call in self.plugin.end_of_directory_calls))
-
-    def test_backup_db_streams_mixed_compression_and_member_larger_than_chunk(self):
-        output = io.BytesIO()
-        large_payload = json.dumps(
-            {
-                "data": [
-                    {
-                        "id": "movie-1",
-                        "title": "Film",
-                        "plot": "x" * (3 * 256 * 1024),
-                        "streams": [],
-                    }
-                ]
-            }
-        ).encode("utf-8")
-        small_payload = b'{"data": []}'
-        with zipfile.ZipFile(output, "w") as archive:
-            archive.writestr("A.txt", large_payload, compress_type=zipfile.ZIP_STORED)
-            archive.writestr("B.txt", small_payload, compress_type=zipfile.ZIP_DEFLATED)
-        archive_data = output.getvalue()
-        chunks = [archive_data[index:index + 32768] for index in range(0, len(archive_data), 32768)]
-        response = FakeResponse(
-            content=archive_data,
-            chunks=chunks,
-            forbid_content=True,
-        )
-        requested_chunk_sizes = []
-        real_iter_content = response.iter_content
-
-        def recording_iter_content(chunk_size=1, decode_unicode=False):
-            requested_chunk_sizes.append(chunk_size)
-            return real_iter_content(chunk_size, decode_unicode)
-
-        response.iter_content = recording_iter_content
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(response)
-
-        result = self.runner.run_directory(
-            lambda: self.handlers["db"]({"action": "db", "file": "A.txt"})
-        )
-
-        self.assertTrue(result.succeeded)
-        self.assertEqual(len(self.plugin.items), 1)
-        self.assertIn("Backup DB installed", self.wait_for_job())
-        warm = self.runner.run_directory(
-            lambda: self.handlers["db"]({"action": "db", "file": "A.txt"})
-        )
-        self.assertTrue(warm.succeeded)
-        self.assertTrue(self.find_item("Film"))
-        self.assertEqual(requested_chunk_sizes, [256 * 1024])
-        self.assertGreater(len(large_payload), requested_chunk_sizes[0])
-        self.assertEqual(response.raise_for_status_calls, 1)
-        self.assertTrue(response.closed)
-        self.assertEqual(
-            sorted(os.listdir(self.profile)), [".backup-db-validation.json", "db"]
-        )
-
-    def test_backup_db_http_and_stream_failures_close_response_and_remove_temporaries(self):
-        responses = [
-            FakeResponse(
-                content=archive_bytes(),
-                status_code=503,
-                forbid_content=True,
-            ),
-            FakeResponse(
-                content=archive_bytes(),
-                chunks=[archive_bytes()[:32], archive_bytes()[32:]],
-                stream_error=OSError("synthetic stream interruption"),
-                forbid_content=True,
-            ),
-        ]
-        iter_calls = []
-        real_iter_content = responses[1].iter_content
-
-        def recording_iter_content(chunk_size=1, decode_unicode=False):
-            iter_calls.append(chunk_size)
-            return real_iter_content(chunk_size, decode_unicode)
-
-        responses[1].iter_content = recording_iter_content
-        self.client.link_results = ["https://cdn.invalid/db.zip"] * len(responses)
-        for response in responses:
-            self.worker_session.queue_response(response)
-
-        for index, response in enumerate(responses):
-            with self.subTest(index=index):
-                result = self.runner.run_directory(
-                    lambda: self.handlers["db"]({"action": "db"})
-                )
-                self.assertTrue(result.succeeded)
-                self.assertIn("Backup DB installation failed", self.wait_for_job())
-                self.assertTrue(response.closed)
-                self.assertEqual(os.listdir(self.profile), [])
-        self.assertEqual(iter_calls, [256 * 1024])
-
-    def test_failed_backup_db_install_can_be_retried_after_cleanup(self):
-        self.client.link_results = ["https://cdn.invalid/db.zip", "https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(FakeResponse(content=b"not a zip", forbid_content=True))
-        self.worker_session.queue_response(FakeResponse(content=archive_bytes(), forbid_content=True))
-
-        failed = self.runner.run_directory(lambda: self.handlers["db"]({"action": "db"}))
-        self.assertTrue(failed.succeeded)
-        self.assertIn("Backup DB installation failed", self.wait_for_job())
-        repaired = self.runner.run_directory(lambda: self.handlers["db"]({"action": "db"}))
-        self.assertTrue(repaired.succeeded)
-        self.assertIn("Backup DB installed", self.wait_for_job())
-        repaired_listing = self.runner.run_directory(
-            lambda: self.handlers["db"]({"action": "db", "file": "A.txt"})
-        )
-
-        self.assertTrue(repaired_listing.succeeded)
-        self.assertEqual(len(self.plugin.end_of_directory_calls), 3)
-        self.assertTrue(self.find_item("Film"))
-        self.assertFalse(os.path.exists(os.path.join(self.profile, "db.zip")))
-
     def test_queued_media_returns_before_blocked_stream_and_completes_after_release(self):
         entered = threading.Event()
         release = threading.Event()
@@ -1369,241 +1097,6 @@ class WebshareUITests(unittest.TestCase):
         self.assertIn("Download could not be queued", self.plugin.notifications[-1]["message"])
         release.set()
         self.assertIn("Downloaded", self.wait_for_job())
-
-    def test_cold_database_handoff_has_one_reservation_no_partial_read_and_one_refresh(self):
-        entered = threading.Event()
-        release = threading.Event()
-        payload = archive_bytes()
-        response = FakeResponse(content=payload, forbid_content=True)
-
-        def blocked_stream(chunk_size=1, decode_unicode=False):
-            entered.set()
-            if not release.wait(2):
-                raise AssertionError("blocked database stream was not released")
-            yield payload
-
-        response.iter_content = blocked_stream
-        self.worker_session.queue_response(response)
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        returned = threading.Event()
-        results = []
-
-        def invoke():
-            results.append(self.handlers["db"]({"action": "db", "file": "A.txt"}))
-            returned.set()
-
-        invocation = threading.Thread(target=invoke)
-        invocation.start()
-        self.assertTrue(returned.wait(2), "cold DB handoff waited for its blocked archive")
-        invocation.join(2)
-        self.assertTrue(entered.wait(2))
-        self.assertTrue(results[0].succeeded)
-        self.assertEqual(len(self.plugin.items), 1)
-        self.assertEqual(
-            self.plugin.items[0]["listitem"].label,
-            "Backup DB installation in progress",
-        )
-        self.assertFalse(os.path.exists(os.path.join(self.profile, "db")))
-        self.assertEqual(self.client.revalidate_calls, 1)
-        api_call_count = len(self.client.api_calls)
-
-        concurrent = self.handlers["db"]({"action": "db", "file": "A.txt"})
-
-        self.assertTrue(concurrent.succeeded)
-        self.assertEqual(len(self.plugin.items), 2)
-        self.assertEqual(len(self.client.api_calls), api_call_count)
-        self.assertEqual(self.plugin.builtin_commands, [])
-        self.assertFalse(os.path.exists(os.path.join(self.profile, "db")))
-
-        release.set()
-
-        self.assertIn("Backup DB installed", self.wait_for_job())
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-        self.assertTrue(response.closed)
-        warm = self.handlers["db"]({"action": "db", "file": "A.txt"})
-        self.assertTrue(warm.succeeded)
-        self.assertTrue(self.find_item("Film"))
-        self.assertEqual(self.client.revalidate_calls, 1)
-        self.assertEqual(len(self.client.api_calls), api_call_count)
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-
-    def test_cold_database_queue_action_runs_after_install_on_worker_client(self):
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.client.api_responses["queue_file"] = [
-            xml("<response><status>OK</status></response>")
-        ]
-        self.worker_session.queue_response(
-            FakeResponse(content=archive_bytes(), forbid_content=True)
-        )
-
-        accepted = self.handlers["db"]({"action": "db", "toqueue": "stream-1"})
-
-        self.assertTrue(accepted.succeeded)
-        self.assertIn("Backup DB installed", self.wait_for_job())
-        self.assertEqual(
-            [call[0] for call in self.client.api_calls],
-            ["get_link", "queue_file"],
-        )
-        self.assertEqual(
-            self.client.api_calls[-1][1],
-            {"ident": "stream-1", "wst": "token"},
-        )
-        self.assertEqual(
-            [call["message"] for call in self.plugin.notifications].count("Queued"),
-            1,
-        )
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-
-    def test_installed_notification_error_cannot_suppress_refresh_or_change_job_outcome(self):
-        from yawsp_app.backup_db import BackupDBStore
-        from yawsp_app.download_jobs import backup_db_job_key
-
-        notification_logged = threading.Event()
-        refreshed = threading.Event()
-        runtime_logger = self.runtime.logger
-
-        class NotificationLogger(type(runtime_logger)):
-            def exception(inner, *args, **kwargs):
-                super().exception(*args, **kwargs)
-                if args and args[0] == "Backup DB installed notification failed":
-                    notification_logged.set()
-
-        logger = NotificationLogger()
-        self.runtime.logger = logger
-
-        def broken_notify(message):
-            if message == "Backup DB installed":
-                raise RuntimeError("synthetic installed notification failure")
-
-        def refresh():
-            self.plugin.executeBuiltin("Container.Refresh")
-            refreshed.set()
-
-        handlers = build_webshare_handlers(
-            self.runtime,
-            lambda: self.client,
-            download_jobs=self.download_jobs,
-            worker_client_factory=lambda session: self.client,
-            notify=broken_notify,
-            refresh=refresh,
-        )
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(
-            FakeResponse(content=archive_bytes(), forbid_content=True)
-        )
-
-        accepted = handlers["db"]({"action": "db"})
-
-        self.assertTrue(accepted.succeeded)
-        self.assertTrue(notification_logged.wait(2))
-        self.assertTrue(refreshed.wait(2))
-        self.assertEqual(
-            self.download_jobs.status(backup_db_job_key(self.profile)),
-            "succeeded",
-        )
-        self.assertTrue(BackupDBStore(self.profile).is_valid())
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-        self.assertTrue(
-            any(
-                call[0][0] == "Backup DB installed notification failed"
-                for call in logger.calls
-            )
-        )
-        warm = handlers["db"]({"action": "db", "file": "A.txt"})
-        self.assertTrue(warm.succeeded)
-        self.assertTrue(self.find_item("Film"))
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-
-    def test_cold_queue_notification_error_cannot_change_install_outcome_or_refresh(self):
-        from yawsp_app.backup_db import BackupDBStore
-        from yawsp_app.download_jobs import backup_db_job_key
-
-        attempted = threading.Event()
-        installed = threading.Event()
-        refreshed = threading.Event()
-
-        def broken_notify(message):
-            if message == "Queued":
-                attempted.set()
-                raise RuntimeError("synthetic queue notification failure")
-            if message == "Backup DB installed":
-                installed.set()
-
-        def refresh():
-            self.plugin.executeBuiltin("Container.Refresh")
-            refreshed.set()
-
-        handlers = build_webshare_handlers(
-            self.runtime,
-            lambda: self.client,
-            download_jobs=self.download_jobs,
-            worker_client_factory=lambda session: self.client,
-            notify=broken_notify,
-            refresh=refresh,
-        )
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.client.api_responses["queue_file"] = [
-            xml("<response><status>OK</status></response>")
-        ]
-        self.worker_session.queue_response(
-            FakeResponse(content=archive_bytes(), forbid_content=True)
-        )
-
-        accepted = handlers["db"]({"action": "db", "toqueue": "stream-1"})
-
-        self.assertTrue(accepted.succeeded)
-        self.assertTrue(attempted.wait(2))
-        self.assertTrue(refreshed.wait(2))
-        self.assertTrue(installed.wait(2))
-        self.assertEqual(
-            self.download_jobs.status(backup_db_job_key(self.profile)),
-            "succeeded",
-        )
-        self.assertTrue(BackupDBStore(self.profile).is_valid())
-        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
-        self.assertTrue(
-            any(
-                call[0][0] == "Backup DB queue notification failed"
-                for call in self.logger.calls
-            )
-        )
-
-    def test_database_rechecks_succeeded_reservation_before_starting_another_install(self):
-        from yawsp_app.backup_db import BackupDBStore
-        from yawsp_app.download_jobs import backup_db_job_key
-
-        BackupDBStore(self.profile).ensure_installed(lambda: archive_bytes())
-        manager = mock.Mock()
-        manager.status.return_value = "succeeded"
-        handlers = build_webshare_handlers(
-            self.runtime,
-            lambda: self.client,
-            download_jobs=manager,
-            worker_client_factory=lambda session: self.client,
-            notify=self.runtime.notify,
-            refresh=lambda: None,
-        )
-        with mock.patch.object(BackupDBStore, "is_valid", side_effect=[False, True]):
-            result = handlers["db"]({"action": "db", "file": "A.txt"})
-
-        self.assertTrue(result.succeeded)
-        self.assertTrue(self.find_item("Film"))
-        manager.submit.assert_not_called()
-        manager.status.assert_called_with(backup_db_job_key(self.profile))
-
-    def test_failed_database_job_does_not_refresh_or_expose_a_partial_listing(self):
-        self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.worker_session.queue_response(
-            FakeResponse(content=b"not a zip", forbid_content=True)
-        )
-
-        accepted = self.handlers["db"]({"action": "db"})
-
-        self.assertTrue(accepted.succeeded)
-        self.assertEqual(len(self.plugin.items), 1)
-        self.assertIn("Backup DB installation failed", self.wait_for_job())
-        self.assertEqual(self.plugin.builtin_commands, [])
-        self.assertFalse(os.path.exists(os.path.join(self.profile, "db")))
 
     def test_settings_is_an_action_without_directory_completion(self):
         result = self.runner.run_action(lambda: self.handlers["settings"]({"action": "settings"}))
