@@ -8,6 +8,7 @@ import zipfile
 
 from requests import HTTPError
 
+from yawsp_app import backup_db
 from yawsp_app.backup_db import BackupDBError, BackupDBStore
 
 
@@ -58,7 +59,16 @@ class BackupDBTests(unittest.TestCase):
         self.assertTrue(self.store.ensure_installed(load_archive))
         self.assertEqual(len(calls), 2)
         self.assertTrue(self.store.is_valid())
-        self.assertEqual(os.listdir(self.profile), ["db"])
+        self.assertEqual(
+            sorted(os.listdir(self.profile)), [".backup-db-validation.json", "db"]
+        )
+
+    def data_reads_during(self, action):
+        with mock.patch(
+            "yawsp_app.backup_db._read_json", wraps=backup_db._read_json
+        ) as read_json:
+            action()
+        return [os.path.basename(call.args[0]) for call in read_json.call_args_list]
 
     def test_minimal_valid_archive_installs_without_complete_alphabet(self):
         calls = []
@@ -205,7 +215,9 @@ class BackupDBTests(unittest.TestCase):
         self.assertTrue(recovered_store.ensure_installed(recover_then_load_archive))
         self.assertEqual(bytes_seen_by_retry, [original])
         self.assertEqual(recovered_store.load("A.txt"), [{"id": 1, "title": "Film"}])
-        self.assertEqual(os.listdir(self.profile), ["db"])
+        self.assertEqual(
+            sorted(os.listdir(self.profile)), [".backup-db-validation.json", "db"]
+        )
 
     def test_new_manifest_detects_a_missing_data_file(self):
         self.store.ensure_installed(
@@ -225,6 +237,188 @@ class BackupDBTests(unittest.TestCase):
             changed.write(b'{"data": []}')
 
         self.assertFalse(self.store.is_valid())
+
+    def test_matching_signature_avoids_warm_validation_and_parses_only_target(self):
+        self.store.ensure_installed(
+            lambda: archive_bytes(
+                {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+            )
+        )
+
+        self.assertEqual(os.path.dirname(self.store.signature_path), self.profile)
+        with open(self.store.signature_path, "r", encoding="utf-8") as source:
+            signature = json.load(source)
+        self.assertEqual(signature["schema_version"], 1)
+        self.assertEqual(set(signature["files"]), {"A.txt", "B.txt"})
+        for filename, recorded in signature["files"].items():
+            actual = os.stat(os.path.join(self.dbdir, filename))
+            self.assertEqual(recorded["size"], actual.st_size)
+            self.assertEqual(recorded["mtime_ns"], actual.st_mtime_ns)
+
+        warm = BackupDBStore(self.profile)
+        reads = self.data_reads_during(
+            lambda: warm.ensure_installed(self.fail_if_called)
+        )
+        self.assertEqual(reads, [])
+
+        reads = self.data_reads_during(lambda: warm.load("A.txt"))
+        self.assertEqual(reads, ["A.txt"])
+
+    def test_valid_legacy_installation_migrates_once_without_changing_data_bytes(self):
+        os.mkdir(self.dbdir)
+        originals = {
+            "A.txt": b'{"data": [{"id": "legacy-a"}]}',
+            "B.txt": b'{"data": [{"id": "legacy-b"}]}',
+        }
+        for filename, contents in originals.items():
+            with open(os.path.join(self.dbdir, filename), "wb") as legacy:
+                legacy.write(contents)
+
+        reads = self.data_reads_during(
+            lambda: self.store.ensure_installed(self.fail_if_called)
+        )
+        self.assertEqual(sorted(reads), ["A.txt", "B.txt"])
+        self.assertTrue(os.path.isfile(self.store.signature_path))
+        self.assertEqual(sorted(os.listdir(self.dbdir)), ["A.txt", "B.txt"])
+        for filename, contents in originals.items():
+            with open(os.path.join(self.dbdir, filename), "rb") as legacy:
+                self.assertEqual(legacy.read(), contents)
+
+        warm = BackupDBStore(self.profile)
+        reads = self.data_reads_during(
+            lambda: warm.ensure_installed(self.fail_if_called)
+        )
+        self.assertEqual(reads, [])
+
+    def test_corrupt_or_unsafe_signature_revalidates_and_is_recreated(self):
+        invalid_signatures = (
+            "{not json",
+            json.dumps({"schema_version": 1, "files": {"../A.txt": {}}}),
+            json.dumps({"schema_version": 999, "files": {}}),
+        )
+        for invalid_signature in invalid_signatures:
+            with self.subTest(signature=invalid_signature):
+                with tempfile.TemporaryDirectory() as root:
+                    store = BackupDBStore(os.path.join(root, "profile"))
+                    store.ensure_installed(
+                        lambda: archive_bytes(
+                            {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+                        )
+                    )
+                    with open(store.signature_path, "w", encoding="utf-8") as marker:
+                        marker.write(invalid_signature)
+
+                    reads = self.data_reads_during(
+                        lambda: store.ensure_installed(self.fail_if_called)
+                    )
+                    self.assertEqual(sorted(reads), ["A.txt", "B.txt"])
+                    self.assertTrue(store.is_valid())
+
+    def test_external_size_and_mtime_changes_trigger_full_metadata_revalidation(self):
+        for kind in ("size", "mtime"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as root:
+                    store = BackupDBStore(os.path.join(root, "profile"))
+                    store.ensure_installed(
+                        lambda: archive_bytes(
+                            {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+                        )
+                    )
+                    target = os.path.join(store.dbdir, "A.txt")
+                    if kind == "size":
+                        with open(target, "w", encoding="utf-8") as changed:
+                            changed.write('{"data": [{"id": 2}]}')
+                    else:
+                        modified = os.stat(target).st_mtime_ns + 1000000
+                        os.utime(target, ns=(modified, modified))
+
+                    loader = (
+                        (lambda: archive_bytes(
+                            {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+                        ))
+                        if kind == "size"
+                        else self.fail_if_called
+                    )
+                    reads = self.data_reads_during(
+                        lambda: store.ensure_installed(loader)
+                    )
+                    self.assertGreaterEqual(reads.count("A.txt"), 2 if kind == "size" else 1)
+                    self.assertIn("B.txt", reads)
+                    self.assertTrue(store.is_valid())
+
+    def test_missing_or_extra_file_rechecks_existing_data_before_repair(self):
+        for kind in ("missing", "extra"):
+            with self.subTest(kind=kind):
+                with tempfile.TemporaryDirectory() as root:
+                    store = BackupDBStore(os.path.join(root, "profile"))
+                    files = {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+                    store.ensure_installed(lambda: archive_bytes(files))
+                    if kind == "missing":
+                        os.remove(os.path.join(store.dbdir, "A.txt"))
+                        expected_existing_reads = 1
+                    else:
+                        with open(os.path.join(store.dbdir, "C.txt"), "wb") as extra:
+                            extra.write(VALID_PAYLOAD)
+                        expected_existing_reads = 2
+
+                    reads = self.data_reads_during(
+                        lambda: store.ensure_installed(lambda: archive_bytes(files))
+                    )
+                    self.assertGreaterEqual(len(reads), expected_existing_reads + 2)
+                    self.assertEqual(reads.count("A.txt"), 1 if kind == "missing" else 2)
+                    self.assertTrue(store.is_valid())
+                    self.assertNotIn("C.txt", os.listdir(store.dbdir))
+
+    def test_signature_is_replaced_atomically_without_temporary_residue(self):
+        real_replace = os.replace
+        signature_replacements = []
+
+        def record_replace(source, destination):
+            if destination == self.store.signature_path:
+                signature_replacements.append((source, destination))
+            return real_replace(source, destination)
+
+        with mock.patch("yawsp_app.backup_db.os.replace", side_effect=record_replace):
+            self.store.ensure_installed(lambda: archive_bytes())
+
+        self.assertEqual(len(signature_replacements), 1)
+        source, destination = signature_replacements[0]
+        self.assertNotEqual(source, destination)
+        self.assertFalse(os.path.exists(source))
+        self.assertEqual(
+            sorted(os.listdir(self.profile)), [".backup-db-validation.json", "db"]
+        )
+
+    def test_seekable_temporary_archive_path_is_supported_and_always_removed(self):
+        for corrupt in (False, True):
+            with self.subTest(corrupt=corrupt):
+                with tempfile.TemporaryDirectory() as root:
+                    store = BackupDBStore(os.path.join(root, "profile"))
+                    os.mkdir(store.profile)
+                    archive_path = os.path.join(store.profile, "source.zip")
+                    with open(archive_path, "wb") as source:
+                        source.write(archive_with_bad_crc() if corrupt else archive_bytes())
+
+                    if corrupt:
+                        with self.assertRaises(BackupDBError):
+                            store.ensure_installed(lambda: archive_path)
+                    else:
+                        self.assertTrue(store.ensure_installed(lambda: archive_path))
+                        self.assertEqual(store.load("A.txt")[0]["title"], "Film")
+                    self.assertFalse(os.path.exists(archive_path))
+                    self.assertFalse(
+                        any(name.startswith(".backup-db-") and name != ".backup-db-validation.json"
+                            for name in os.listdir(store.profile))
+                    )
+
+    def test_crc_failure_is_detected_by_extraction_without_testzip_pass(self):
+        with mock.patch(
+            "yawsp_app.backup_db.zipfile.ZipFile.testzip",
+            side_effect=AssertionError("redundant full testzip pass"),
+        ) as testzip:
+            with self.assertRaises(BackupDBError):
+                self.store.ensure_installed(lambda: archive_with_bad_crc())
+        testzip.assert_not_called()
 
     def test_group_selection_trims_and_only_routes_ascii_initials_to_alphabet(self):
         cases = {

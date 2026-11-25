@@ -727,7 +727,9 @@ class WebshareUITests(unittest.TestCase):
 
     def test_padded_searchdb_query_uses_trimmed_group_and_filter(self):
         self.client.link_results = ["https://cdn.invalid/db.zip"]
-        self.session.queue_response(FakeResponse(content=archive_bytes("F.txt")))
+        self.session.queue_response(
+            FakeResponse(content=archive_bytes("F.txt"), forbid_content=True)
+        )
 
         result = self.runner.run_directory(
             lambda: self.handlers["searchdb"](
@@ -753,10 +755,96 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(len(self.plugin.end_of_directory_calls), 2)
         self.assertTrue(all(call["succeeded"] for call in self.plugin.end_of_directory_calls))
 
+    def test_backup_db_streams_mixed_compression_and_member_larger_than_chunk(self):
+        output = io.BytesIO()
+        large_payload = json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "movie-1",
+                        "title": "Film",
+                        "plot": "x" * (3 * 256 * 1024),
+                        "streams": [],
+                    }
+                ]
+            }
+        ).encode("utf-8")
+        small_payload = b'{"data": []}'
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("A.txt", large_payload, compress_type=zipfile.ZIP_STORED)
+            archive.writestr("B.txt", small_payload, compress_type=zipfile.ZIP_DEFLATED)
+        archive_data = output.getvalue()
+        chunks = [archive_data[index:index + 32768] for index in range(0, len(archive_data), 32768)]
+        response = FakeResponse(
+            content=archive_data,
+            chunks=chunks,
+            forbid_content=True,
+        )
+        requested_chunk_sizes = []
+        real_iter_content = response.iter_content
+
+        def recording_iter_content(chunk_size=1, decode_unicode=False):
+            requested_chunk_sizes.append(chunk_size)
+            return real_iter_content(chunk_size, decode_unicode)
+
+        response.iter_content = recording_iter_content
+        self.client.link_results = ["https://cdn.invalid/db.zip"]
+        self.session.queue_response(response)
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["db"]({"action": "db", "file": "A.txt"})
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(self.find_item("Film"))
+        self.assertEqual(requested_chunk_sizes, [256 * 1024])
+        self.assertGreater(len(large_payload), requested_chunk_sizes[0])
+        self.assertEqual(response.raise_for_status_calls, 1)
+        self.assertTrue(response.closed)
+        self.assertEqual(
+            sorted(os.listdir(self.profile)), [".backup-db-validation.json", "db"]
+        )
+
+    def test_backup_db_http_and_stream_failures_close_response_and_remove_temporaries(self):
+        responses = [
+            FakeResponse(
+                content=archive_bytes(),
+                status_code=503,
+                forbid_content=True,
+            ),
+            FakeResponse(
+                content=archive_bytes(),
+                chunks=[archive_bytes()[:32], archive_bytes()[32:]],
+                stream_error=OSError("synthetic stream interruption"),
+                forbid_content=True,
+            ),
+        ]
+        iter_calls = []
+        real_iter_content = responses[1].iter_content
+
+        def recording_iter_content(chunk_size=1, decode_unicode=False):
+            iter_calls.append(chunk_size)
+            return real_iter_content(chunk_size, decode_unicode)
+
+        responses[1].iter_content = recording_iter_content
+        self.client.link_results = ["https://cdn.invalid/db.zip"] * len(responses)
+        for response in responses:
+            self.session.queue_response(response)
+
+        for index, response in enumerate(responses):
+            with self.subTest(index=index):
+                result = self.runner.run_directory(
+                    lambda: self.handlers["db"]({"action": "db"})
+                )
+                self.assertFalse(result.succeeded)
+                self.assertTrue(response.closed)
+                self.assertEqual(os.listdir(self.profile), [])
+        self.assertEqual(iter_calls, [256 * 1024])
+
     def test_failed_backup_db_install_can_be_retried_after_cleanup(self):
         self.client.link_results = ["https://cdn.invalid/db.zip", "https://cdn.invalid/db.zip"]
-        self.session.queue_response(FakeResponse(content=b"not a zip"))
-        self.session.queue_response(FakeResponse(content=archive_bytes()))
+        self.session.queue_response(FakeResponse(content=b"not a zip", forbid_content=True))
+        self.session.queue_response(FakeResponse(content=archive_bytes(), forbid_content=True))
 
         failed = self.runner.run_directory(lambda: self.handlers["db"]({"action": "db"}))
         repaired = self.runner.run_directory(

@@ -15,6 +15,8 @@ _RECOVERY_DIRECTORY = ".backup-db-recovery"
 _PREVIOUS_DATABASE = "previous-db"
 _MANIFEST_FILENAME = ".manifest.json"
 _MANIFEST_VERSION = 1
+_SIGNATURE_FILENAME = ".backup-db-validation.json"
+_SIGNATURE_VERSION = 1
 
 
 class BackupDBError(RuntimeError):
@@ -34,7 +36,7 @@ def _read_json(path):
     return value
 
 
-def _data_files(directory):
+def _data_file_metadata(directory, parse_documents):
     try:
         entries = list(os.scandir(directory))
     except OSError as error:
@@ -49,8 +51,13 @@ def _data_files(directory):
                 raise BackupDBError(
                     "Backup DB data member is not a regular file: {0}".format(entry.name)
                 )
-            _read_json(entry.path)
-            data_files[entry.name] = entry.stat(follow_symlinks=False).st_size
+            if parse_documents:
+                _read_json(entry.path)
+            identity = entry.stat(follow_symlinks=False)
+            data_files[entry.name] = {
+                "size": identity.st_size,
+                "mtime_ns": identity.st_mtime_ns,
+            }
         except OSError as error:
             raise BackupDBError(
                 "Cannot inspect Backup DB file: {0}".format(entry.name)
@@ -58,6 +65,10 @@ def _data_files(directory):
     if not data_files:
         raise BackupDBError("Backup DB contains no regular .txt data files")
     return data_files
+
+
+def _data_file_sizes(data_files):
+    return {filename: identity["size"] for filename, identity in data_files.items()}
 
 
 def _manifest_path(directory):
@@ -99,8 +110,9 @@ def _check_manifest(directory, actual_files):
 def _validate_directory(directory):
     if os.path.islink(directory) or not os.path.isdir(directory):
         raise BackupDBError("Backup DB directory is missing or unsafe")
-    actual_files = _data_files(directory)
-    _check_manifest(directory, actual_files)
+    data_files = _data_file_metadata(directory, parse_documents=True)
+    _check_manifest(directory, _data_file_sizes(data_files))
+    return data_files
 
 
 def _write_manifest(directory, data_files):
@@ -111,6 +123,66 @@ def _write_manifest(directory, data_files):
             json.dump(manifest, output, sort_keys=True, separators=(",", ":"))
     except OSError as error:
         raise BackupDBError("Cannot record Backup DB manifest") from error
+
+
+def _read_validation_signature(path):
+    try:
+        with open(path, "r", encoding="utf-8") as source:
+            signature = json.load(source)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise BackupDBError("Invalid Backup DB validation signature") from error
+
+    if (
+        not isinstance(signature, dict)
+        or isinstance(signature.get("schema_version"), bool)
+        or signature.get("schema_version") != _SIGNATURE_VERSION
+        or not isinstance(signature.get("files"), dict)
+        or not signature["files"]
+    ):
+        raise BackupDBError("Invalid Backup DB validation signature structure")
+
+    for filename, identity in signature["files"].items():
+        if (
+            not isinstance(filename, str)
+            or filename != os.path.basename(filename)
+            or "/" in filename
+            or "\\" in filename
+            or not filename.lower().endswith(".txt")
+            or not isinstance(identity, dict)
+        ):
+            raise BackupDBError("Invalid Backup DB validation signature entry")
+        for field in ("size", "mtime_ns"):
+            value = identity.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise BackupDBError("Invalid Backup DB validation signature entry")
+    return signature["files"]
+
+
+def _write_validation_signature(path, data_files):
+    temporary_path = None
+    try:
+        descriptor, temporary_path = tempfile.mkstemp(
+            prefix=".backup-db-validation-", dir=os.path.dirname(path)
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(
+                {"schema_version": _SIGNATURE_VERSION, "files": data_files},
+                output,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except (OSError, TypeError, ValueError) as error:
+        raise BackupDBError("Cannot record Backup DB validation signature") from error
+    finally:
+        if temporary_path is not None:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
 
 
 def _member_target(root, member):
@@ -141,16 +213,17 @@ def _member_target(root, member):
         raise BackupDBError("Unsafe Backup DB archive member: {0}".format(filename))
 
 
-def _extract_archive(archive_data, destination):
+def _extract_archive(archive_source, destination):
     try:
-        with zipfile.ZipFile(io.BytesIO(archive_data), "r") as archive:
+        source = (
+            io.BytesIO(archive_source)
+            if isinstance(archive_source, (bytes, bytearray, memoryview))
+            else archive_source
+        )
+        with zipfile.ZipFile(source, "r") as archive:
             for member in archive.infolist():
                 _member_target(destination, member)
-            bad_member = archive.testzip()
-            if bad_member is not None:
-                raise BackupDBError(
-                    "Backup DB archive CRC check failed for {0}".format(bad_member)
-                )
+            # extractall reads every member fully; ZipExtFile verifies each CRC.
             archive.extractall(destination)
     except BackupDBError:
         raise
@@ -173,6 +246,7 @@ class BackupDBStore:
     def __init__(self, profile):
         self.profile = os.path.abspath(os.fspath(profile))
         self.dbdir = os.path.join(self.profile, _DATABASE_DIRECTORY)
+        self.signature_path = os.path.join(self.profile, _SIGNATURE_FILENAME)
         self.recovery_dir = os.path.join(self.profile, _RECOVERY_DIRECTORY)
         self.previous_database = os.path.join(
             self.recovery_dir, _PREVIOUS_DATABASE
@@ -217,7 +291,23 @@ class BackupDBStore:
             ) from error
         self._remove_empty_recovery_directory()
 
+    def _matches_validation_signature(self):
+        if os.path.islink(self.dbdir) or not os.path.isdir(self.dbdir):
+            return False
+        try:
+            recorded = _read_validation_signature(self.signature_path)
+            actual = _data_file_metadata(self.dbdir, parse_documents=False)
+        except BackupDBError:
+            return False
+        return recorded == actual
+
+    def _validate_and_record(self):
+        data_files = _validate_directory(self.dbdir)
+        _write_validation_signature(self.signature_path, data_files)
+
     def is_valid(self):
+        if self._matches_validation_signature():
+            return True
         try:
             _validate_directory(self.dbdir)
         except BackupDBError:
@@ -225,23 +315,35 @@ class BackupDBStore:
         return True
 
     def ensure_installed(self, archive_loader):
-        """Install one fully validated archive, leaving old state intact on failure."""
+        """Install one fully validated archive, leaving old state intact on failure.
+
+        Byte loaders remain supported. A loader may instead return an owned temporary
+        ZIP path; the store closes its extraction handle and removes that path in all
+        success and failure cases.
+        """
         self._recover_previous_database()
-        if self.is_valid():
+        if self._matches_validation_signature():
             return True
+        try:
+            self._validate_and_record()
+            return True
+        except BackupDBError:
+            pass
 
         temporary_directory = None
+        archive_source = None
         try:
             os.makedirs(self.profile, exist_ok=True)
             temporary_directory = tempfile.mkdtemp(
                 prefix=".backup-db-", dir=self.profile
             )
-            archive_data = archive_loader()
+            archive_source = archive_loader()
             extracted = _prepared_database(temporary_directory)
-            _extract_archive(archive_data, extracted)
+            _extract_archive(archive_source, extracted)
             source_database = _archived_database_root(extracted)
-            data_files = _data_files(source_database)
-            _write_manifest(source_database, data_files)
+            data_files = _validate_directory(source_database)
+            _write_manifest(source_database, _data_file_sizes(data_files))
+            _write_validation_signature(self.signature_path, data_files)
 
             staged_database = os.path.join(temporary_directory, "staged-db")
             os.replace(source_database, staged_database)
@@ -280,6 +382,11 @@ class BackupDBStore:
         except Exception as error:
             raise BackupDBError("Backup DB installation failed: {0}".format(error)) from error
         finally:
+            if isinstance(archive_source, (str, os.PathLike)):
+                try:
+                    os.remove(archive_source)
+                except OSError:
+                    pass
             if temporary_directory is not None:
                 shutil.rmtree(temporary_directory, ignore_errors=True)
 
@@ -302,7 +409,8 @@ class BackupDBStore:
             or "\\" in filename
         ):
             raise BackupDBError("Unsafe Backup DB filename: {0}".format(filename))
-        _validate_directory(self.dbdir)
+        if not self._matches_validation_signature():
+            self._validate_and_record()
         data = _read_json(os.path.join(self.dbdir, filename))["data"]
         if not all(isinstance(item, dict) for item in data):
             raise BackupDBError("Backup DB data items must be JSON objects")

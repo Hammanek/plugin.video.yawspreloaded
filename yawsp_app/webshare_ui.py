@@ -5,6 +5,7 @@ import json
 import ntpath
 import os
 import re
+import tempfile
 
 from unidecode import unidecode
 
@@ -25,6 +26,7 @@ _SORTS = ("", "recent", "rating", "largest", "smallest")
 _BROWSING_SENTINEL = "%#NONE#%"
 _SEARCH_HISTORY = "search_history"
 _BACKUP_DB = "D1iIcURxlR"
+_BACKUP_DB_DOWNLOAD_CHUNK_SIZE = 256 * 1024
 
 
 def _is_ok(xml):
@@ -563,13 +565,35 @@ def build_webshare_handlers(runtime, client_factory):
 
     def install_database(token):
         def load_archive():
-            link = client.get_link(_BACKUP_DB, token)
-            response = runtime.session.get(link, stream=True, timeout=60)
+            archive_path = None
             try:
-                response.raise_for_status()
-                return response.content
-            finally:
-                response.close()
+                link = client.get_link(_BACKUP_DB, token)
+                response = runtime.session.get(link, stream=True, timeout=60)
+                try:
+                    response.raise_for_status()
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        prefix=".backup-db-download-",
+                        suffix=".zip",
+                        dir=runtime.profile,
+                        delete=False,
+                    ) as archive_output:
+                        archive_path = archive_output.name
+                        for chunk in response.iter_content(
+                            chunk_size=_BACKUP_DB_DOWNLOAD_CHUNK_SIZE
+                        ):
+                            if chunk:
+                                archive_output.write(chunk)
+                finally:
+                    response.close()
+                return archive_path
+            except Exception:
+                if archive_path is not None:
+                    try:
+                        os.remove(archive_path)
+                    except OSError:
+                        pass
+                raise
 
         backup_store.ensure_installed(load_archive)
 
