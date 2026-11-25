@@ -2,6 +2,7 @@ import contextlib
 import importlib
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -11,7 +12,7 @@ from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
-from tests.test_webshare_ui import FakeClient, xml
+from tests.test_webshare_ui import FakeClient, archive_bytes, xml
 from yawsp_app import router as production_router
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
@@ -94,7 +95,21 @@ class Owner:
 
 
 def install_kodi_stubs():
-    addon = AddonRecorder(addon_info={"name": "YAWsP", "profile": "special://profile/"})
+    addon = AddonRecorder(
+        addon_info={"name": "YAWsP", "profile": "special://profile/"},
+        strings={
+            30101: "Login required",
+            30102: "Request failed",
+            30302: "Downloading",
+            30303: "Downloaded",
+            30304: "Download failed",
+            30433: "Download queued",
+            30434: "Backup DB installation in progress",
+            30435: "Backup DB installed",
+            30436: "Backup DB installation failed",
+            30437: "Download could not be queued",
+        },
+    )
     addon.open_settings_calls = 0
 
     def open_settings():
@@ -283,8 +298,11 @@ class EntrypointTests(unittest.TestCase):
     def test_real_kodi_adapters_share_one_default_executor_and_map_language(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=settings"]
-        ), mock.patch.object(production_router, "BackgroundPrefetch") as background_type:
+        ), mock.patch.object(production_router, "BackgroundPrefetch") as background_type, mock.patch.object(
+            production_router, "DownloadJobManager"
+        ) as download_jobs_type:
             background = background_type.return_value
+            download_jobs = download_jobs_type.return_value
             production_router.close()
             owner = production_router._get_owner()
 
@@ -313,7 +331,7 @@ class EntrypointTests(unittest.TestCase):
                 return_value={
                     "menu": lambda params: menu_calls.append("webshare") or DirectoryResult()
                 },
-            ), mock.patch.object(
+            ) as webshare_build, mock.patch.object(
                 production_router,
                 "build_tmdb_handlers",
                 return_value={
@@ -323,8 +341,13 @@ class EntrypointTests(unittest.TestCase):
                 production_router.router("")
             self.assertEqual(menu_calls, ["webshare", "tmdb"])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
+            self.assertIs(webshare_build.call_args.kwargs["download_jobs"], download_jobs)
 
             self.assertEqual(background_type.call_count, 1)
+            self.assertEqual(download_jobs_type.call_count, 1)
+            self.assertEqual(
+                download_jobs_type.call_args.kwargs["abort"](), False
+            )
             self.assertTrue(
                 hasattr(owner, "snapshot_store"),
                 "production owner does not provide persistent watchlist snapshots",
@@ -338,6 +361,7 @@ class EntrypointTests(unittest.TestCase):
             )
             production_router.close()
             background.close.assert_called_once_with(wait=False)
+            download_jobs.close.assert_called_once_with(wait=False)
 
     def test_production_watched_without_api_key_is_one_clean_action_completion(self):
         with install_kodi_stubs(), mock.patch.object(
@@ -369,9 +393,19 @@ class EntrypointTests(unittest.TestCase):
         ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
             production_router.requests, "Session"
         ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
-            session = FakeSession([response])
-            session.headers = {}
-            session_type.return_value = session
+            ui_session = FakeSession()
+            ui_session.headers = {}
+            worker_session = FakeSession([response])
+            worker_session.headers = {}
+            session_type.side_effect = [ui_session, worker_session]
+            response_closed = threading.Event()
+            close_response = response.close
+
+            def observed_close():
+                close_response()
+                response_closed.set()
+
+            response.close = observed_close
             client = FakeClient()
             client.link_results = ["https://cdn.invalid/movie"]
             client.info_results = [
@@ -389,10 +423,27 @@ class EntrypointTests(unittest.TestCase):
             vfs_module.delete = vfs.delete
             production_router.close()
             production_router._get_owner()
+            recorder = sys.modules["xbmcplugin"]._recorder
+            terminal_notification = threading.Event()
+            record_notification = recorder.notification
+
+            def observed_notification(*args, **kwargs):
+                outcome = record_notification(*args, **kwargs)
+                if args[1].startswith(("Downloaded", "Download failed")):
+                    terminal_notification.set()
+                return outcome
+
+            recorder.notification = observed_notification
 
             result = production_router.router("action=download&ident=abc")
+            if not terminal_notification.wait(2):
+                raise AssertionError("production media worker did not report its terminal result")
+            if not response_closed.is_set():
+                raise AssertionError("production media worker did not close its response")
+            if ui_session.calls:
+                raise AssertionError("media worker used the UI owner's HTTP session")
 
-            return result, session, client, sys.modules["xbmcplugin"]._recorder
+            return result, worker_session, client, sys.modules["xbmcplugin"]._recorder
 
     def test_production_remote_download_uses_vfs_stream_close_and_rename(self):
         response = FakeResponse(
@@ -412,6 +463,7 @@ class EntrypointTests(unittest.TestCase):
         self.assertTrue(all(output.closed for output in vfs.open_files))
         self.assertTrue(response.closed)
         self.assertEqual(session.calls[0]["kwargs"]["stream"], True)
+        self.assertEqual(len(recorder.resolved_url_calls), 1)
         self.assertEqual(recorder.resolved_url_calls[-1]["handle"], 17)
 
     def test_production_remote_download_failure_closes_and_cleans_partial_vfs_file(self):
@@ -430,13 +482,97 @@ class EntrypointTests(unittest.TestCase):
                 with self.assertLogs("yawsp_app.router", level="ERROR"):
                     result, _, _, _ = self.run_production_vfs_download(response, vfs)
 
-                self.assertFalse(result.handled)
+                self.assertTrue(result.handled)
                 self.assertEqual(vfs.files, {})
                 self.assertEqual(len(vfs.renames), 1 if failure == "rename" else 0)
                 self.assertEqual(len(vfs.open_files), 1)
                 self.assertTrue(vfs.open_files[0].closed)
                 self.assertEqual(len(vfs.deleted), 1)
                 self.assertTrue(response.closed)
+
+    def test_production_cold_database_uses_worker_session_and_one_post_promote_refresh(self):
+        with install_kodi_stubs(), mock.patch.object(
+            sys,
+            "argv",
+            ["plugin://plugin.video.yawspreloaded/", "17", "?action=db"],
+        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+            production_router.requests, "Session"
+        ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
+            ui_session = FakeSession()
+            ui_session.headers = {}
+            payload = archive_bytes()
+            response = FakeResponse(content=payload, forbid_content=True)
+            worker_session = FakeSession([response])
+            worker_session.headers = {}
+            session_type.side_effect = [ui_session, worker_session]
+            client = FakeClient()
+            client.link_results = ["https://cdn.invalid/db.zip"]
+            client_type.return_value = client
+            entered = threading.Event()
+            release = threading.Event()
+
+            def blocked_stream(chunk_size=1, decode_unicode=False):
+                entered.set()
+                if not release.wait(2):
+                    raise AssertionError("production database stream was not released")
+                yield payload
+
+            response.iter_content = blocked_stream
+            with tempfile.TemporaryDirectory() as profile:
+                translate = lambda value: profile
+                sys.modules["xbmc"].translatePath = translate
+                sys.modules["xbmcvfs"].translatePath = translate
+                production_router.close()
+                owner = production_router._get_owner()
+                recorder = sys.modules["xbmcplugin"]._recorder
+                refreshed = threading.Event()
+                execute_builtin = recorder.executeBuiltin
+
+                def observed_refresh(command):
+                    execute_builtin(command)
+                    if command == "Container.Refresh":
+                        refreshed.set()
+
+                recorder.executeBuiltin = observed_refresh
+                sys.modules["xbmc"].executebuiltin = observed_refresh
+                returned = threading.Event()
+                results = []
+
+                def invoke():
+                    results.append(production_router.router("action=db&file=A.txt"))
+                    returned.set()
+
+                invocation = threading.Thread(target=invoke)
+                invocation.start()
+                self.assertTrue(returned.wait(2), "production DB handoff blocked on its archive")
+                invocation.join(2)
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(results[0].succeeded)
+                self.assertEqual(len(recorder.end_of_directory_calls), 1)
+                self.assertEqual(len(recorder.items), 1)
+                self.assertEqual(
+                    recorder.items[0]["listitem"].label,
+                    "Backup DB installation in progress",
+                )
+                self.assertFalse(refreshed.is_set())
+                self.assertEqual(ui_session.calls, [])
+
+                release.set()
+
+                self.assertTrue(refreshed.wait(2))
+                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
+                self.assertEqual(len(recorder.end_of_directory_calls), 1)
+                self.assertTrue(response.closed)
+                warm = production_router.router("action=db&file=A.txt")
+                self.assertTrue(warm.succeeded)
+                self.assertTrue(
+                    any(item["listitem"].label == "Film" for item in recorder.items)
+                )
+                self.assertEqual(client.revalidate_calls, 1)
+                self.assertEqual(len(worker_session.calls), 1)
+                self.assertEqual(ui_session.calls, [])
+                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
+                self.assertEqual(len(recorder.end_of_directory_calls), 2)
 
     def test_real_owner_rebuilds_runtime_and_runner_for_sequential_invocations(self):
         with install_kodi_stubs(), mock.patch.object(
@@ -447,7 +583,7 @@ class EntrypointTests(unittest.TestCase):
             production_router.close()
             owner = production_router._get_owner()
 
-            def webshare_handlers(runtime, client_factory):
+            def webshare_handlers(runtime, client_factory, **kwargs):
                 def directory(params):
                     runtime.add_item(
                         runtime.base_url + "?generated=1", runtime.list_item(label="Directory")

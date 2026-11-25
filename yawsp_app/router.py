@@ -14,6 +14,7 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urlparse import parse_qsl
 
+from yawsp_app.download_jobs import DownloadJobManager
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import (
     ActionRunner,
@@ -188,6 +189,11 @@ class _ProductionOwner:
             snapshot_store=self.snapshot_store,
             genre_repository=self.genre_repository,
         )
+        self.download_jobs = DownloadJobManager(
+            session_factory=requests.Session,
+            abort=self.monitor.abortRequested,
+            logger=_LOGGER,
+        )
         self.runner = ActionRunner(
             self.plugin,
             self.runtime.handle,
@@ -231,7 +237,16 @@ class _ProductionOwner:
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
         )
-        webshare = build_webshare_handlers(runtime, lambda: webshare_client)
+        webshare = build_webshare_handlers(
+            runtime,
+            lambda: webshare_client,
+            download_jobs=self.download_jobs,
+            worker_client_factory=lambda session: WebshareClient(session, self.settings),
+            notify=lambda message: self.plugin.notification(
+                self.addon.getAddonInfo("name"), message
+            ),
+            refresh=lambda: self.plugin.executeBuiltin("Container.Refresh"),
+        )
         tmdb = build_tmdb_handlers(
             runtime,
             lambda: tmdb_client,
@@ -266,6 +281,7 @@ class _ProductionOwner:
             return
         self._closed = True
         self.background.close(wait=False)
+        self.download_jobs.close(wait=False)
         try:
             self.session.close()
         except Exception:

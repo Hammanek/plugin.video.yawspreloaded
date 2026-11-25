@@ -369,3 +369,23 @@ msgctxt "#30432"
 msgid "TMDB Account ID"
 msgstr "TMDB Account ID"
 
+msgctxt "#30433"
+msgid "Download queued"
+msgstr "Sťahovanie zaradené do fronty"
+
+msgctxt "#30434"
+msgid "Backup DB installation in progress"
+msgstr "Inštalácia Backup DB prebieha"
+
+msgctxt "#30435"
+msgid "Backup DB installed"
+msgstr "Backup DB bola nainštalovaná"
+
+msgctxt "#30436"
+msgid "Backup DB installation failed"
+msgstr "Inštalácia Backup DB zlyhala"
+
+msgctxt "#30437"
+msgid "Download could not be queued"
+msgstr "Sťahovanie sa nepodarilo zaradiť do fronty"
+

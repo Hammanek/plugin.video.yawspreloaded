@@ -369,3 +369,23 @@ msgctxt "#30432"
 msgid "TMDB Account ID"
 msgstr ""
 
+msgctxt "#30433"
+msgid "Download queued"
+msgstr ""
+
+msgctxt "#30434"
+msgid "Backup DB installation in progress"
+msgstr ""
+
+msgctxt "#30435"
+msgid "Backup DB installed"
+msgstr ""
+
+msgctxt "#30436"
+msgid "Backup DB installation failed"
+msgstr ""
+
+msgctxt "#30437"
+msgid "Download could not be queued"
+msgstr ""
+

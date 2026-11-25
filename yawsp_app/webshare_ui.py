@@ -15,6 +15,11 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
 from yawsp_app.backup_db import BackupDBStore
+from yawsp_app.download_jobs import (
+    DownloadOperation,
+    backup_db_job_key,
+    media_job_key,
+)
 from yawsp_app.downloads import stream_download
 from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult, is_vfs_path
 from yawsp_app.search import matches_filename, page_offsets, parse_query
@@ -228,11 +233,242 @@ def _destination(folder, filename):
     return destination
 
 
-def build_webshare_handlers(runtime, client_factory):
+class _CancellableResponse:
+    """Delegate a streaming response while observing job cancellation per chunk."""
+
+    def __init__(self, response, context):
+        self._response = response
+        self._context = context
+
+    @property
+    def headers(self):
+        return self._response.headers
+
+    def raise_for_status(self):
+        self._context.raise_if_cancelled()
+        return self._response.raise_for_status()
+
+    def iter_content(self, chunk_size=1, decode_unicode=False):
+        self._context.raise_if_cancelled()
+        for chunk in self._response.iter_content(chunk_size, decode_unicode):
+            self._context.raise_if_cancelled()
+            yield chunk
+        self._context.raise_if_cancelled()
+
+    def close(self):
+        return self._response.close()
+
+
+class _CancellableFileOps:
+    """Prevent a cancelled transfer from replacing its final destination."""
+
+    def __init__(self, file_ops, context):
+        self._file_ops = file_ops
+        self._context = context
+
+    def open_write(self, path):
+        self._context.raise_if_cancelled()
+        return self._file_ops.open_write(path)
+
+    def replace(self, source, destination):
+        self._context.raise_if_cancelled()
+        return self._file_ops.replace(source, destination)
+
+    def remove(self, path):
+        return self._file_ops.remove(path)
+
+    def exists(self, path):
+        return self._file_ops.exists(path)
+
+
+class _MediaDownloadOperation(DownloadOperation):
+    def __init__(
+        self,
+        worker_client_factory,
+        ident,
+        requested_name,
+        folder,
+        file_ops,
+        normalize,
+        notify_progress,
+        interval,
+        notify,
+        logger,
+        downloading_label,
+        downloaded_label,
+        failed_label,
+    ):
+        self.worker_client_factory = worker_client_factory
+        self.ident = ident
+        self.requested_name = requested_name
+        self.folder = folder
+        self.file_ops = file_ops
+        self.normalize = normalize
+        self.notify_progress = notify_progress
+        self.interval = interval
+        self.notify = notify
+        self.logger = logger
+        self.downloading_label = downloading_label
+        self.downloaded_label = downloaded_label
+        self.failed_label = failed_label
+        self.display_name = _download_name((requested_name, ident), normalize)
+
+    def run(self, context):
+        context.raise_if_cancelled()
+        client = self.worker_client_factory(context.session)
+        token = client.revalidate()
+        if not token:
+            raise WebshareError("Webshare download requires authentication")
+        link = client.get_link(self.ident, token, "file_download")
+        if not link:
+            raise WebshareError("Webshare download returned an empty link")
+        xml = client.get_info(self.ident, token)
+        metadata = _to_dict(xml)
+        self.display_name = _download_name(
+            (metadata.get("name"), self.requested_name, self.ident),
+            self.normalize,
+        )
+        destination = _destination(self.folder, self.display_name)
+        context.rekey(media_job_key(destination))
+        context.raise_if_cancelled()
+
+        if self.notify_progress:
+            self.notify("{0} {1}".format(self.downloading_label, self.display_name))
+
+        def progress(percent, name):
+            context.raise_if_cancelled()
+            self.notify("{0}% - {1}".format(percent, name))
+
+        progress.interval = self.interval
+        response = context.session.get(link, stream=True, timeout=60)
+        stream_download(
+            _CancellableResponse(response, context),
+            destination,
+            self.display_name,
+            _CancellableFileOps(self.file_ops, context),
+            progress if self.notify_progress else None,
+        )
+        return self.display_name
+
+    def succeeded(self, display_name):
+        self.notify("{0} {1}".format(self.downloaded_label, display_name))
+
+    def failed(self, error):
+        self.logger.error("Webshare download failed: %s", error)
+        self.notify("{0} {1}".format(self.failed_label, self.display_name))
+
+
+class _BackupDatabaseOperation(DownloadOperation):
+    def __init__(
+        self,
+        backup_store,
+        worker_client_factory,
+        notify,
+        refresh,
+        logger,
+        installed_label,
+        failed_label,
+        queue_ident=None,
+        queue_succeeded_label=None,
+        queue_failed_label=None,
+    ):
+        self.backup_store = backup_store
+        self.worker_client_factory = worker_client_factory
+        self.notify = notify
+        self.refresh = refresh
+        self.logger = logger
+        self.installed_label = installed_label
+        self.failed_label = failed_label
+        self.queue_ident = queue_ident
+        self.queue_succeeded_label = queue_succeeded_label
+        self.queue_failed_label = queue_failed_label
+
+    def _load_archive(self, context, client, token):
+        archive_path = None
+        try:
+            context.raise_if_cancelled()
+            link = client.get_link(_BACKUP_DB, token)
+            response = context.session.get(link, stream=True, timeout=60)
+            try:
+                response.raise_for_status()
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=".backup-db-download-",
+                    suffix=".zip",
+                    dir=self.backup_store.profile,
+                    delete=False,
+                ) as archive_output:
+                    archive_path = archive_output.name
+                    for chunk in response.iter_content(
+                        chunk_size=_BACKUP_DB_DOWNLOAD_CHUNK_SIZE
+                    ):
+                        context.raise_if_cancelled()
+                        if chunk:
+                            archive_output.write(chunk)
+                    context.raise_if_cancelled()
+            finally:
+                response.close()
+            return archive_path
+        except Exception:
+            if archive_path is not None:
+                try:
+                    os.remove(archive_path)
+                except OSError:
+                    pass
+            raise
+
+    def run(self, context):
+        client = self.worker_client_factory(context.session)
+        token = client.revalidate()
+        if not token:
+            raise WebshareError("Backup DB installation requires authentication")
+        context.raise_if_cancelled()
+        self.backup_store.ensure_installed(
+            lambda: self._load_archive(context, client, token)
+        )
+        if self.queue_ident:
+            context.raise_if_cancelled()
+            try:
+                xml = client._post(
+                    "queue_file", {"ident": self.queue_ident, "wst": token}
+                )
+                queue_message = (
+                    self.queue_succeeded_label
+                    if _is_ok(xml)
+                    else self.queue_failed_label
+                )
+            except Exception as error:
+                self.logger.error("Backup DB queue action failed: %s", error)
+                queue_message = self.queue_failed_label
+            context.raise_if_cancelled()
+            self.notify(queue_message)
+        context.raise_if_cancelled()
+        return True
+
+    def succeeded(self, installed):
+        self.notify(self.installed_label)
+        self.refresh()
+
+    def failed(self, error):
+        self.logger.error("Backup DB installation failed: %s", error)
+        self.notify(self.failed_label)
+
+
+def build_webshare_handlers(
+    runtime,
+    client_factory,
+    download_jobs=None,
+    worker_client_factory=None,
+    notify=None,
+    refresh=None,
+):
     """Build Webshare handlers; none calls Kodi directory/playback completion."""
     client = client_factory()
     backup_store = BackupDBStore(runtime.profile)
     history_path = os.path.join(runtime.profile, _SEARCH_HISTORY)
+    worker_client_factory = worker_client_factory or (lambda session: client_factory())
+    notify = notify or runtime.notify
+    refresh = refresh or (lambda: runtime.execute_builtin("Container.Refresh"))
 
     def token_or_notify():
         token = client.revalidate()
@@ -511,9 +747,6 @@ def build_webshare_handlers(runtime, client_factory):
         return PlaybackResult(True, item)
 
     def download(params):
-        token = token_or_notify()
-        if not token:
-            return ActionResult(handled=False)
         where = runtime.get_setting("dfolder")
         file_ops = runtime.file_ops_for(where) if where else runtime.file_ops
         if not where or not file_ops.exists(where):
@@ -522,7 +755,7 @@ def build_webshare_handlers(runtime, client_factory):
             return ActionResult(handled=False)
 
         normalize = runtime.get_setting("dnormalize") == "true"
-        notify = runtime.get_setting("dnotify") == "true"
+        notify_progress = runtime.get_setting("dnotify") == "true"
         try:
             interval = int(re.sub(r"[^\d]+", "", runtime.get_setting("dnevery") or "10"))
         except ValueError:
@@ -530,77 +763,79 @@ def build_webshare_handlers(runtime, client_factory):
         display_name = _download_name(
             (params.get("name"), params.get("ident")), normalize
         )
-        try:
-            link = client.get_link(params["ident"], token, "file_download")
-            if not link:
-                return ActionResult(handled=False)
-            xml = client.get_info(params["ident"], token)
-            metadata = _to_dict(xml)
-            display_name = _download_name(
-                (metadata.get("name"), params.get("name"), params.get("ident")),
-                normalize,
+        destination = _destination(where, display_name)
+        operation = _MediaDownloadOperation(
+            worker_client_factory=worker_client_factory,
+            ident=params["ident"],
+            requested_name=params.get("name"),
+            folder=where,
+            file_ops=file_ops,
+            normalize=normalize,
+            notify_progress=notify_progress,
+            interval=interval,
+            notify=notify,
+            logger=runtime.logger,
+            downloading_label=runtime.localized(30302),
+            downloaded_label=runtime.localized(30303),
+            failed_label=runtime.localized(30304),
+        )
+        if download_jobs is None or not download_jobs.submit(
+            media_job_key(destination), operation
+        ):
+            runtime.notify(
+                "{0} {1}".format(runtime.localized(30437), display_name)
             )
-            destination = _destination(where, display_name)
-            if notify:
-                runtime.notify("{0} {1}".format(runtime.localized(30302), display_name))
-
-            def progress(percent, name):
-                runtime.notify("{0}% - {1}".format(percent, name))
-
-            progress.interval = interval
-            response = runtime.session.get(link, stream=True, timeout=60)
-            stream_download(
-                response,
-                destination,
-                display_name,
-                file_ops,
-                progress if notify else None,
-            )
-            runtime.notify("{0} {1}".format(runtime.localized(30303), display_name))
-            return ActionResult()
-        except Exception:
-            runtime.logger.exception("Webshare download failed")
-            runtime.notify("{0} {1}".format(runtime.localized(30304), display_name))
             return ActionResult(handled=False)
+        if notify_progress:
+            runtime.notify("{0} {1}".format(runtime.localized(30433), display_name))
+        return ActionResult()
 
-    def install_database(token):
-        def load_archive():
-            archive_path = None
-            try:
-                link = client.get_link(_BACKUP_DB, token)
-                response = runtime.session.get(link, stream=True, timeout=60)
-                try:
-                    response.raise_for_status()
-                    with tempfile.NamedTemporaryFile(
-                        mode="wb",
-                        prefix=".backup-db-download-",
-                        suffix=".zip",
-                        dir=runtime.profile,
-                        delete=False,
-                    ) as archive_output:
-                        archive_path = archive_output.name
-                        for chunk in response.iter_content(
-                            chunk_size=_BACKUP_DB_DOWNLOAD_CHUNK_SIZE
-                        ):
-                            if chunk:
-                                archive_output.write(chunk)
-                finally:
-                    response.close()
-                return archive_path
-            except Exception:
-                if archive_path is not None:
-                    try:
-                        os.remove(archive_path)
-                    except OSError:
-                        pass
-                raise
+    def database_status_item():
+        item = runtime.list_item(label=runtime.localized(30434))
+        item.setArt({"icon": "DefaultAddonsZip.png"})
+        _add_item(runtime, _url(runtime, action="db"), item)
 
-        backup_store.ensure_installed(load_archive)
+    def ensure_database_available(params):
+        if backup_store.is_valid():
+            return True
+        key = backup_db_job_key(runtime.profile)
+        status = download_jobs.status(key) if download_jobs is not None else None
+        if status in ("queued", "running"):
+            database_status_item()
+            return False
+        if status == "succeeded" and backup_store.is_valid():
+            return True
+        operation = _BackupDatabaseOperation(
+            backup_store=backup_store,
+            worker_client_factory=worker_client_factory,
+            notify=notify,
+            refresh=refresh,
+            logger=runtime.logger,
+            installed_label=runtime.localized(30435),
+            failed_label=runtime.localized(30436),
+            queue_ident=params.get("toqueue"),
+            queue_succeeded_label=runtime.localized(30105),
+            queue_failed_label=runtime.localized(30107),
+        )
+        accepted = download_jobs is not None and download_jobs.submit(key, operation)
+        if accepted or (
+            download_jobs is not None
+            and download_jobs.status(key) in ("queued", "running")
+        ):
+            database_status_item()
+            return False
+        runtime.notify(runtime.localized(30436))
+        raise WebshareError("Backup DB installation could not be queued")
 
-    def database_listing(params, token):
-        install_database(token)
+    def database_listing(params, token=None):
+        if not ensure_database_available(params):
+            return DirectoryResult()
         update_listing = False
         if "toqueue" in params:
+            if token is None:
+                token = token_or_notify()
+            if not token:
+                return DirectoryResult(succeeded=False)
             to_queue(params["toqueue"], token)
             update_listing = True
 
@@ -685,15 +920,9 @@ def build_webshare_handlers(runtime, client_factory):
         return DirectoryResult(update_listing=update_listing)
 
     def db(params):
-        token = token_or_notify()
-        if not token:
-            return DirectoryResult(succeeded=False)
-        return database_listing(params, token)
+        return database_listing(params)
 
     def searchdb(params):
-        token = token_or_notify()
-        if not token:
-            return DirectoryResult(succeeded=False)
         query = params.get("query")
         if query is None:
             query = runtime.ask("", runtime.localized(30216))
@@ -705,8 +934,7 @@ def build_webshare_handlers(runtime, client_factory):
             {
                 "search": query,
                 "file": backup_store.group_for_query(query),
-            },
-            token,
+            }
         )
 
     def menu(params):
