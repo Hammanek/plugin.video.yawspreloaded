@@ -172,6 +172,7 @@ class TMDBClient:
                     timeout=_TIMEOUT,
                 )
             except requests.RequestException as error:
+                error.args = ()
                 raise TMDBError("TMDB {0} request failed".format(path)) from error
 
             if response.status_code == 429 and attempt + 1 < _MAX_ATTEMPTS:
@@ -186,6 +187,7 @@ class TMDBClient:
             except requests.RequestException as error:
                 if response.status_code == 401 and invalidate_on_unauthorized:
                     self._invalidate_request_session(session_id)
+                error.args = ()
                 raise TMDBError(
                     "TMDB {0} returned HTTP {1}".format(path, response.status_code)
                 ) from error

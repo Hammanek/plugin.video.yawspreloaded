@@ -1,10 +1,12 @@
 from email.utils import formatdate
 import inspect
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
+import traceback
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -185,6 +187,88 @@ class ClientTests(TMDBServiceTestCase):
                 with self.assertRaises(TMDBError) as caught:
                     client.get("/3/example")
                 self.assertIsInstance(caught.exception.__cause__, requests.RequestException)
+
+    def test_http_error_traceback_excludes_request_credentials(self):
+        for status_code in (404, 500):
+            with self.subTest(status_code=status_code):
+                api_key = "synthetic-http-api-key"
+                session_id = "synthetic-http-session-id"
+                prepared = requests.Request(
+                    "GET",
+                    "https://api.themoviedb.org/3/example",
+                    params={
+                        "language": "cs-CZ",
+                        "api_key": api_key,
+                        "session_id": session_id,
+                    },
+                ).prepare()
+                response = requests.Response()
+                response.status_code = status_code
+                response.reason = {404: "Not Found", 500: "Server Error"}[status_code]
+                response.url = prepared.url
+                response.request = prepared
+                response._content = b"{}"
+                response.raw = io.BytesIO()
+                settings = MemorySettings(
+                    tmdb_api_key=api_key, tmdb_access_token=session_id
+                )
+                client, _, _, _ = self.make_client([response], settings=settings)
+
+                with self.assertRaises(TMDBError) as caught:
+                    client.get("/3/example")
+
+                error = caught.exception
+                cause = error.__cause__
+                rendered = "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+                self.assertIn(api_key, response.url)
+                self.assertIn(session_id, response.url)
+                self.assertNotIn(api_key, rendered)
+                self.assertNotIn(session_id, rendered)
+                self.assertIs(type(cause), requests.HTTPError)
+                self.assertIs(cause.response, response)
+                self.assertIs(cause.request, prepared)
+                self.assertEqual(
+                    str(error),
+                    "TMDB /3/example returned HTTP {0}".format(status_code),
+                )
+                self.assertTrue(response.raw.closed)
+
+    def test_transport_error_traceback_and_log_exclude_request_credentials(self):
+        api_key = "synthetic-transport-api-key"
+        session_id = "synthetic-transport-session-id"
+        prepared = requests.Request(
+            "GET",
+            "https://api.themoviedb.org/3/example",
+            params={"api_key": api_key, "session_id": session_id},
+        ).prepare()
+        failure = requests.Timeout(
+            "synthetic timeout for {0}".format(prepared.url), request=prepared
+        )
+        self.assertIn(api_key, str(failure))
+        self.assertIn(session_id, str(failure))
+        settings = MemorySettings(tmdb_api_key=api_key, tmdb_access_token=session_id)
+        client, _, _, _ = self.make_client([failure], settings=settings)
+
+        with self.assertRaises(TMDBError) as caught:
+            client.get("/3/example")
+
+        error = caught.exception
+        cause = error.__cause__
+        rendered = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with self.assertLogs(client.logger, level="ERROR") as logged:
+            client.logger.exception("Synthetic TMDB public log", exc_info=error)
+        public_log = "\n".join(logged.output)
+        for secret in (api_key, session_id):
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn(secret, public_log)
+        self.assertIs(cause, failure)
+        self.assertIs(type(cause), requests.Timeout)
+        self.assertIs(cause.request, prepared)
+        self.assertEqual(str(error), "TMDB /3/example request failed")
 
     def test_error_responses_close_but_success_remains_open_for_parsing(self):
         for status_code, count in ((500, 1), (401, 1), (429, 3)):
