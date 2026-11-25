@@ -35,6 +35,89 @@ def module_definition(module_name, symbol_name):
     return definition
 
 
+def public_native_result_contract(paragraph):
+    """Evaluate native-result privacy and handoff semantics in one paragraph."""
+    text = re.sub(r"\s+", " ", paragraph.strip())
+    sessionless = (
+        r"požadavky\s+zachovávají\s+`api_key`\s+a\s+lokalizaci,\s+"
+        r"ale\s+nikdy\s+neposílají\s+`session_id`"
+    )
+    no_autoplay = r"bez\s+autoplay"
+    no_watched = no_autoplay + r",\s+watched\s+změn"
+    no_account_or_watchlist_queries = (
+        no_watched + r",\s+account/watchlist\s+požadavků"
+    )
+    no_metadata_prefetch = (
+        no_account_or_watchlist_queries
+        + r",\s+dávkového\s+dotažování\s+metadat\s+či\s+background\s+prefetch"
+    )
+    no_personal_account_or_snapshot = (
+        r"osobní\s+účet,\s+session\s+ani\s+watchlist\s+snapshot\s+nejsou\s+potřeba"
+    )
+    required = (
+        ("webshare_search_not_player", r"Výsledek\s+otevře\s+běžné\s+hledání\s+Webshare"),
+        ("mandatory_api_key", r"TMDB\s+API\s+klíč\s+zůstává\s+povinný"),
+        ("sessionless_list_and_genre", sessionless),
+        ("personal_account_session_not_required", no_personal_account_or_snapshot),
+        ("watchlist_snapshot_not_required", no_personal_account_or_snapshot),
+        ("no_autoplay", no_autoplay + r","),
+        ("no_watched_mutations", no_watched + r","),
+        ("no_account_queries", no_account_or_watchlist_queries + r","),
+        ("no_watchlist_queries", no_account_or_watchlist_queries + r","),
+        ("no_background_trailer_show_metadata_prefetch", no_metadata_prefetch),
+    )
+    reasons = [
+        name
+        for name, pattern in required
+        if not re.search(pattern, text, re.IGNORECASE)
+    ]
+
+    # Remove the one approved exclusion list before looking for a contradictory
+    # positive statement elsewhere in the same paragraph.
+    contradictions = re.sub(sessionless, " ", text, flags=re.IGNORECASE)
+    contradictions = re.sub(
+        no_metadata_prefetch, " ", contradictions, flags=re.IGNORECASE
+    )
+    forbidden = (
+        (
+            "positive_session_transmission",
+            r"\b(?:sends?|includes?|transmits?|posíl\w*)\s+`session_id`"
+            r"|\b(?:always|vždy)\b[^.;]{0,60}`session_id`",
+        ),
+        (
+            "positive_autoplay",
+            r"\bautoplay\b|\bautomatic\s+playback\b"
+            r"|\bautomatick\w*(?:\s+\w+){0,2}\s+přehráv\w*"
+            r"|\b(?:native|plugin|Kodi)\s+(?:native\s+)?player\b",
+        ),
+        (
+            "positive_watched_mutations",
+            r"\bwatched\s+(?:změn\w*|changes?|mutations?|updates?)\b"
+            r"|\bwatched\s+(?:write|modify)\w*\b",
+        ),
+        (
+            "positive_account_queries",
+            r"\baccount(?:/watchlist)?\s+(?:queries|requests|požadavk\w*|dotaz\w*)\b",
+        ),
+        (
+            "positive_watchlist_snapshot_operations",
+            r"\bwatchlist(?:\s+snapshot)?\s+"
+            r"(?:queries|requests|operations|operace|požadavk\w*|dotaz\w*)\b",
+        ),
+        (
+            "positive_background_metadata_prefetch",
+            r"\bbackground\s+prefetch\b|\bmetadata\s+prefetch\b"
+            r"|\b(?:trailer|show)(?:\s+metadata)?\s+(?:queries|requests|požadavk\w*)\b",
+        ),
+    )
+    reasons.extend(
+        name
+        for name, pattern in forbidden
+        if re.search(pattern, contradictions, re.IGNORECASE)
+    )
+    return not reasons, reasons
+
+
 class DocumentationContractTests(unittest.TestCase):
     def setUp(self):
         self.readme = README_PATH.read_text(encoding="utf-8")
@@ -233,18 +316,27 @@ class DocumentationContractTests(unittest.TestCase):
             selector,
             r"(?i)nejvýše jednu stránku.{0,120}nejvýše jeden sdílený požadavek na žánry",
         )
+        self.assertRegex(
+            selector,
+            r"(?i)nepokračuje\s+automaticky\s+dalšími\s+stránkami",
+        )
 
         self.assertIn("https://api.themoviedb.org/3", public_rows)
-        self.assertRegex(public_rows, r"(?i)veřejný klient.{0,180}api_key.{0,100}session_id")
+        public_contract_ok, public_contract_reasons = public_native_result_contract(
+            public_rows
+        )
+        self.assertTrue(public_contract_ok, public_contract_reasons)
         self.assertRegex(public_rows, r"(?i)API klíč.{0,80}(?:povinný|potřebný)")
         self.assertRegex(
             public_rows,
             r"(?i)(?:401|neautorizovan\w*).{0,140}(?:zachov|nezměn|neinvalid).{0,100}identit",
         )
         self.assertRegex(public_rows, r"(?i)apply_video_metadata.{0,200}InfoTag")
-        for phrase in ("žánry", "popis", "hodnocení", "artwork", "30440"):
-            with self.subTest(public_row_phrase=phrase):
-                self.assertIn(phrase, public_rows)
+        self.assertRegex(
+            public_rows,
+            r"(?i)Řádky\s+s\s+artwork,\s+lokalizovaným\s+názvem,\s+rokem,\s+žánry,\s+hodnocením\s+a\s+popisem",
+        )
+        self.assertIn("30440", public_rows)
         self.assertRegex(
             public_rows,
             re.escape("plugin://plugin.video.yawspreloaded/?action=search&what=")
@@ -254,8 +346,87 @@ class DocumentationContractTests(unittest.TestCase):
             public_rows,
             r"(?i)původního názvu.{0,200}Container\.Update.{0,100}(?:ne|nikoli).{0,40}skript",
         )
-        self.assertRegex(public_rows, r"(?i)bez autoplay|automatick\w* přehrávání")
-        self.assertRegex(public_rows, r"(?i)watched.{0,100}(?:prefetch|pozadí)|prefetch.{0,100}watched")
+
+        safe_exclusions = (
+            "bez autoplay, watched změn, account/watchlist požadavků, "
+            "dávkového dotažování metadat či background prefetch"
+        )
+
+        def mutate(current, replacement):
+            mutated = public_rows.replace(current, replacement, 1)
+            self.assertNotEqual(mutated, public_rows, "negative fixture did not mutate")
+            return mutated
+
+        negative_fixtures = (
+            (
+                "always_transmits_session",
+                mutate(
+                    "ale nikdy neposílají `session_id`",
+                    "a vždy posílají `session_id`",
+                ),
+                ("positive_session_transmission",),
+            ),
+            (
+                "autoplay_watched_and_prefetch",
+                mutate(
+                    safe_exclusions,
+                    "automatické přehrávání, watched změny a background prefetch",
+                ),
+                (
+                    "positive_autoplay",
+                    "positive_watched_mutations",
+                    "positive_background_metadata_prefetch",
+                ),
+            ),
+            (
+                "account_queries",
+                public_rows + " The client performs account queries.",
+                ("positive_account_queries",),
+            ),
+            (
+                "watchlist_snapshot_operations",
+                public_rows + " The client performs watchlist snapshot operations.",
+                ("positive_watchlist_snapshot_operations",),
+            ),
+            (
+                "healthy_text_with_combined_contradictions",
+                public_rows
+                + " The client always sends `session_id`, starts automatic playback "
+                "and watched changes, performs account queries and watchlist snapshot "
+                "operations, and runs background prefetch.",
+                (
+                    "positive_session_transmission",
+                    "positive_autoplay",
+                    "positive_watched_mutations",
+                    "positive_account_queries",
+                    "positive_watchlist_snapshot_operations",
+                    "positive_background_metadata_prefetch",
+                ),
+            ),
+            (
+                "double_negatives",
+                public_rows
+                + " This is not no automatic playback and not no watched changes.",
+                ("positive_autoplay", "positive_watched_mutations"),
+            ),
+        )
+        for fixture_name, fixture, expected_reasons in negative_fixtures:
+            with self.subTest(negative_fixture=fixture_name):
+                ok, reasons = public_native_result_contract(fixture)
+                self.assertFalse(
+                    ok,
+                    "inverted statement accepted; expected {0}, diagnostics {1!r}".format(
+                        expected_reasons, reasons
+                    ),
+                )
+                for reason in expected_reasons:
+                    self.assertIn(reason, reasons)
+        watchlist_reference_ok, watchlist_reference_reasons = (
+            public_native_result_contract(
+                public_rows + " Hlavní menu nadále obsahuje položku TMDB Watchlist."
+            )
+        )
+        self.assertTrue(watchlist_reference_ok, watchlist_reference_reasons)
 
         self.assertIn("InfoWall", native_view)
         self.assertIn("Estuary", native_view)
