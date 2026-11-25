@@ -19,6 +19,7 @@ from yawsp_app.tmdb import (
     TMDBError,
     TrailerRepository,
     fetch_complete_watchlist,
+    watchlist_operation_client,
 )
 from yawsp_app.watchlist_snapshot import (
     SnapshotPersistenceError,
@@ -187,10 +188,11 @@ def _pending_session_id(client, request_token):
         response.close()
 
 
-def _set_watchlist(client, media, media_id):
+def _set_watchlist(client, media, media_id, account_id=None):
+    account_id = account_id or client.get_account_id()
     response = client.request(
         "POST",
-        "/3/account/{0}/watchlist".format(client.get_account_id()),
+        "/3/account/{0}/watchlist".format(account_id),
         json_data={"media_type": media, "media_id": int(media_id), "watchlist": False},
     )
     try:
@@ -414,22 +416,38 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             return ActionResult(handled=False)
         media = "movie" if params.get("category") == "movies" else "tv"
         try:
-            if not _set_watchlist(client, media, params["watched"]):
+            session_id = runtime.get_setting("tmdb_access_token").strip()
+            operation_language = language()
+            account_id = client.get_account_id()
+
+            def operation_valid():
+                return (
+                    runtime.get_setting("tmdb_access_token").strip() == session_id
+                    and runtime.get_setting("tmdb_account_id").strip() == account_id
+                    and language() == operation_language
+                )
+
+            scope = SnapshotScope(
+                account_id,
+                "movies" if media == "movie" else "tv",
+                operation_language,
+            )
+            if not operation_valid():
+                raise TMDBError("TMDB identity changed before watched operation")
+            operation_client = watchlist_operation_client(client, scope, session_id)
+            if not _set_watchlist(
+                operation_client, media, params["watched"], account_id=account_id
+            ):
                 runtime.notify(runtime.localized(30412))
                 return ActionResult(handled=False)
             if snapshot_store is not None:
-                account_id = runtime.get_setting("tmdb_account_id").strip()
-                if account_id:
-                    scope = SnapshotScope(
-                        account_id,
-                        "movies" if media == "movie" else "tv",
-                        language(),
-                    )
-                    try:
-                        snapshot_store.remove(scope, int(params["watched"]))
-                    except (SnapshotPersistenceError, TypeError, ValueError):
-                        runtime.logger.exception("Unable to update watched snapshot")
-                    background.submit_watchlist(scope, force=True)
+                if not operation_valid():
+                    raise TMDBError("TMDB identity changed during watched operation")
+                try:
+                    snapshot_store.remove(scope, int(params["watched"]))
+                except (SnapshotPersistenceError, TypeError, ValueError):
+                    runtime.logger.exception("Unable to update watched snapshot")
+                background.submit_watchlist(scope, force=True)
             runtime.notify(runtime.localized(30413))
             return ActionResult(handled=True, refresh=True)
         except Exception:
@@ -449,25 +467,61 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 sort_mode = 0
             snapshot = None
             scope = None
+            operation_session = runtime.get_setting("tmdb_access_token").strip()
+            operation_language = language()
             account_id = runtime.get_setting("tmdb_account_id").strip()
             if snapshot_store is not None and account_id:
-                scope = SnapshotScope(account_id, watchlist_media, language())
+                scope = SnapshotScope(account_id, watchlist_media, operation_language)
                 snapshot = snapshot_store.load(scope)
-            if snapshot is not None:
-                results = list(snapshot.results)
-            else:
+            if snapshot is None:
                 # A missing/incompatible identity always follows the current cold
                 # account path; another account's sole cache entry is not a key hint.
                 account_id = client.get_account_id()
-                scope = SnapshotScope(account_id, watchlist_media, language())
-                results = fetch_complete_watchlist(client, scope)
+                scope = SnapshotScope(account_id, watchlist_media, operation_language)
+
+            def operation_valid():
+                return (
+                    runtime.get_setting("tmdb_access_token").strip()
+                    == operation_session
+                    and runtime.get_setting("tmdb_account_id").strip() == account_id
+                    and language() == operation_language
+                )
+
+            def require_valid_operation():
+                if not operation_valid():
+                    raise TMDBError("TMDB identity changed during watchlist operation")
+
+            require_valid_operation()
+            if snapshot is not None:
+                results = list(snapshot.results)
+            else:
+                expected_generation = (
+                    snapshot_store.generation(scope)
+                    if snapshot_store is not None
+                    else None
+                )
+                operation_client = watchlist_operation_client(
+                    client, scope, operation_session
+                )
+                results = fetch_complete_watchlist(
+                    operation_client, scope, operation_valid
+                )
+                require_valid_operation()
                 if snapshot_store is not None:
                     try:
-                        snapshot_store.save_complete(scope, results, runtime.clock())
+                        saved = snapshot_store.save_complete(
+                            scope,
+                            results,
+                            runtime.clock(),
+                            expected_generation=expected_generation,
+                        )
                     except SnapshotPersistenceError:
                         # The complete data is still renderable; only its warm reuse
                         # is unavailable on this invocation.
                         runtime.logger.exception("Unable to persist watchlist snapshot")
+                    else:
+                        if saved is None:
+                            raise TMDBError("Watchlist changed during cold listing")
 
             if is_movie and runtime.get_setting("tmdb_hide_unreleased") == "true":
                 today = runtime.today().isoformat()
@@ -499,7 +553,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 )
 
             # Genuine complete empty results need no locale/genre request.
-            genre_map = genres(media, language()) if results else {}
+            genre_map = genres(media, operation_language) if results else {}
             media_ids = [value["id"] for value in results]
             cached_trailers, missing_trailers = _cached_trailers(
                 trailer_repository, media, media_ids
@@ -509,6 +563,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 if is_movie
                 else _cached_shows(show_repository, media_ids)
             )
+            # Genre/cache activity above may have yielded to another invocation;
+            # never present rows under a newly selected account or language.
+            require_valid_operation()
 
             for value in results:
                 media_id = value["id"]

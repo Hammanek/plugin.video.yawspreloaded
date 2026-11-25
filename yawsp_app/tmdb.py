@@ -200,7 +200,7 @@ class TMDBClient:
             response.close()
 
 
-def fetch_complete_watchlist(client, scope):
+def fetch_complete_watchlist(client, scope, operation_valid=None):
     """Fetch and validate a new full list; never append to an older snapshot."""
     watchlist_path = "/3/account/{0}/watchlist/{1}".format(
         scope.account_id, scope.media
@@ -209,6 +209,8 @@ def fetch_complete_watchlist(client, scope):
     expected_pages = None
     page = 1
     while expected_pages is None or page <= expected_pages:
+        if operation_valid is not None and not operation_valid():
+            raise TMDBError("TMDB watchlist identity changed during pagination")
         data = client.get(
             watchlist_path,
             {"sort_by": "created_at.desc", "page": page},
@@ -235,6 +237,8 @@ def fetch_complete_watchlist(client, scope):
             raise TMDBError(
                 "TMDB watchlist response failed complete-page validation"
             ) from error
+        if operation_valid is not None and not operation_valid():
+            raise TMDBError("TMDB watchlist identity changed during pagination")
         page += 1
 
     return [value for number in range(1, expected_pages + 1) for value in pages[number]]
@@ -578,6 +582,22 @@ class _WatchlistWorkerSettings:
             self.settings.set(key, value)
 
 
+def watchlist_operation_client(client, scope, session_id):
+    """Freeze real client credentials/locale while retaining lightweight test clients."""
+    if not isinstance(client, TMDBClient):
+        return client
+    return TMDBClient(
+        client.session,
+        _WatchlistWorkerSettings(client.settings, scope, session_id),
+        lambda: scope.language,
+        api_url=client.api_url,
+        clock=client.clock,
+        sleeper=client.sleeper,
+        abort=client.abort,
+        logger=client.logger,
+    )
+
+
 class BackgroundPrefetch:
     """A bounded, deduplicated queue with no presentation/UI responsibilities."""
 
@@ -615,6 +635,7 @@ class BackgroundPrefetch:
         self.api_url = api_url
         self.logger = logger or _LOGGER
         self._pending = set()
+        self._watchlist_followups = set()
         self._lock = threading.Lock()
         self._closed = False
 
@@ -732,18 +753,29 @@ class BackgroundPrefetch:
         if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
             return 0
         key = ("watchlist", scope)
+        generation = self.snapshot_store.generation(scope)
         accepted = self._reserve([key])
         if not accepted:
+            if force:
+                with self._lock:
+                    if key in self._pending and not self._closed:
+                        # A forced request made after a local mutation must not be
+                        # lost behind an older fetch. Coalesce repeated requests to
+                        # exactly one later job rather than recursively refreshing.
+                        self._watchlist_followups.add(scope)
+                        return 1
             return 0
         try:
-            self.worker.submit(self._run_watchlist, accepted, scope, session_id)
+            self.worker.submit(
+                self._run_watchlist, accepted, scope, session_id, generation
+            )
         except Exception:
             self._release(accepted)
             self.logger.exception("Unable to submit TMDB watchlist refresh")
             return 0
         return 1
 
-    def _run_watchlist(self, keys, scope, session_id):
+    def _run_watchlist(self, keys, scope, session_id, generation):
         session = None
         try:
             if self._abort_requested() or not self._watchlist_identity(
@@ -764,24 +796,44 @@ class BackgroundPrefetch:
                 abort=self._abort_requested,
                 logger=self.logger,
             )
-            results = fetch_complete_watchlist(client, scope)
+            results = fetch_complete_watchlist(
+                client,
+                scope,
+                operation_valid=lambda: self._watchlist_identity(scope, session_id),
+            )
             # The account, session and language are all rechecked after the last
             # response. A switched identity cannot write either old or new scope.
             if not self._watchlist_identity(scope, session_id):
                 return
-            self.snapshot_store.save_complete(scope, results, self.clock())
+            self.snapshot_store.save_complete(
+                scope,
+                results,
+                self.clock(),
+                expected_generation=generation,
+            )
         except Exception:
-            if (
-                not str(self.settings.get("tmdb_access_token") or "").strip()
-                and not str(self.settings.get("tmdb_account_id") or "").strip()
-            ):
+            current_session = str(
+                self.settings.get("tmdb_access_token") or ""
+            ).strip()
+            current_account = str(self.settings.get("tmdb_account_id") or "").strip()
+            if not current_session and not current_account:
                 try:
                     self.snapshot_store.invalidate_identity(scope.account_id)
                 except Exception:
                     self.logger.exception("Unable to invalidate watchlist identity")
-            self.logger.exception("TMDB watchlist refresh failed")
+            if not (
+                current_session
+                and current_account
+                and not self._watchlist_identity(scope, session_id)
+            ):
+                self.logger.exception("TMDB watchlist refresh failed")
         finally:
             self._finish(session, keys)
+            with self._lock:
+                followup = scope in self._watchlist_followups
+                self._watchlist_followups.discard(scope)
+            if followup:
+                self.submit_watchlist(scope, force=True)
 
     def _finish(self, session, keys):
         try:

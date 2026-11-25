@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import json
 import math
 import os
@@ -171,6 +172,65 @@ class WatchlistSnapshotTests(unittest.TestCase):
         self.assertEqual(store.load(peer).results, [MOVIE])
         restored = store.save_complete(scopes[0], [dict(MOVIE, id=2)], 200.0)
         self.assertGreater(restored.revision, 1)
+
+    def test_two_interleaved_removals_apply_to_the_latest_locked_results(self):
+        store = self.store()
+        scope = self.scope()
+        store.save_complete(
+            scope,
+            [dict(MOVIE, id=1), dict(MOVIE, id=2), dict(MOVIE, id=3)],
+            100.0,
+        )
+        original_save = store.save_complete
+        interleaved = False
+
+        def remove_second_during_first_save(scope_arg, results, created_at, **kwargs):
+            nonlocal interleaved
+            if not interleaved:
+                interleaved = True
+                store.remove(scope_arg, 2)
+            return original_save(scope_arg, results, created_at, **kwargs)
+
+        with patch.object(store, "save_complete", side_effect=remove_second_during_first_save):
+            store.remove(scope, 1)
+
+        self.assertTrue(interleaved)
+        self.assertEqual(
+            [value["id"] for value in store.load(scope).results], [3]
+        )
+
+    def test_conditional_refresh_cannot_overwrite_a_newer_local_generation(self):
+        store = self.store()
+        scope = self.scope()
+        store.save_complete(scope, [dict(MOVIE, id=1), dict(MOVIE, id=2)], 100.0)
+        self.assertIn(
+            "expected_generation",
+            inspect.signature(store.save_complete).parameters,
+            "refresh commits have no conditional generation",
+        )
+        self.assertTrue(hasattr(store, "generation"))
+        started_generation = store.generation(scope)
+
+        store.remove(scope, 1)
+        after_remove = store.load(scope)
+        stale = store.save_complete(
+            scope,
+            [dict(MOVIE, id=1, title="Old refresh"), dict(MOVIE, id=2)],
+            200.0,
+            expected_generation=started_generation,
+        )
+
+        self.assertIsNone(stale)
+        current = store.load(scope)
+        self.assertEqual(current.results, after_remove.results)
+        self.assertEqual(current.created_at, 100.0)
+        fresh = store.save_complete(
+            scope,
+            [dict(MOVIE, id=2, title="Fresh follow-up")],
+            300.0,
+            expected_generation=store.generation(scope),
+        )
+        self.assertEqual(fresh.results[0]["title"], "Fresh follow-up")
 
     def test_persistence_failure_does_not_replace_the_previous_complete_snapshot(self):
         scope = self.scope()

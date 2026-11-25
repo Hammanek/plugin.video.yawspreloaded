@@ -897,6 +897,47 @@ class WatchlistBackgroundTests(TMDBServiceTestCase):
                     tmdb_service.fetch_complete_watchlist(client, self.scope)
                 self.assertLessEqual(len(session.calls), len(responses))
 
+    def test_watched_during_refresh_discards_stale_commit_and_runs_one_followup(self):
+        removed = dict(self.movie, id=42, title="Watched")
+        retained = dict(self.movie, id=2, title="Keep")
+        original = self.snapshots.save_complete(
+            self.scope, [removed, retained], 0.0
+        )
+        sessions = [
+            FakeSession(
+                [json_response({"total_pages": 1, "results": [removed, retained]})]
+            ),
+            FakeSession(
+                [json_response({"total_pages": 1, "results": [retained]})]
+            ),
+        ]
+        worker = ManualWorker()
+        background, _ = self.make_watchlist_background(sessions, worker)
+        background.submit_watchlist(self.scope, force=True)
+
+        self.snapshots.remove(self.scope, 42)
+        self.assertEqual(
+            background.submit_watchlist(self.scope, force=True),
+            1,
+            "forced refresh must be queued behind the in-flight stale job",
+        )
+        self.assertEqual(len(worker.jobs), 1)
+
+        worker.run_all()
+
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [retained])
+        self.assertEqual(current.created_at, original.created_at)
+        self.assertEqual(len(worker.jobs), 1, "exactly one fresh follow-up is due")
+
+        worker.run_all()
+
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [retained])
+        self.assertEqual(current.created_at, background.clock())
+        self.assertEqual(worker.jobs, [])
+        self.assertTrue(all(session.closed for session in sessions))
+
     def test_refresh_is_throttled_deduplicated_and_uses_only_a_worker_session(self):
         self.snapshots.save_complete(self.scope, [self.movie], 0.0)
         clock = FakeClock()

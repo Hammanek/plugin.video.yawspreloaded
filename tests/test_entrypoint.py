@@ -1,5 +1,7 @@
+import contextlib
 import importlib
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -8,8 +10,10 @@ from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
+from tests.test_tmdb import ManualWorker, json_response
 from tests.test_webshare_ui import FakeClient, xml
 from yawsp_app import router as production_router
+from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
     ActionResult,
     ActionRunner,
@@ -22,6 +26,18 @@ class ListItem:
     def __init__(self, label="", path=""):
         self.label = label
         self.path = path
+        self.art = {}
+        self.info = []
+        self.commands = []
+
+    def setArt(self, art):
+        self.art.update(art)
+
+    def setInfo(self, kind, info):
+        self.info.append((kind, info))
+
+    def addContextMenuItems(self, commands):
+        self.commands.extend(commands)
 
 
 class Owner:
@@ -145,6 +161,50 @@ def install_kodi_stubs():
         "xbmcvfs": xbmcvfs,
     }
     return mock.patch.dict(sys.modules, modules)
+
+
+@contextlib.contextmanager
+def production_tmdb_invocation(responses, language="en"):
+    with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
+        sys,
+        "argv",
+        ["plugin://plugin.video.yawspreloaded/", "17", ""],
+    ), mock.patch.object(production_router.requests, "Session") as session_type:
+        addon = sys.modules["xbmcaddon"].Addon()
+        addon.settings.update(
+            {
+                "tmdb_api_key": "offline-api-key",
+                "tmdb_access_token": "session-1",
+                "tmdb_account_id": "account-1",
+                "tmdb_sort": "0",
+                "tmdb_hide_unreleased": "false",
+            }
+        )
+        sys.modules["xbmc"]._language = language
+        translate = lambda value: profile
+        sys.modules["xbmc"].translatePath = translate
+        sys.modules["xbmcvfs"].translatePath = translate
+        session = FakeSession(responses)
+        session.headers = {}
+        session_type.return_value = session
+        production_router.close()
+        owner = production_router._get_owner()
+        owner.background.worker = ManualWorker()
+        try:
+            yield owner, session, addon, sys.modules["xbmcplugin"]._recorder
+        finally:
+            production_router.close()
+
+
+def switch_json_response(data, switch):
+    response = json_response(data)
+
+    def switched_json():
+        switch()
+        return data
+
+    response.json = switched_json
+    return response
 
 
 class EntrypointTests(unittest.TestCase):
@@ -452,6 +512,130 @@ class EntrypointTests(unittest.TestCase):
                                     )
 
             self.assertIs(owner, production_router._get_owner())
+
+    def test_production_cold_mid_page_account_switch_discards_then_recovers(self):
+        def switch_account(addon):
+            addon.setSetting("tmdb_account_id", "account-2")
+            addon.setSetting("tmdb_access_token", "session-2")
+
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            session.queue_response(
+                json_response(
+                    {"page": 1, "total_pages": 2, "results": [{"id": 1, "title": "Old"}]}
+                )
+            )
+            session.queue_response(
+                switch_json_response(
+                    {"page": 2, "total_pages": 2, "results": [{"id": 2, "title": "Mixed"}]},
+                    lambda: switch_account(addon),
+                )
+            )
+
+            with self.assertLogs("yawsp_app.router", level="ERROR"):
+                result = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(recorder.items, [])
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
+            )
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-2", "movies", "en-US"))
+            )
+
+            session.queue_response(
+                json_response({"total_pages": 1, "results": [{"id": 9, "title": "Current"}]})
+            )
+            session.queue_response(json_response({"genres": []}))
+            recovered = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(recovered.succeeded)
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Current")
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
+            )
+            self.assertEqual(
+                owner.snapshot_store.load(
+                    SnapshotScope("account-2", "movies", "en-US")
+                ).results,
+                [{"id": 9, "title": "Current"}],
+            )
+
+    def test_production_cold_mid_page_language_switch_discards_then_recovers(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            session.queue_response(
+                json_response(
+                    {"page": 1, "total_pages": 2, "results": [{"id": 1, "title": "English"}]}
+                )
+            )
+            session.queue_response(
+                switch_json_response(
+                    {"page": 2, "total_pages": 2, "results": [{"id": 2, "title": "Smíšené"}]},
+                    lambda: setattr(sys.modules["xbmc"], "_language", "cs"),
+                )
+            )
+
+            with self.assertLogs("yawsp_app.router", level="ERROR"):
+                result = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(recorder.items, [])
+            for language in ("en-US", "cs-CZ"):
+                self.assertIsNone(
+                    owner.snapshot_store.load(
+                        SnapshotScope("account-1", "movies", language)
+                    )
+                )
+
+            session.queue_response(
+                json_response({"total_pages": 1, "results": [{"id": 3, "title": "Česky"}]})
+            )
+            session.queue_response(json_response({"genres": []}))
+            recovered = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(recovered.succeeded)
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Česky")
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
+            )
+            self.assertEqual(
+                owner.snapshot_store.load(
+                    SnapshotScope("account-1", "movies", "cs-CZ")
+                ).results,
+                [{"id": 3, "title": "Česky"}],
+            )
+
+    def test_production_watched_switch_does_not_mutate_new_account_or_queue_refresh(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            first_scope = SnapshotScope("account-1", "movies", "en-US")
+            second_scope = SnapshotScope("account-2", "movies", "en-US")
+            first = owner.snapshot_store.save_complete(
+                first_scope, [{"id": 42, "title": "First"}], 100.0
+            )
+            second = owner.snapshot_store.save_complete(
+                second_scope, [{"id": 42, "title": "Second"}], 100.0
+            )
+
+            def switch_account():
+                addon.setSetting("tmdb_account_id", "account-2")
+                addon.setSetting("tmdb_access_token", "session-2")
+
+            session.queue_response(
+                switch_json_response({"success": True}, switch_account)
+            )
+
+            with self.assertLogs("yawsp_app.router", level="ERROR"):
+                result = production_router.router(
+                    "action=tmdb_watchlist&category=movies&watched=42"
+                )
+
+            self.assertFalse(result.handled)
+            self.assertEqual(owner.snapshot_store.load(first_scope), first)
+            self.assertEqual(owner.snapshot_store.load(second_scope), second)
+            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account/account-1/watchlist")
+            self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
+            self.assertEqual(recorder.builtin_commands, [])
 
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []

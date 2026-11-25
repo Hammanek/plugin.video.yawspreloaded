@@ -1,6 +1,7 @@
 """Small JSON mappings persisted with same-directory atomic replacement."""
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 import copy
 import json
 import logging
@@ -25,6 +26,12 @@ class AtomicJsonCache:
         self.logger = logger or _LOGGER
         self._data = {}
         self._lock = threading.RLock()
+
+    @contextmanager
+    def transaction(self):
+        """Serialize a read/check/update sequence with writers on this cache instance."""
+        with self._lock:
+            yield self
 
     def load(self):
         """Return the latest valid mapping, or the previous valid in-memory one."""

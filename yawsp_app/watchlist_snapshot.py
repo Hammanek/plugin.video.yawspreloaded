@@ -40,6 +40,7 @@ class Snapshot:
     results: list
     created_at: float
     revision: int
+    generation: int = 0
 
 
 class SnapshotPersistenceError(RuntimeError):
@@ -106,7 +107,7 @@ class WatchlistSnapshotStore:
         )
 
     @staticmethod
-    def _record(scope, results, created_at, revision):
+    def _record(scope, results, created_at, revision, generation=0):
         return {
             "schema": scope.schema,
             "account_id": scope.account_id,
@@ -116,7 +117,22 @@ class WatchlistSnapshotStore:
             "results": results,
             "created_at": created_at,
             "revision": revision,
+            "generation": generation,
         }
+
+    @staticmethod
+    def _generation(record):
+        if not isinstance(record, dict):
+            return 0
+        value = record.get("generation", 0)
+        return value if type(value) is int and value >= 0 else 0
+
+    @staticmethod
+    def _revision(record):
+        if not isinstance(record, dict):
+            return 0
+        value = record.get("revision")
+        return value if type(value) is int and value >= 1 else 0
 
     @staticmethod
     def _snapshot(scope, record):
@@ -130,72 +146,104 @@ class WatchlistSnapshotStore:
             or not _timestamp(record.get("created_at"))
             or type(record.get("revision")) is not int
             or record["revision"] < 1
+            or type(record.get("generation", 0)) is not int
+            or record.get("generation", 0) < 0
         ):
             return None
         try:
             results = validated_results(record.get("results"))
         except (TypeError, ValueError):
             return None
-        return Snapshot(scope, results, record["created_at"], record["revision"])
+        return Snapshot(
+            scope,
+            results,
+            record["created_at"],
+            record["revision"],
+            WatchlistSnapshotStore._generation(record),
+        )
 
     def load(self, scope):
         """Return only the exact compatible complete scope, never a sole fallback."""
         record = self.cache.load().get(self._key(scope))
         return self._snapshot(scope, record)
 
-    def save_complete(self, scope, results, created_at):
-        """Merge one validated complete result and preserve every other scope."""
+    def generation(self, scope):
+        """Return the local-mutation generation captured by refresh operations."""
+        with self.cache.transaction():
+            return self._generation(self.cache.load().get(self._key(scope)))
+
+    def save_complete(
+        self,
+        scope,
+        results,
+        created_at,
+        expected_generation=None,
+        increment_generation=False,
+    ):
+        """Atomically commit complete results unless a local mutation made them stale."""
         results = validated_results(results)
         if not _timestamp(created_at):
             raise ValueError("snapshot creation time must be finite")
-        with self.cache._lock:
+        if expected_generation is not None and (
+            type(expected_generation) is not int or expected_generation < 0
+        ):
+            raise ValueError("expected generation must be a non-negative integer")
+        with self.cache.transaction():
             key = self._key(scope)
             previous_record = self.cache.load().get(key)
-            previous_revision = (
-                previous_record.get("revision")
-                if isinstance(previous_record, dict)
-                else None
+            generation = self._generation(previous_record)
+            if (
+                expected_generation is not None
+                and generation != expected_generation
+            ):
+                return None
+            if increment_generation:
+                generation += 1
+            record = self._record(
+                scope,
+                results,
+                created_at,
+                self._revision(previous_record) + 1,
+                generation,
             )
-            revision = (
-                previous_revision + 1
-                if type(previous_revision) is int and previous_revision >= 1
-                else 1
-            )
-            record = self._record(scope, results, created_at, revision)
-            saved = self.cache.save_merged({self._key(scope): record})
+            saved = self.cache.save_merged({key: record})
         if not saved:
             raise SnapshotPersistenceError("Unable to persist complete watchlist snapshot")
-        return Snapshot(scope, copy.deepcopy(results), created_at, revision)
+        return Snapshot(
+            scope, copy.deepcopy(results), created_at, record["revision"], generation
+        )
 
     def invalidate(self, scope):
-        """Tombstone one scope with an update-only merge so peers survive."""
-        with self.cache._lock:
-            previous = self.load(scope)
-            if previous is None:
-                return False
+        """Tombstone one scope and make every older refresh commit stale."""
+        with self.cache.transaction():
+            key = self._key(scope)
+            previous_record = self.cache.load().get(key)
+            previous = self._snapshot(scope, previous_record)
             record = self._record(
-                scope, [], previous.created_at, previous.revision + 1
+                scope,
+                [],
+                previous.created_at if previous is not None else 0.0,
+                self._revision(previous_record) + 1,
+                self._generation(previous_record) + 1,
             )
             record["complete"] = False
-            if not self.cache.save_merged({self._key(scope): record}):
+            if not self.cache.save_merged({key: record}):
                 raise SnapshotPersistenceError("Unable to invalidate watchlist snapshot")
-        return True
+        return previous is not None
 
     def invalidate_identity(self, account_id):
         """Forget every language/media row for an invalidated authenticated identity."""
         account_id = str(account_id).strip()
         if not account_id:
             return False
-        with self.cache._lock:
+        with self.cache.transaction():
             current = self.cache.load()
             updates = {}
             for key, record in current.items():
                 if not isinstance(record, dict) or record.get("account_id") != account_id:
                     continue
-                revision = record.get("revision")
-                record["revision"] = (
-                    revision + 1 if type(revision) is int and revision >= 1 else 1
-                )
+                record["revision"] = self._revision(record) + 1
+                record["generation"] = self._generation(record) + 1
                 record["complete"] = False
                 record["results"] = []
                 updates[key] = record
@@ -212,12 +260,27 @@ class WatchlistSnapshotStore:
         return snapshot is None or now - snapshot.created_at >= self.refresh_interval
 
     def remove(self, scope, media_id):
-        """Remove one watched row while retaining the original refresh timestamp."""
-        snapshot = self.load(scope)
-        if snapshot is None:
-            return None
+        """Atomically remove from the latest rows and invalidate older refresh work."""
         normalized_id = int(media_id)
-        remaining = [value for value in snapshot.results if value["id"] != normalized_id]
-        if len(remaining) == len(snapshot.results):
-            return None
-        return self.save_complete(scope, remaining, snapshot.created_at)
+        while True:
+            with self.cache.transaction():
+                previous_record = self.cache.load().get(self._key(scope))
+                snapshot = self._snapshot(scope, previous_record)
+                if snapshot is None:
+                    self.invalidate(scope)
+                    return None
+                remaining = [
+                    value for value in snapshot.results if value["id"] != normalized_id
+                ]
+                removed = len(remaining) != len(snapshot.results)
+                saved = self.save_complete(
+                    scope,
+                    remaining,
+                    snapshot.created_at,
+                    expected_generation=snapshot.generation,
+                    increment_generation=True,
+                )
+                if saved is not None:
+                    return saved if removed else None
+            # Only a reentrant/local test hook or a sharing caller able to enter
+            # this same transaction can retry; ordinary threads serialize above.
