@@ -622,8 +622,11 @@ def build_webshare_handlers(
                 True,
             )
 
+        displayed_files = 0
         for element in page.files:
             file_data = _to_dict(element)
+            if not _valid_file_data(runtime, file_data):
+                continue
             if not matches_filename(query, file_data["name"]):
                 continue
             queue_url = _listing_url(runtime, params, toqueue=file_data["ident"])
@@ -634,6 +637,12 @@ def build_webshare_handlers(
                 )
             ]
             _add_file(runtime, file_data, commands)
+            displayed_files += 1
+
+        if not displayed_files:
+            item = runtime.list_item(label=runtime.localized(30440))
+            item.setArt({"icon": "DefaultAddonsSearch.png"})
+            _add_item(runtime, "", item)
 
         if following is not None:
             item = runtime.list_item(label=runtime.localized(30207))

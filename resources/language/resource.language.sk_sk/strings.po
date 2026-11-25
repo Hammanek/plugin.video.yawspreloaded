@@ -389,3 +389,15 @@ msgctxt "#30437"
 msgid "Download could not be queued"
 msgstr "Sťahovanie sa nepodarilo zaradiť do fronty"
 
+msgctxt "#30438"
+msgid "Refresh"
+msgstr "Obnoviť"
+
+msgctxt "#30439"
+msgid "Local cache"
+msgstr "Miestna vyrovnávacia pamäť"
+
+msgctxt "#30440"
+msgid "No matching files found"
+msgstr "Žiadne výsledky"
+

@@ -495,6 +495,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def list_watchlist(params):
         category = params.get("category")
+        manual_refresh = params.get("refresh") == "1"
         is_movie = category == "movies"
         media = "movie" if is_movie else "tv"
         watchlist_media = "movies" if is_movie else "tv"
@@ -558,8 +559,19 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 if not operation_valid():
                     raise TMDBError("TMDB identity changed during watchlist operation")
 
+            def cached_fallback_valid():
+                invalidated = (
+                    not runtime.get_setting("tmdb_access_token").strip()
+                    and not runtime.get_setting("tmdb_account_id").strip()
+                )
+                return language() == operation_language and (
+                    operation_valid() or invalidated
+                )
+
             require_valid_operation()
-            if snapshot is not None:
+            listing_error = None
+            cached_render = snapshot is not None and not manual_refresh
+            if cached_render:
                 results = list(snapshot.results)
             else:
                 expected_generation = (
@@ -573,11 +585,16 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     operation_session,
                     identity_lock=identity_lock,
                 )
-                results = fetch_complete_watchlist(
-                    operation_client, scope, operation_valid
-                )
-                require_valid_operation()
-                if snapshot_store is not None:
+                refresh_error = None
+                try:
+                    results = fetch_complete_watchlist(
+                        operation_client, scope, operation_valid
+                    )
+                    require_valid_operation()
+                except TMDBError as error:
+                    refresh_error = error
+
+                if refresh_error is None and snapshot_store is not None:
                     try:
                         saved = snapshot_store.save_complete(
                             scope,
@@ -585,13 +602,47 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                             runtime.clock(),
                             expected_generation=expected_generation,
                         )
-                    except SnapshotPersistenceError:
-                        # The complete data is still renderable; only its warm reuse
-                        # is unavailable on this invocation.
+                    except SnapshotPersistenceError as error:
                         runtime.logger.exception("Unable to persist watchlist snapshot")
+                        if manual_refresh:
+                            refresh_error = error
+                        # Existing cold listings may still render complete data when
+                        # only its warm reuse cannot be persisted.
                     else:
                         if saved is None:
-                            raise TMDBError("Watchlist changed during cold listing")
+                            refresh_error = TMDBError(
+                                "Watchlist changed during manual refresh"
+                                if manual_refresh
+                                else "Watchlist changed during cold listing"
+                            )
+
+                if refresh_error is not None:
+                    fallback = (
+                        snapshot_store.load(scope)
+                        if manual_refresh and snapshot_store is not None
+                        else None
+                    )
+                    if fallback is not None and cached_fallback_valid():
+                        snapshot = fallback
+                        results = list(snapshot.results)
+                        listing_error = refresh_error
+                        cached_render = True
+                        report_listing_error(refresh_error)
+                    elif isinstance(refresh_error, TMDBError):
+                        raise refresh_error
+                    else:
+                        raise TMDBError(
+                            "Unable to save manual watchlist refresh"
+                        ) from refresh_error
+
+            if cached_render:
+                runtime.set_category(
+                    "{0} / {1}".format(
+                        runtime.localized(30418), runtime.localized(30439)
+                    )
+                )
+            elif manual_refresh:
+                runtime.set_category(runtime.localized(30418))
 
             if is_movie and runtime.get_setting("tmdb_hide_unreleased") == "true":
                 today = runtime.today().isoformat()
@@ -640,7 +691,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             ]
             # Genre/cache activity above may have yielded to another invocation;
             # never present rows under a newly selected account or language.
-            require_valid_operation()
+            if listing_error is None:
+                require_valid_operation()
+            elif not cached_fallback_valid():
+                raise TMDBError("TMDB identity changed while rendering cached fallback")
 
             for value in results:
                 media_id = value["id"]
@@ -737,6 +791,18 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     item,
                 )
 
+            item = runtime.list_item(label=runtime.localized(30438))
+            item.setArt({"icon": "DefaultAddonsRecentlyUpdated.png"})
+            runtime.add_item(
+                _url(
+                    runtime,
+                    action="tmdb_watchlist",
+                    category=category,
+                    refresh=1,
+                ),
+                item,
+            )
+
             runtime.set_content("movies" if is_movie else "tvshows")
 
             def post_complete():
@@ -744,9 +810,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     set_default_view(params)
                 except Exception:
                     runtime.logger.exception("Unable to set TMDB default view")
-                if snapshot is not None:
-                    # submit_watchlist applies the five-minute throttle and reserves
-                    # the scope. A cold successful save deliberately skips this.
+                if snapshot is not None and not manual_refresh:
+                    # Ordinary snapshots retain their throttled background refresh.
+                    # Manual completion already fetched or retained authoritative data.
                     try:
                         background.submit_watchlist(
                             scope,
@@ -771,7 +837,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     except Exception:
                         runtime.logger.exception("Unable to submit TMDB metadata")
 
-            return DirectoryResult(post_complete=post_complete)
+            return DirectoryResult(
+                succeeded=listing_error is None, post_complete=post_complete
+            )
         except TMDBError as error:
             if (
                 snapshot_store is not None

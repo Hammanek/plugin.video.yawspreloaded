@@ -285,6 +285,7 @@ class WebshareUITests(unittest.TestCase):
                 30435: "Backup DB installed",
                 30436: "Backup DB installation failed",
                 30437: "Download could not be queued",
+                30440: "No matching files found",
             },
             addon_info={"name": "YAWsP", "id": "plugin.video.yawspreloaded"},
         )
@@ -549,6 +550,62 @@ class WebshareUITests(unittest.TestCase):
             self.assertEqual(listing["sort"], "rating")
             self.assertEqual(listing["limit"], "2")
         self.assertEqual(self.client.search_calls[0][-1], 2)
+
+    def test_zero_displayed_files_shows_explanation_without_losing_raw_pagination(self):
+        self.client.search_page = XmlSearchPage(
+            files=(
+                xml("<file><name>Movie.mkv</name></file>"),
+                xml("<file><name>Unrelated.mkv</name><ident>other</ident></file>"),
+            ),
+            raw_count=9,
+        )
+        params = {
+            "action": "search",
+            "what": "Movie",
+            "category": "video",
+            "sort": "rating",
+            "limit": "2",
+            "offset": "2",
+        }
+
+        result = self.runner.run_directory(lambda: self.handlers["search"](params))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["Previous", "No matching files found", "Next"],
+        )
+        previous = url_params(self.plugin.items[0]["url"])
+        following = url_params(self.plugin.items[-1]["url"])
+        self.assertEqual(previous["offset"], "0")
+        self.assertEqual(following["offset"], "4")
+        for listing in (previous, following):
+            self.assertEqual(listing["what"], "Movie")
+            self.assertEqual(listing["category"], "video")
+            self.assertEqual(listing["sort"], "rating")
+            self.assertEqual(listing["limit"], "2")
+        self.assertEqual(self.client.revalidate_calls, 1)
+        self.assertEqual(len(self.client.search_calls), 1)
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+
+    def test_remote_empty_query_and_sentinel_keep_single_auth_and_show_explanation(self):
+        for what in ("", "%#NONE#%"):
+            with self.subTest(what=what):
+                self.setUp()
+                self.client.search_page = XmlSearchPage(files=(), raw_count=0)
+
+                result = self.runner.run_directory(
+                    lambda: self.handlers["search"]({"action": "search", "what": what})
+                )
+
+                self.assertTrue(result.succeeded)
+                self.assertEqual(self.client.revalidate_calls, 1)
+                self.assertEqual(len(self.client.search_calls), 1)
+                self.assertEqual(
+                    [item["listitem"].label for item in self.plugin.items],
+                    ["No matching files found"],
+                )
+                self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
 
     def test_toqueue_keeps_search_filters_sort_limit_and_offset(self):
         self.client.api_responses["queue_file"] = [

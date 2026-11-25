@@ -389,3 +389,15 @@ msgctxt "#30437"
 msgid "Download could not be queued"
 msgstr ""
 
+msgctxt "#30438"
+msgid "Refresh"
+msgstr ""
+
+msgctxt "#30439"
+msgid "Local cache"
+msgstr ""
+
+msgctxt "#30440"
+msgid "No matching files found"
+msgstr ""
+

@@ -388,3 +388,15 @@ msgstr "Instalace Backup DB se nezdařila"
 msgctxt "#30437"
 msgid "Download could not be queued"
 msgstr "Stahování se nepodařilo zařadit do fronty"
+
+msgctxt "#30438"
+msgid "Refresh"
+msgstr "Obnovit"
+
+msgctxt "#30439"
+msgid "Local cache"
+msgstr "Místní mezipaměť"
+
+msgctxt "#30440"
+msgid "No matching files found"
+msgstr "Žádné výsledky"
