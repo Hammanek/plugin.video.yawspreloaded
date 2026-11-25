@@ -1,6 +1,8 @@
 # Objevit Standalone Script Execution Gate 0 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Final outcome — FEASIBILITY FAIL:** ordinary root selection routed literal `RunScript` to VideoPlayer instead of script activation. Task 1 acceptance failed; Task 2 was never run. Task 3 independently verified 14 PASS / 2 FAIL / 15 UNCHECKED. Project production remains unimplemented. Do not treat this plan as an authorization to retry the launcher or advance an offline partial result to production.
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking only if the experiment is evaluated; never override FAIL/UNCHECKED to claim feasibility.
 
 **Goal:** Prove in a disposable isolated Kodi 21.2 profile that a standalone `xbmc.python.script` invocation can open one custom WindowXML outside the failed plugin-directory lifecycle, close exactly once per explicit activation, and preserve the canonical Webshare URL contract.
 

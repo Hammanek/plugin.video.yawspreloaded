@@ -1,6 +1,20 @@
 # Objevit — standalone script execution design (proposal)
 
-**Status:** proposed for review, **not approved for implementation yet**. User selected “Nový script execution design” after both plugin-modal approaches failed in actual Kodi. This document does not authorize merging service code, releasing or provisioning a new profile.
+**Status:** Gate 0 evaluated and **REJECTED**. No production implementation was authorized or created.
+
+## Final Gate 0 outcome
+
+The ordinary six-item root rendered and completed once, and both extension points enumerated. However, actual focus/select on the literal `RunScript(plugin.video.yawspreloaded,source=popular_movies)` dispatched it to `VideoPlayer::OpenFile`, which logged `CVideoPlayer::OpenInputStream - error opening` rather than starting `discovery_script.py`. No script activation followed, so there was no runtime constructor/onInit/control/panel/modal/Back/canonical-URL proof. Those predicates remain **UNCHECKED**, never PASS.
+
+- Task 1 spec acceptance: **NO / launcher FAIL; evidence quality PASS** in independent review.
+- Task 2: **NOT RUN**; repeat activation remains **UNCHECKED**, so no concurrency or serialization evidence exists.
+- Task 3 saved-evidence verification: **COMPLIANT / FEASIBILITY FAIL**, process exit 2 from `verify_gate0.py`; independent review confirmed 14 PASS / 2 FAIL / 15 UNCHECKED and `production_implementation_permitted=false`.
+- Production source, addon extension, media worker and release archive remain unmodified. The original single constructor RED remains in `tests/test_discovery_window.py`; no argument-forwarding fix was committed. Normal `Application.Quit` returned exit 0 without forced cleanup, independently of the launcher failure.
+- `gate0-verification.json` intentionally describes this saved negative fixture only. It cannot be reused as evidence of future GUI correctness or `FEASIBILITY PASS`. Its narrow explicit exception handling also is not sold as total malformed-input recovery; unexpected exceptions fail closed, not as PASS.
+
+Canonical artifacts: `Temp\opencode\kodi-discovery-script-gate0\gate0-verification.json`, `runs\single\summary.json`, `runs\single\portable_data\kodi.log`, and reports in `.superpowers/sdd/2026-11-25-discovery-script-execution-gate0/`. No alternative launcher, MRO variant, service, deployment, merge, push or release was attempted. The active legacy background-shutdown HANG is independently still unresolved. Only a later, separately approved native-InfoWall-or-pause decision remains; this document is not an implementation guide to continue the rejected script route.
+
+## Design rationale and original proposal (retained for traceability)
 
 ## Why a different execution model is needed
 
