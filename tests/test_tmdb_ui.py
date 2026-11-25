@@ -21,6 +21,7 @@ from yawsp_app.tmdb import (
     TMDBClient,
     TMDBError,
     TrailerRepository,
+    WATCHLIST_PREFETCH_LIMIT,
 )
 from yawsp_app.tmdb_ui import _next_episode_suffix, build_tmdb_handlers
 
@@ -183,6 +184,22 @@ class Background:
         self.shows.append(ids)
         self.show_missing_known.append(missing_known)
         return len(ids)
+
+    def submit_metadata(
+        self, media, trailer_ids=(), show_ids=(), missing_known=False
+    ):
+        trailer_ids = list(trailer_ids)
+        show_ids = list(show_ids)
+        accepted = []
+        if trailer_ids:
+            accepted.append(
+                self.submit_trailers(
+                    media, trailer_ids, missing_known=missing_known
+                )
+            )
+        if show_ids:
+            accepted.append(self.submit_shows(show_ids, missing_known=missing_known))
+        return accepted
 
 
 class SnapshotBackground(Background):
@@ -532,6 +549,29 @@ class TMDBUITests(unittest.TestCase):
 
         self.assertEqual(trailer_load.call_count, 1)
         self.assertEqual(show_load.call_count, 1)
+
+    def test_only_first_fifty_visible_rows_schedule_metadata_but_all_rows_render(self):
+        shows = [
+            {"id": show_id, "name": "Show {0:03d}".format(show_id)}
+            for show_id in range(1, 101)
+        ]
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {"results": shows, "total_pages": 1},
+        )
+        self.client.queue_get("/3/genre/tv/list", {"genres": []})
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "shows"}
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(len(self.plugin.items), 100)
+        self.assertEqual(self.background.trailers, [("tv", list(range(1, 51)))])
+        self.assertEqual(self.background.shows, [list(range(1, 51))])
+        self.assertEqual(WATCHLIST_PREFETCH_LIMIT, 50)
 
     def test_stale_show_value_is_displayed_while_still_scheduled_for_refresh(self):
         stale = {"season": 1, "episode": 2, "air_date": "2026-01-01"}

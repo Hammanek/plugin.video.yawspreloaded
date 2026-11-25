@@ -87,6 +87,45 @@ class ShutdownWorker(ManualWorker):
         self.shutdown_calls.append(wait)
 
 
+class MetadataSession:
+    """Fabricate successful metadata responses while recording real client calls."""
+
+    def __init__(self, calls, attempts, failures=None):
+        self.calls = calls
+        self.attempts = attempts
+        self.failures = failures or {}
+        self.closed = False
+        self.lock = threading.Lock()
+
+    def request(self, method, url, **kwargs):
+        if url.endswith("/videos"):
+            media_id = int(url.rsplit("/", 2)[-2])
+            key = ("trailer", media_id)
+            data = {
+                "results": [
+                    {
+                        "site": "YouTube",
+                        "type": "Trailer",
+                        "key": "video-{0}".format(media_id),
+                    }
+                ]
+            }
+        else:
+            media_id = int(url.rsplit("/", 1)[-1])
+            key = ("show", media_id)
+            data = {"next_episode_to_air": None}
+        with self.lock:
+            self.calls.append(url)
+            self.attempts[key] = self.attempts.get(key, 0) + 1
+            attempt = self.attempts[key]
+        if attempt <= self.failures.get(key, 0):
+            raise requests.Timeout("persistent synthetic metadata failure")
+        return FakeResponse(json_data=data)
+
+    def close(self):
+        self.closed = True
+
+
 def json_response(data, status_code=200, headers=None):
     return FakeResponse(json_data=data, status_code=status_code, headers=headers)
 
@@ -847,6 +886,19 @@ class WatchlistBackgroundTests(TMDBServiceTestCase):
         )
         return background, created
 
+    def test_watchlist_refresh_has_a_reservation_separate_from_metadata_burst(self):
+        worker = ManualWorker()
+        background, _ = self.make_watchlist_background([], worker)
+        self.assertEqual(
+            background.submit_shows(range(1, 101), missing_known=True), 32
+        )
+
+        self.assertEqual(background.submit_watchlist(self.scope, force=True), 1)
+        self.assertEqual(len(background._pending), 32)
+
+        background.close(wait=False)
+        self.assertEqual(len(background._pending), 0)
+
     def test_complete_fetch_rebuilds_pages_rejects_duplicate_pages_and_caps_metadata(self):
         self.assertTrue(
             hasattr(tmdb_service, "fetch_complete_watchlist"),
@@ -1568,6 +1620,262 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(kodi.builtin_commands, [])
         self.assertEqual(kodi.calls, [])
         self.assertEqual(plugin.calls, [])
+
+    def make_recording_background(self, worker, failures=None, clock=None):
+        calls = []
+        attempts = {}
+        sessions = []
+
+        def session_factory():
+            session = MetadataSession(calls, attempts, failures=failures)
+            sessions.append(session)
+            return session
+
+        clock = clock or FakeClock()
+        background = BackgroundPrefetch(
+            settings=MemorySettings(tmdb_account_id="42"),
+            trailer_cache=self.trailer_cache,
+            show_cache=self.show_cache,
+            locale_mapper=lambda: "en-US",
+            session_factory=session_factory,
+            worker=worker,
+            clock=clock,
+            sleeper=clock.sleep,
+            max_pending=32,
+        )
+        return background, calls, attempts, sessions
+
+    def test_large_direct_submission_drains_every_key_without_exceeding_active_cap(self):
+        worker = ManualWorker()
+        background, calls, attempts, sessions = self.make_recording_background(worker)
+
+        self.assertEqual(
+            background.submit_trailers(
+                "movie", range(1, 101), missing_known=True
+            ),
+            32,
+        )
+        active_counts = [len(background._pending)]
+        batches = 0
+        while worker.jobs:
+            worker.run_all()
+            batches += 1
+            active_counts.append(len(background._pending))
+
+        expected = {("trailer", media_id): 1 for media_id in range(1, 101)}
+        self.assertEqual(attempts, expected)
+        self.assertEqual(batches, 4)
+        self.assertLessEqual(max(active_counts), 32)
+        self.assertEqual(active_counts[-1], 0)
+        self.assertEqual(len(calls), 100)
+        self.assertTrue(all(session.closed for session in sessions))
+
+    def test_mixed_submission_alternates_trailer_and_show_lookups_deterministically(self):
+        worker = InlineWorker()
+        background, calls, attempts, _ = self.make_recording_background(worker)
+
+        self.assertTrue(hasattr(background, "submit_metadata"))
+        background.submit_metadata(
+            "tv", range(1, 51), range(101, 151), missing_known=True
+        )
+
+        paths = [call.replace("https://api.themoviedb.org", "") for call in calls]
+        self.assertEqual(
+            paths[:6],
+            [
+                "/3/tv/1/videos",
+                "/3/tv/101",
+                "/3/tv/2/videos",
+                "/3/tv/102",
+                "/3/tv/3/videos",
+                "/3/tv/103",
+            ],
+        )
+        expected_paths = []
+        for media_id in range(1, 51):
+            expected_paths.extend(
+                ["/3/tv/{0}/videos".format(media_id), "/3/tv/{0}".format(media_id + 100)]
+            )
+        self.assertEqual(paths, expected_paths)
+        self.assertEqual(len(attempts), 100)
+        self.assertTrue(all(count == 1 for count in attempts.values()))
+
+    def test_persistent_failures_retry_once_after_other_rows_without_negative_cache(self):
+        failures = {("show", media_id): 100 for media_id in range(1, 33)}
+        clock = FakeClock()
+        background, calls, attempts, _ = self.make_recording_background(
+            InlineWorker(), failures=failures, clock=clock
+        )
+
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            background.submit_shows(range(1, 101), missing_known=True)
+
+        self.assertEqual(
+            [attempts[("show", media_id)] for media_id in range(1, 33)],
+            [2] * 32,
+        )
+        self.assertEqual(
+            [attempts[("show", media_id)] for media_id in range(33, 101)],
+            [1] * 68,
+        )
+        self.assertGreater(sum(clock.sleeps), 0)
+        self.assertTrue(all(wait <= 0.25 for wait in clock.sleeps))
+        persisted = self.read_cache(self.show_cache)
+        self.assertEqual(set(persisted), {str(media_id) for media_id in range(33, 101)})
+        self.assertEqual(len(background._pending), 0)
+
+    def test_duplicate_submission_and_close_release_all_reserved_and_deferred_keys(self):
+        worker = ShutdownWorker()
+        background, calls, _, _ = self.make_recording_background(worker)
+        background.submit_shows(range(1, 101), missing_known=True)
+
+        self.assertEqual(background.submit_shows(range(1, 101), missing_known=True), 0)
+        background.close(wait=False)
+        self.assertEqual(len(background._pending), 0)
+        worker.run_all()
+
+        self.assertEqual(calls, [])
+        self.assertFalse(os.path.exists(self.show_cache.path))
+        self.assertEqual(background.submit_shows([1], missing_known=True), 0)
+
+    def test_concurrent_on_demand_and_worker_lookup_share_one_http_request(self):
+        worker = ManualWorker()
+        background = self.make_background([], worker)[0]
+        self.assertTrue(hasattr(background, "run_shared"))
+        worker_started = threading.Event()
+        release_worker = threading.Event()
+        direct_entered = threading.Event()
+        worker_session = MetadataSession([], {})
+        original_request = worker_session.request
+
+        def blocking_request(method, url, **kwargs):
+            worker_started.set()
+            self.assertTrue(release_worker.wait(2))
+            return original_request(method, url, **kwargs)
+
+        worker_session.request = blocking_request
+        background.session_factory = lambda: worker_session
+        background.submit_trailers("movie", [42], missing_known=True)
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "duplicate"}]})]
+        )
+        repository = TrailerRepository(on_demand_client, self.trailer_cache)
+        repository._coordinator = background
+        original_shared = background.run_shared
+
+        def observed_shared(*args):
+            direct_entered.set()
+            return original_shared(*args)
+
+        background.run_shared = observed_shared
+        worker_thread = threading.Thread(target=worker.run_all)
+        worker_thread.start()
+        self.assertTrue(worker_started.wait(2))
+        direct_results = []
+        direct_thread = threading.Thread(
+            target=lambda: direct_results.append(repository.lookup("movie", 42))
+        )
+        direct_thread.start()
+        self.assertTrue(direct_entered.wait(2))
+        release_worker.set()
+        worker_thread.join(2)
+        direct_thread.join(2)
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(on_demand_session.calls, [])
+        self.assertEqual(len(background._pending), 0)
+        background.close(wait=False)
+
+    def test_concurrent_show_waiter_receives_public_next_episode_value(self):
+        worker = ManualWorker()
+        background = self.make_background([], worker)[0]
+        worker_session = MetadataSession([], {})
+        original_request = worker_session.request
+        worker_started = threading.Event()
+        release_worker = threading.Event()
+        direct_entered = threading.Event()
+
+        def blocking_request(method, url, **kwargs):
+            worker_started.set()
+            self.assertTrue(release_worker.wait(2))
+            return original_request(method, url, **kwargs)
+
+        worker_session.request = blocking_request
+        background.session_factory = lambda: worker_session
+        background.submit_shows([42], missing_known=True)
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [json_response({"next_episode_to_air": {"season_number": 9, "episode_number": 9}})]
+        )
+        repository = ShowRepository(on_demand_client, self.show_cache)
+        repository._coordinator = background
+        original_shared = background.run_shared
+
+        def observed_shared(*args):
+            direct_entered.set()
+            return original_shared(*args)
+
+        background.run_shared = observed_shared
+        direct_results = []
+        worker_thread = threading.Thread(target=worker.run_all)
+        worker_thread.start()
+        self.assertTrue(worker_started.wait(2))
+        direct_thread = threading.Thread(
+            target=lambda: direct_results.append(repository.next_episode(42))
+        )
+        direct_thread.start()
+        self.assertTrue(direct_entered.wait(2))
+        release_worker.set()
+        worker_thread.join(2)
+        direct_thread.join(2)
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_results, [None])
+        self.assertEqual(on_demand_session.calls, [])
+        background.close(wait=False)
+
+    def test_on_demand_before_worker_flush_reuses_the_completed_shared_result(self):
+        worker = ManualWorker()
+        background = self.make_background([], worker)[0]
+        worker_session = MetadataSession([], {})
+        background.session_factory = lambda: worker_session
+        background.submit_trailers("movie", [42], missing_known=True)
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "duplicate"}]})]
+        )
+        repository = TrailerRepository(on_demand_client, self.trailer_cache)
+        repository._coordinator = background
+        flush_entered = threading.Event()
+        release_flush = threading.Event()
+        original_save = self.trailer_cache.save_merged
+
+        def blocked_save(*args, **kwargs):
+            flush_entered.set()
+            self.assertTrue(release_flush.wait(2))
+            return original_save(*args, **kwargs)
+
+        direct_results = []
+        with patch.object(self.trailer_cache, "save_merged", side_effect=blocked_save):
+            worker_thread = threading.Thread(target=worker.run_all)
+            worker_thread.start()
+            self.assertTrue(flush_entered.wait(2))
+            direct_thread = threading.Thread(
+                target=lambda: direct_results.append(repository.lookup("movie", 42))
+            )
+            direct_thread.start()
+            direct_thread.join(2)
+            release_flush.set()
+            worker_thread.join(2)
+            direct_thread.join(2)
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(on_demand_session.calls, [])
+        self.assertEqual(len(background._pending), 0)
+        background.close(wait=False)
 
 
 if __name__ == "__main__":

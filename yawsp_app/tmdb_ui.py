@@ -18,6 +18,7 @@ from yawsp_app.tmdb import (
     ShowRepository,
     TMDBError,
     TrailerRepository,
+    WATCHLIST_PREFETCH_LIMIT,
     fetch_complete_watchlist,
     resolve_watchlist_account,
     watchlist_operation_client,
@@ -212,6 +213,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     client = client_factory()
     trailer_repository = repositories["trailers"]
     show_repository = repositories["shows"]
+    attach_repositories = getattr(background, "attach_repositories", None)
+    if attach_repositories is not None:
+        attach_repositories(trailer_repository, show_repository)
     snapshot_store = getattr(background, "snapshot_store", None)
     genre_repository = getattr(background, "genre_repository", None) or GenreRepository()
 
@@ -602,14 +606,19 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             # Genuine complete empty results need no locale/genre request.
             genre_map = genres(media, operation_language) if results else {}
             media_ids = [value["id"] for value in results]
+            visible_ids = media_ids[:WATCHLIST_PREFETCH_LIMIT]
+            visible_id_set = set(visible_ids)
             cached_trailers, missing_trailers = _cached_trailers(
-                trailer_repository, media, media_ids
+                trailer_repository, media, visible_ids
             )
             cached_shows, missing_shows = (
                 ({}, [])
                 if is_movie
                 else _cached_shows(show_repository, media_ids)
             )
+            missing_shows = [
+                show_id for show_id in missing_shows if show_id in visible_id_set
+            ]
             # Genre/cache activity above may have yielded to another invocation;
             # never present rows under a newly selected account or language.
             require_valid_operation()
@@ -719,12 +728,15 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     background.submit_watchlist(scope)
                 # Cache misses were discovered with the row values above. Workers
                 # persist data but never refresh a running container.
-                if missing_trailers:
-                    background.submit_trailers(
-                        media, missing_trailers, missing_known=True
+                if missing_trailers or missing_shows:
+                    # One combined submission establishes fair family order before
+                    # the single worker can start draining either family.
+                    background.submit_metadata(
+                        media,
+                        missing_trailers,
+                        missing_shows,
+                        missing_known=True,
                     )
-                if not is_movie and missing_shows:
-                    background.submit_shows(missing_shows, missing_known=True)
 
             return DirectoryResult(post_complete=post_complete)
         except TMDBError as error:
