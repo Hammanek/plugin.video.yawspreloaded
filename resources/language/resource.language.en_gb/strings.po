@@ -389,3 +389,19 @@ msgctxt "#30440"
 msgid "No matching files found"
 msgstr ""
 
+msgctxt "#30441"
+msgid "Discover"
+msgstr ""
+
+msgctxt "#30442"
+msgid "Popular"
+msgstr ""
+
+msgctxt "#30443"
+msgid "Top rated"
+msgstr ""
+
+msgctxt "#30444"
+msgid "Use native wall in Objevit"
+msgstr ""
+

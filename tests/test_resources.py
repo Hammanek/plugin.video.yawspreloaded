@@ -95,6 +95,18 @@ UX_STRINGS = (
     (30440, "No matching files found", "Žádné výsledky", "Žiadne výsledky"),
 )
 UX_IDS = {entry[0] for entry in UX_STRINGS}
+DISCOVERY_STRINGS = (
+    (30441, "Discover", "Objevit", "Objaviť"),
+    (30442, "Popular", "Populární", "Populárne"),
+    (30443, "Top rated", "Nejlépe hodnocené", "Najlepšie hodnotené"),
+    (
+        30444,
+        "Use native wall in Objevit",
+        "Použít nativní stěnu v Objevit",
+        "Použiť natívnu stenu v Objaviť",
+    ),
+)
+DISCOVERY_IDS = {entry[0] for entry in DISCOVERY_STRINGS}
 
 
 def load_catalog(language):
@@ -240,6 +252,17 @@ class ResourceContractTests(unittest.TestCase):
                         expected = "" if translation_index is None else (czech, slovak)[translation_index - 2]
                         self.assertEqual(entries[string_id]["msgstr"], expected)
 
+    def test_discovery_ids_have_exact_native_wording(self):
+        self.assertEqual(DISCOVERY_IDS, {30441, 30442, 30443, 30444})
+        for language, translation_index in (("cs_CZ", 2), ("sk_SK", 3), ("en_GB", None)):
+            with self.subTest(language=language):
+                _, entries = load_catalog(language)
+                for string_id, msgid, czech, slovak in DISCOVERY_STRINGS:
+                    with self.subTest(language=language, string_id=string_id):
+                        self.assertEqual(entries[string_id]["msgid"], msgid)
+                        expected = "" if translation_index is None else (czech, slovak)[translation_index - 2]
+                        self.assertEqual(entries[string_id]["msgstr"], expected)
+
     def test_all_settings_numeric_labels_and_lvalues_resolve(self):
         settings = ET.parse(str(ROOT / "resources/settings.xml")).getroot()
         references = set()
@@ -255,7 +278,7 @@ class ResourceContractTests(unittest.TestCase):
                 values = lvalues.split("|")
                 self.assertTrue(all(value.isdigit() for value in values), lvalues)
                 references.update(int(value) for value in values)
-        self.assertEqual(new_tmdb_labels, set(range(30426, 30433)))
+        self.assertEqual(new_tmdb_labels, set(range(30426, 30433)) | {30444})
         for language in CATALOGS:
             with self.subTest(language=language):
                 _, entries = load_catalog(language)
@@ -273,6 +296,7 @@ class ResourceContractTests(unittest.TestCase):
         self.assertTrue(TMDB_IDS - set(range(30426, 30433)) <= references)
         self.assertTrue(JOB_IDS <= references)
         self.assertTrue(UX_IDS <= references)
+        self.assertTrue({30441, 30442, 30443} <= references)
         for language in CATALOGS:
             with self.subTest(language=language):
                 _, entries = load_catalog(language)
@@ -286,7 +310,7 @@ class ResourceContractTests(unittest.TestCase):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         references, unresolved = localization_references(tree)
         self.assertEqual([], unresolved)
-        self.assertEqual(set(range(30400, 30426)) | {30438, 30439}, references)
+        self.assertEqual(set(range(30400, 30426)) | {30438, 30439, 30441}, references)
 
         violations = []
 

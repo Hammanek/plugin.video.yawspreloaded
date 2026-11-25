@@ -12,6 +12,8 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
+from yawsp_app.discovery_ui import build_discovery_handlers
+from yawsp_app.discovery_window import create_discovery_window
 from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
@@ -253,6 +255,24 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             return
         runtime.execute_builtin("Container.SetViewMode(54)")
         runtime.set_setting("tmdb_view_defaulted", "true")
+
+    class DiscoveryClient:
+        """Adapt the fixed catalog paths to TMDBClient's versioned endpoints."""
+
+        locale_mapper = staticmethod(getattr(client, "locale_mapper", None))
+
+        @staticmethod
+        def get(path):
+            return client.get("/3" + path)
+
+    discovery_handlers = build_discovery_handlers(
+        runtime,
+        DiscoveryClient(),
+        _url,
+        genres,
+        set_default_view,
+        create_discovery_window,
+    )
 
     def authenticate(params=None):
         if not valid_configuration():
@@ -918,9 +938,21 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         runtime.add_item(_url(runtime, action="tmdb_watchlist"), item, True)
         return DirectoryResult()
 
-    return {
+    def discovery_menu(params):
+        item = runtime.list_item(label=runtime.localized(30441))
+        item.setArt({"icon": "DefaultMovies.png"})
+        runtime.add_item(
+            _url(runtime, action="tmdb_discovery", source="popular_movies"),
+            item,
+            True,
+        )
+        return DirectoryResult()
+
+    discovery_handlers.update({
         "menu": menu,
+        "discovery_menu": discovery_menu,
         "tmdb_watchlist": watchlist,
         "tmdb_auth": authenticate,
         "tmdb_trailer": trailer,
-    }
+    })
+    return discovery_handlers

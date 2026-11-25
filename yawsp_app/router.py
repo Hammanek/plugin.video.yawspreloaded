@@ -263,18 +263,30 @@ class _ProductionOwner:
             self.background,
         )
         base_menu = webshare["menu"]
+        discovery_menu = tmdb.pop(
+            "discovery_menu", lambda params: DirectoryResult()
+        )
         tmdb_menu = tmdb.pop("menu")
 
         def menu(params):
+            discovery_result = discovery_menu(params)
             webshare_result = base_menu(params)
             tmdb_result = tmdb_menu(params)
             return DirectoryResult(
-                succeeded=webshare_result.succeeded and tmdb_result.succeeded,
+                succeeded=(
+                    discovery_result.succeeded
+                    and webshare_result.succeeded
+                    and tmdb_result.succeeded
+                ),
                 update_listing=(
-                    webshare_result.update_listing or tmdb_result.update_listing
+                    discovery_result.update_listing
+                    or webshare_result.update_listing
+                    or tmdb_result.update_listing
                 ),
                 cache_to_disc=(
-                    webshare_result.cache_to_disc and tmdb_result.cache_to_disc
+                    discovery_result.cache_to_disc
+                    and webshare_result.cache_to_disc
+                    and tmdb_result.cache_to_disc
                 ),
             )
 

@@ -116,6 +116,7 @@ class BackupDBRetirementTests(unittest.TestCase):
                     30203: "History",
                     30204: "Settings",
                     30418: "TMDB Watchlist",
+                    30441: "Objevit",
                 }
             )
             translate = lambda value: profile
@@ -197,7 +198,14 @@ class BackupDBRetirementTests(unittest.TestCase):
                             self.assertTrue(result.succeeded)
                             self.assertEqual(
                                 [item["listitem"].label for item in items],
-                                ["Search", "Queue", "History", "Settings", "TMDB Watchlist"],
+                                [
+                                    "Objevit",
+                                    "Search",
+                                    "Queue",
+                                    "History",
+                                    "Settings",
+                                    "TMDB Watchlist",
+                                ],
                             )
                             self.assertEqual(
                                 [item["listitem"].label for item in items],

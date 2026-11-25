@@ -104,6 +104,9 @@ def install_kodi_stubs():
             30433: "Download queued",
             30437: "Download could not be queued",
             30438: "Refresh",
+            30441: "Objevit",
+            30442: "Populární",
+            30443: "Nejlépe hodnocené",
         },
     )
     addon.open_settings_calls = 0
