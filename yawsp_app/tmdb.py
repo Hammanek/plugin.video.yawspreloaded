@@ -943,11 +943,6 @@ class BackgroundPrefetch:
 
     def run_shared(self, key, operation):
         """Run one operation per key; existing waiters receive that same outcome."""
-        service_runner = getattr(self.worker, "run_shared", None)
-        if service_runner is not None:
-            # Only a specifically capable adapter can replace local execution.
-            # The raw operation stays callable solely for legacy/manual workers.
-            return service_runner(key, operation)
         owned_flight = None
         claimed_item = None
         with self._condition:

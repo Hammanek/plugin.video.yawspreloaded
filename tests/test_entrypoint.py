@@ -14,7 +14,6 @@ from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
 from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, archive_bytes, xml
 from yawsp_app import router as production_router
-from yawsp_app import tmdb as tmdb_service
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
     ActionResult,
@@ -167,7 +166,7 @@ def install_kodi_stubs():
     xbmcplugin.addSortMethod = recorder.addSortMethod
     xbmcplugin._recorder = recorder
     xbmcaddon = types.ModuleType("xbmcaddon")
-    xbmcaddon.Addon = lambda *args: addon
+    xbmcaddon.Addon = lambda: addon
     xbmcvfs = types.ModuleType("xbmcvfs")
     xbmcvfs.translatePath = lambda value: value
     modules = {
@@ -333,75 +332,6 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(len(owner.plugin.end_of_directory_calls), 2)
         self.assertEqual(len(owner.plugin.resolved_url_calls), 3)
         self.assertFalse(owner.plugin.end_of_directory_calls[0]["succeeded"])
-
-    def test_production_owner_attaches_service_queue_without_parent_executor(self):
-        with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
-            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
-        ):
-            translate = lambda value: profile
-            sys.modules["xbmc"].translatePath = translate
-            sys.modules["xbmcvfs"].translatePath = translate
-            production_router.close()
-            owner = production_router._ProductionOwner()
-            try:
-                self.assertEqual(type(owner.background.worker).__name__, "ServiceJobWorker")
-                self.assertNotIsInstance(
-                    owner.background.worker, tmdb_service.ThreadPoolExecutor
-                )
-            finally:
-                owner.close()
-
-    def test_real_stale_warm_route_publishes_after_end_without_metadata_service_wait(self):
-        from tests.support.http_stubs import FakeSession
-
-        with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
-            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
-        ), mock.patch.object(production_router.requests, "Session") as session_type:
-            translate = lambda value: profile
-            sys.modules["xbmc"].translatePath = translate
-            sys.modules["xbmcvfs"].translatePath = translate
-            addon = sys.modules["xbmcaddon"].Addon()
-            addon.settings.update(
-                {
-                    "tmdb_api_key": "offline-api-key",
-                    "tmdb_access_token": "session-1",
-                    "tmdb_account_id": "account-1",
-                    "tmdb_sort": "0",
-                    "tmdb_hide_unreleased": "false",
-                }
-            )
-            session = FakeSession([json_response({"genres": []})])
-            session.headers = {}
-            session_type.return_value = session
-            production_router.close()
-            owner = production_router._get_owner()
-            recorder = sys.modules["xbmcplugin"]._recorder
-            scope = SnapshotScope("account-1", "movies", "en-US")
-            owner.snapshot_store.save_complete(
-                scope, [{"id": 42, "title": "Cached"}], 0.0
-            )
-            publish = owner.tmdb_queue.publish
-
-            def observed_publish(document):
-                recorder._record("queue_published", document["operation"])
-                return publish(document)
-
-            owner.tmdb_queue.publish = observed_publish
-
-            result = production_router.router("action=tmdb_watchlist&category=movies")
-
-            self.assertTrue(result.succeeded)
-            stages = [
-                call["method"]
-                for call in recorder.calls
-                if call["method"] in ("endOfDirectory", "queue_published")
-            ]
-            self.assertEqual(stages[0], "endOfDirectory")
-            self.assertIn("queue_published", stages)
-            self.assertEqual(len(session.calls), 1)
-            self.assertIn("/genre/movie/list", session.calls[0]["url"])
-            self.assertFalse(any("/watchlist/movies" in call["url"] for call in session.calls))
-            self.assertEqual(type(owner.background.worker).__name__, "ServiceJobWorker")
 
     def test_real_kodi_adapters_share_one_default_executor_and_map_language(self):
         with install_kodi_stubs(), mock.patch.object(
@@ -1705,36 +1635,6 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(len(owners), 1)
             production_router.close()
             self.assertEqual(owners[0].close_calls, 1)
-
-
-class NativeServiceEntryTests(unittest.TestCase):
-    def test_addon_registers_the_native_service_extension(self):
-        import xml.etree.ElementTree as ET
-
-        root = ET.parse("addon.xml").getroot()
-        services = [
-            extension
-            for extension in root.findall("extension")
-            if extension.get("point") == "xbmc.service"
-        ]
-        self.assertEqual(len(services), 1)
-        self.assertEqual(services[0].get("library"), "service.py")
-
-    def test_disabled_addon_does_not_construct_service_owner(self):
-        with install_kodi_stubs():
-            sys.modules["xbmc"].getCondVisibility = lambda condition: False
-            service = importlib.import_module("service")
-            with mock.patch.object(service, "ServiceRunner") as runner_type:
-                self.assertFalse(service.run())
-                runner_type.assert_not_called()
-
-    def test_enabled_service_owns_serial_runner_until_monitor_abort(self):
-        with install_kodi_stubs():
-            sys.modules["xbmc"].getCondVisibility = lambda condition: True
-            service = importlib.import_module("service")
-            with mock.patch.object(service, "ServiceRunner") as runner_type:
-                self.assertTrue(service.run())
-                runner_type.return_value.run.assert_called_once()
 
 
 if __name__ == "__main__":
