@@ -50,7 +50,6 @@ class DocumentationContractTests(unittest.TestCase):
             "yawsp_app/json_cache.py",
             "yawsp_app/metadata.py",
             "yawsp_app/discovery_ui.py",
-            "yawsp_app/discovery_window.py",
             "yawsp_app/tmdb.py",
             "yawsp_app/webshare_ui.py",
             "yawsp_app/tmdb_ui.py",
@@ -181,34 +180,112 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(self.readme, r"(?i)stránkov\w*.{0,160}raw_count|raw_count.{0,160}stránkov\w*")
 
     def test_readme_documents_complete_discovery_navigation_and_presentation(self):
+        section_match = re.search(
+            r"^## 🧭 Objevit a pohledy\s*$\n(.*?)(?=^## )",
+            self.readme,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(section_match, "missing Objevit documentation section")
+        section = section_match.group(1).strip()
+        paragraphs = [
+            re.sub(r"\s+", " ", paragraph.strip())
+            for paragraph in re.split(r"\n\s*\n", section)
+        ]
+        self.assertNotIn("discovery_native_wall=true", section)
+        self.assertNotRegex(
+            section,
+            r"(?i)(?:nastavte|povolte|zapněte).{0,100}discovery_native_wall|discovery_native_wall.{0,100}(?:přepne|povolí|zapne)",
+        )
+        self.assertNotRegex(section, r"(?i)výchozí vlastní prezentace|vlastní okno.{0,50}(?:nabízí|se otevírá)")
+        self.assertGreaterEqual(len(paragraphs), 4)
+        selector, public_rows, native_view, retirement = paragraphs[:4]
+
         self.assertIn(
             "**Objevit → Vyhledávání → Chci si stáhnout → Historie stahování → Nastavení → TMDB Watchlist**",
-            self.readme,
+            selector,
         )
-        for phrase in (
-            "popular_movies",
-            "popular_shows",
-            "top_rated_movies",
-            "top_rated_shows",
-            "nejvýše jednu stránku",
-            "nejvýše jeden sdílený požadavek na žánry",
-            "API klíč",
-            "sort=largest",
-            "WindowXML",
-            "Netflix",
-            "Back",
-            "discovery_native_wall=true",
-            "příštím otevření",
-            "InfoWall",
+        for key, path in (
+            ("popular_movies", "/movie/popular"),
+            ("popular_shows", "/tv/popular"),
+            ("top_rated_movies", "/movie/top_rated"),
+            ("top_rated_shows", "/tv/top_rated"),
         ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, self.readme)
-        self.assertRegex(self.readme, r"(?i)nepotřebuje.{0,140}(?:osobní.{0,30})?(?:účet|session)|bez.{0,80}(?:osobního )?(?:účtu|session)")
-        self.assertRegex(self.readme, r"(?i)dálkov\w*.{0,120}kláves|kláves.{0,120}dálkov\w*")
-        self.assertRegex(self.readme, r"(?i)načítání.{0,120}prázdn\w*.{0,120}chyb\w*|prázdn\w*.{0,120}chyb\w*.{0,120}Obnovit")
-        self.assertRegex(self.readme, r"(?i)bez autoplay|automatick\w* přehrávání")
-        self.assertRegex(self.readme, r"(?i)watched.{0,100}(?:prefetch|pozadí)|prefetch.{0,100}watched")
-        self.assertRegex(self.readme, r"(?i)watchlist.{0,160}(?:pohled|styl).{0,80}neměn|(?:pohled|styl).{0,80}watchlist\w*.{0,80}neměn")
+            with self.subTest(key=key, path=path):
+                self.assertRegex(
+                    selector,
+                    r"`" + re.escape(key) + r"`[^.]{0,60}`" + re.escape(path) + r"`",
+                )
+        self.assertRegex(selector, r"(?i)pouze.{0,50}chybějíc\w*.{0,30}`source`")
+        self.assertIn("neřetězcový", selector)
+        self.assertRegex(
+            selector,
+            r"(?i)prázdn\w*.{0,80}neznám\w*.{0,100}místn\w*.{0,30}chyb",
+        )
+        self.assertRegex(
+            selector,
+            r"(?i)hlavní menu i výběr kategorií jsou statické.{0,160}bez.{0,60}HTTP.{0,100}pozadí",
+        )
+        self.assertRegex(
+            selector,
+            r"(?i)výběr kategorií.{0,120}ne.{0,50}zpětn\w* volání pohledu",
+        )
+        self.assertRegex(
+            selector,
+            r"(?i)nejvýše jednu stránku.{0,120}nejvýše jeden sdílený požadavek na žánry",
+        )
+
+        self.assertIn("https://api.themoviedb.org/3", public_rows)
+        self.assertRegex(public_rows, r"(?i)veřejný klient.{0,180}api_key.{0,100}session_id")
+        self.assertRegex(public_rows, r"(?i)API klíč.{0,80}(?:povinný|potřebný)")
+        self.assertRegex(
+            public_rows,
+            r"(?i)(?:401|neautorizovan\w*).{0,140}(?:zachov|nezměn|neinvalid).{0,100}identit",
+        )
+        self.assertRegex(public_rows, r"(?i)apply_video_metadata.{0,200}InfoTag")
+        for phrase in ("žánry", "popis", "hodnocení", "artwork", "30440"):
+            with self.subTest(public_row_phrase=phrase):
+                self.assertIn(phrase, public_rows)
+        self.assertRegex(
+            public_rows,
+            re.escape("plugin://plugin.video.yawspreloaded/?action=search&what=")
+            + r"<[^>\r\n]+>&sort=largest",
+        )
+        self.assertRegex(
+            public_rows,
+            r"(?i)původního názvu.{0,200}Container\.Update.{0,100}(?:ne|nikoli).{0,40}skript",
+        )
+        self.assertRegex(public_rows, r"(?i)bez autoplay|automatick\w* přehrávání")
+        self.assertRegex(public_rows, r"(?i)watched.{0,100}(?:prefetch|pozadí)|prefetch.{0,100}watched")
+
+        self.assertIn("InfoWall", native_view)
+        self.assertIn("Estuary", native_view)
+        self.assertRegex(
+            native_view,
+            r"(?i)úspěšn\w*.{0,80}vybran\w* kategorie.{0,180}tmdb_view_defaulted.{0,80}true",
+        )
+        self.assertIn("Container.SetViewMode(54)", native_view)
+        self.assertRegex(
+            native_view,
+            r"(?i)(?:statický )?výběr kategorií.{0,100}ne.{0,30}pohled",
+        )
+        self.assertRegex(native_view, r"(?i)(?:každé|opakované) otevření.{0,100}ne.{0,50}54")
+        self.assertRegex(
+            native_view,
+            r"(?i)watchlist.{0,160}(?:pohled|styl).{0,80}neměn|(?:pohled|styl).{0,80}watchlist\w*.{0,80}neměn",
+        )
+        self.assertRegex(
+            native_view,
+            r"(?i)(?:budoucím|případném) schváleném nasazení.{0,100}ne\w*.{0,50}reinstal",
+        )
+
+        self.assertRegex(retirement, r"(?i)trvale vyřazen|trvale odstraněn")
+        self.assertIn("30444", retirement)
+        self.assertRegex(
+            retirement,
+            r"(?i)discovery_native_wall.{0,180}(?:historick\w*|uložen\w*).{0,120}neaktivn",
+        )
+        self.assertRegex(retirement, r"(?i)žádný samostatný skript|žádné samostatné skripty")
+        self.assertNotIn("| `yawsp_app/discovery_window.py` |", self.readme)
 
     def test_readme_documents_ci_verifier_without_persistent_archive(self):
         for phrase in (
@@ -242,16 +319,74 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(self.readme, r"(?i)Temp.{0,180}originál|originál.{0,180}Temp")
         self.assertRegex(self.readme, r"(?i)ne(?:vypis|zobraz)\w*.{0,80}(?:obsah|taj|přihlaš)|bez.{0,50}výpis\w*.{0,50}(?:obsah|archiv)")
 
-    def test_readme_limits_live_environment_claims_and_marks_task9_pending(self):
+    def test_readme_limits_live_environment_claims_and_marks_task4_pending(self):
         self.assertIn("Kodi 21.2 (Omega), Windows Store x64", self.readme)
-        for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS", "Task 9"):
+        for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS", "Task 4"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.readme)
+        self.assertNotIn("Task 9", self.readme)
         self.assertRegex(self.readme, r"(?i)Python 3\.8.{0,100}(?:AST|statick).{0,200}(?:ne|není).{0,120}Kodi 19|Kodi 19.{0,150}Python 3\.8")
         self.assertRegex(self.readme, r"(?i)nebyl\w*.{0,100}skutečn\w* přehrávání|skutečn\w* přehrávání.{0,100}nebyl\w*")
         self.assertRegex(self.readme, r"(?i)této větve.{0,140}Objevit|Objevit.{0,140}této větve")
-        self.assertRegex(self.readme, r"(?i)Task 9.{0,220}před sloučením|před sloučením.{0,220}Task 9")
+        self.assertRegex(self.readme, r"(?i)Task 4.{0,260}před sloučením|před sloučením.{0,260}Task 4")
         self.assertRegex(self.readme, r"(?i)nativn\w*.{0,30}služb\w*.{0,100}nebyl\w* vydán|nebyl\w* vydán.{0,100}nativn\w*.{0,30}služb\w*")
+        lifecycle_match = re.search(
+            r"^### Naměřené chování a jeho hranice\s*$\n(.*?)(?=^## )",
+            self.readme,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(lifecycle_match)
+        lifecycle = re.sub(r"\s+", " ", lifecycle_match.group(1))
+        self.assertRegex(
+            lifecycle,
+            r"(?i)současn\w*.{0,100}Objevit.{0,180}nebyl\w*.{0,80}(?:živě|interaktiv)",
+        )
+        self.assertRegex(lifecycle, r"(?i)Task 4.{0,180}izolovan\w* profil")
+        self.assertRegex(
+            lifecycle,
+            r"(?i)HANG.{0,220}(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,120}nezávisl|(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,180}HANG.{0,120}nezávisl",
+        )
+        self.assertRegex(lifecycle, r"(?i)HANG.{0,220}nevyřešen|nevyřešen\w*.{0,180}HANG")
+        self.assertRegex(lifecycle, r"(?i)hlavního profilu.{0,160}(?:sloučen|vydán|nasazen)|(?:sloučen|vydán|nasazen).{0,160}hlavního profilu")
+
+    def test_performance_coverage_tracks_native_selector_without_custom_ui(self):
+        coverage = json.loads(COVERAGE_PATH.read_text(encoding="utf-8"))
+        mappings = {entry["id"]: entry for entry in coverage["requirements"]}
+        selector = (
+            "tests.test_discovery_integration.DiscoveryIntegrationTests."
+            "test_missing_source_selects_four_categories_without_http"
+        )
+        self.assertIn(selector, mappings["PERF-05"]["mutation_sensitive_tests"])
+        active_selectors = [
+            test_selector
+            for entry in coverage["requirements"]
+            if entry.get("status", "active") == "active"
+            for test_selector in entry["mutation_sensitive_tests"]
+        ]
+        self.assertEqual(len(active_selectors), 31)
+        self.assertEqual(len(set(active_selectors)), 31)
+        for entry in coverage["requirements"]:
+            if entry.get("status", "active") != "active":
+                continue
+            active_contract = json.dumps(
+                {
+                    "production_symbols": entry["production_symbols"],
+                    "mutation_sensitive_tests": entry["mutation_sensitive_tests"],
+                }
+            )
+            with self.subTest(requirement=entry["id"]):
+                self.assertNotRegex(
+                    active_contract,
+                    r"(?i)discovery_window|discovery_script|create_discovery_window|discovery_native_wall",
+                )
+        execution = coverage["current_selector_execution"]
+        self.assertEqual(execution["mapped_selector_entries"], 31)
+        self.assertEqual(execution["unique_selectors"], 31)
+        self.assertEqual(execution["passed"], 31)
+        self.assertEqual(
+            execution["runs"][-1],
+            {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"},
+        )
 
     def test_performance_coverage_resolves_real_symbols_and_test_methods(self):
         coverage = json.loads(COVERAGE_PATH.read_text(encoding="utf-8"))

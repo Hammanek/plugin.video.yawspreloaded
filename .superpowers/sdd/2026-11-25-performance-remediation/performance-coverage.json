@@ -24,14 +24,15 @@
   },
   "current_selector_execution": {
     "status": "OK",
-    "mapped_selector_entries": 30,
-    "unique_selectors": 30,
-    "passed": 30,
+    "mapped_selector_entries": 31,
+    "unique_selectors": 31,
+    "passed": 31,
     "runs": [
       {"log": "../2026-11-25-kodi-usability-improvements/task-7-active-selectors.log", "tests": 29, "status": "OK"},
-      {"log": "task-8-active-selectors.log", "tests": 30, "status": "OK"}
+      {"log": "task-8-active-selectors.log", "tests": 30, "status": "OK"},
+      {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"}
     ],
-    "note": "Active post-removal selectors plus the six-item discovery-root HTTP/lifecycle guard; all 30 were executed together in task-8-active-selectors.log. selector_execution above preserves the historical 40-selector pre-removal evidence; DB-only symbols and deleted test selectors are retained solely in historical_* / historical_removed_* fields."
+    "note": "Active post-removal selectors plus the six-item discovery-root and four-category missing-source selector HTTP/lifecycle guards; all 31 were executed together in task-native-first-selectors.log. selector_execution above preserves the historical 40-selector pre-removal evidence; DB-only symbols and deleted test selectors are retained solely in historical_* / historical_removed_* fields."
   },
   "live_verification": {
     "kodi": "21.2",
@@ -219,7 +220,7 @@
     {
       "id": "PERF-05",
       "status": "active",
-      "scope": "The static root remains authentication-free without Backup DB. Retired db/searchdb bookmarks use the same ordinary root fallback without auth, network, client methods or user-data/database reads.",
+      "scope": "The static root and absent-source four-category discovery selector remain authentication-free without Backup DB. Retired db/searchdb bookmarks use the same ordinary root fallback without auth, network, client methods or user-data/database reads.",
       "production_symbols": [
         {"module": "yawsp_app.webshare_ui", "symbol": "build_webshare_handlers"},
         {"module": "yawsp_app.webshare", "symbol": "WebshareClient.revalidate"}
@@ -228,7 +229,8 @@
         "tests.test_webshare_ui.WebshareUITests.test_main_menu_renders_static_routes_without_authentication",
         "tests.test_backup_db_retirement.BackupDBRetirementTests.test_webshare_menu_has_only_live_static_routes",
         "tests.test_backup_db_retirement.BackupDBRetirementTests.test_retired_bookmarks_match_root_fallback_without_auth_network_or_user_data_io",
-        "tests.test_discovery_integration.DiscoveryIntegrationTests.test_root_places_discovery_first_without_http_or_background_work"
+        "tests.test_discovery_integration.DiscoveryIntegrationTests.test_root_places_discovery_first_without_http_or_background_work",
+        "tests.test_discovery_integration.DiscoveryIntegrationTests.test_missing_source_selects_four_categories_without_http"
       ],
       "historical_removed_mutation_sensitive_tests": [
         "tests.test_webshare_ui.WebshareUITests.test_installed_database_root_group_and_detail_do_not_authenticate",
@@ -244,9 +246,10 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "Four Webshare static menu items render with zero revalidation/auth and zero explicit remote calls. The combined pre-discovery root had five items after Backup DB retirement; the integrated root now has six with Objevit first, still without discovery HTTP or background jobs. Retired db/searchdb bookmarks exactly match that current ordinary unknown-action root fallback, complete once and do not call auth/token/client methods, network or user-data/database reads.",
+        "summary": "Four Webshare static menu items render with zero revalidation/auth and zero explicit remote calls. The combined pre-discovery root had five items after Backup DB retirement; the integrated root now has six with Objevit first, still without discovery HTTP or background jobs. Its absent-source selector renders exactly four fixed public category folders without HTTP/background jobs, API-key/default-view checks or a view callback. Retired db/searchdb bookmarks exactly match that current ordinary unknown-action root fallback, complete once and do not call auth/token/client methods, network or user-data/database reads.",
         "comparisons": [
           {"operation": "static main menu", "unit": "revalidation/auth calls", "baseline": 1, "current": 0, "repetitions": 1},
+          {"operation": "absent-source discovery selector", "unit": "HTTP/background/view-callback work", "baseline": null, "current": "0 / 0 / 0", "repetitions": 1},
           {"operation": "static Webshare main menu after retirement", "unit": "rendered items", "baseline": 5, "current": 4, "repetitions": 1},
           {"operation": "historical removed installed DB root/group/detail", "unit": "auth calls per path", "baseline": 0, "current": 0, "repetitions": 1},
           {"operation": "historical removed installed DB queue action", "unit": "revalidation calls", "baseline": 1, "current": 1, "repetitions": 1}
