@@ -72,48 +72,135 @@ def public_native_result_contract(paragraph):
         if not re.search(pattern, text, re.IGNORECASE)
     ]
 
-    # Remove the one approved exclusion list before looking for a contradictory
-    # positive statement elsewhere in the same paragraph.
-    contradictions = re.sub(sessionless, " ", text, flags=re.IGNORECASE)
-    contradictions = re.sub(
-        no_metadata_prefetch, " ", contradictions, flags=re.IGNORECASE
+    # Remove only the two explicitly approved exclusion spans. Every separate
+    # clause must still account for its own positive activity and negation.
+    unchecked = re.sub(sessionless, " ", text, flags=re.IGNORECASE)
+    unchecked = re.sub(
+        no_metadata_prefetch, " ", unchecked, flags=re.IGNORECASE
     )
-    forbidden = (
+
+    def near(left, right):
+        return r"(?:" + left + r")[^.;!?]{0,80}?(?:" + right + r")"
+
+    def activities(target, action):
+        return (near(target, action), near(action, target))
+
+    def approved_negations(target, action):
+        negation = (
+            r"\b(?:no|not|never|without|skip(?:s|ping)?|avoid(?:s|ing)?|"
+            r"do(?:es)?\s+not|don'?t|doesn'?t|žádn\w*|žiadn\w*|ziadn\w*|"
+            r"nen[ií]|nejsou|nie|bez)\b"
+        )
+        return near(negation, target), near(negation, action)
+
+    session = r"`?(?:session_id|session\s+id|tmdb_access_token)`?"
+    session_action = (
+        r"\b(?:send\w*|sent|pass\w*|include\w*|transmi\w*|present\w*|"
+        r"forward\w*|provide?\w*|attach\w*|shar\w*|posíl\w*|odesíl\w*|"
+        r"odesl\w*|předáv\w*|předán\w*|zahrnuj\w*|vklád\w*|"
+        r"posiel\w*|odosiel\w*|odosl\w*|odovzdáv\w*)\b"
+    )
+    auto = r"\b(?:autoplay|auto[\s-]+play(?:ing|back)?)\b"
+    automatic_play = (
+        r"\bautomatic(?:ally)?\b[^.;!?]{0,50}\bplay\w*"
+        r"|\bplay\w*[^.;!?]{0,50}\bautomatic(?:ally)?\b"
+        r"|\bautomatick\w*[^.;!?]{0,50}\bpřehráv\w*"
+        r"|\bpřehráv\w*[^.;!?]{0,50}\bautomatick\w*"
+    )
+    player = r"\b(?:native|plugin|Kodi)\s+(?:native\s+)?player\b"
+    player_action = (
+        r"\b(?:start\w*|enable\w*|launch\w*|play\w*|call\w*|open\w*|"
+        r"use\w*|activat\w*|spoušt\w*|přehráv\w*)\b"
+    )
+    watched = r"\b(?:watched(?:[\s-]+(?:state|status|flags?))?|zhlédnut\w*)\b"
+    watched_action = (
+        r"\b(?:updat\w*|writ\w*|mutat\w*|chang\w*|modif\w*|mark\w*|"
+        r"set\w*|toggle\w*|označ\w*|nastav\w*|změn\w*|zmen\w*|"
+        r"uprav\w*|zapíš\w*|zapis\w*)\b"
+    )
+    account = r"\b(?:account|úč\w*|uc\w*)\b"
+    watchlist = (
+        r"\b(?:watchlist\w*(?:\s+\w+){0,2}\s+snapshot\w*|watchlist\w*|"
+        r"snapshot\w*\s+watchlist\w*)\b"
+    )
+    data_action = (
+        r"\b(?:quer\w*|request\w*|writ\w*|updat\w*|mutat\w*|chang\w*|"
+        r"modif\w*|fetch\w*|read\w*|load\w*|sav\w*|delet\w*|refresh\w*|"
+        r"sync\w*|operat\w*|operac\w*|dotaz\w*|požadavk\w*|poziadavk\w*|"
+        r"zapis\w*|aktualiz\w*|změn\w*|zmen\w*|uprav\w*|načít\w*|"
+        r"uklád\w*|uklad\w*|maže\w*)\b"
+    )
+    media = (
+        r"\b(?:trailer\w*(?:/show\w*)?|show\w*|seriál\w*|serial\w*|"
+        r"metadata|metadat\w*)\b"
+    )
+    preload = r"\b(?:prefetch\w*|preload\w*|přednač\w*|prednač\w*)\b"
+    activity_rules = (
         (
             "positive_session_transmission",
-            r"\b(?:sends?|includes?|transmits?|posíl\w*)\s+`session_id`"
-            r"|\b(?:always|vždy)\b[^.;]{0,60}`session_id`",
+            activities(session, session_action),
+            approved_negations(session, session_action),
         ),
         (
             "positive_autoplay",
-            r"\bautoplay\b|\bautomatic\s+playback\b"
-            r"|\bautomatick\w*(?:\s+\w+){0,2}\s+přehráv\w*"
-            r"|\b(?:native|plugin|Kodi)\s+(?:native\s+)?player\b",
+            (
+                auto,
+                automatic_play,
+                near(player, player_action),
+                near(player_action, player),
+            ),
+            approved_negations(auto + "|" + automatic_play, player_action),
         ),
         (
             "positive_watched_mutations",
-            r"\bwatched\s+(?:změn\w*|changes?|mutations?|updates?)\b"
-            r"|\bwatched\s+(?:write|modify)\w*\b",
+            activities(watched, watched_action),
+            approved_negations(watched, watched_action),
         ),
         (
             "positive_account_queries",
-            r"\baccount(?:/watchlist)?\s+(?:queries|requests|požadavk\w*|dotaz\w*)\b",
+            activities(account, data_action),
+            approved_negations(account, data_action),
         ),
         (
             "positive_watchlist_snapshot_operations",
-            r"\bwatchlist(?:\s+snapshot)?\s+"
-            r"(?:queries|requests|operations|operace|požadavk\w*|dotaz\w*)\b",
+            activities(watchlist, data_action),
+            approved_negations(watchlist, data_action),
         ),
         (
             "positive_background_metadata_prefetch",
-            r"\bbackground\s+prefetch\b|\bmetadata\s+prefetch\b"
-            r"|\b(?:trailer|show)(?:\s+metadata)?\s+(?:queries|requests|požadavk\w*)\b",
+            (
+                near(r"\bbackground\b", preload),
+                near(preload, r"\bbackground\b"),
+                near(r"\bmetadata\b", preload),
+                near(preload, r"\bmetadata\b"),
+                near(media, preload),
+                near(preload, media),
+                r"\bdávkov\w*[^.;!?]{0,50}\bdotaž\w*[^.;!?]{0,30}\bmetadat\b",
+            ),
+            approved_negations(media + r"|\bbackground\b", preload),
         ),
     )
+    double_negation = re.compile(
+        r"\b(?:not\s+(?:no|never|not)|never\s+not|nie\s+nie|není\s+bez|neni\s+bez)\b",
+        re.IGNORECASE,
+    )
+    positive_reasons = set()
+    for clause in re.split(r"(?<=[.!?;])\s+|[\r\n]+", unchecked):
+        allow_negations = not double_negation.search(clause)
+        for reason, positives, negatives in activity_rules:
+            candidate = clause
+            if allow_negations:
+                for negative in negatives:
+                    candidate = re.sub(
+                        negative, " ", candidate, flags=re.IGNORECASE
+                    )
+            if any(
+                re.search(positive, candidate, re.IGNORECASE)
+                for positive in positives
+            ):
+                positive_reasons.add(reason)
     reasons.extend(
-        name
-        for name, pattern in forbidden
-        if re.search(pattern, contradictions, re.IGNORECASE)
+        name for name, _, _ in activity_rules if name in positive_reasons
     )
     return not reasons, reasons
 
@@ -409,6 +496,141 @@ class DocumentationContractTests(unittest.TestCase):
                 + " This is not no automatic playback and not no watched changes.",
                 ("positive_autoplay", "positive_watched_mutations"),
             ),
+            (
+                "background_prefetching_gerund",
+                public_rows + " The client runs background prefetching.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "session_passed_with_every_request",
+                public_rows + " The client passes session_id with every request.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "watchlist_snapshot_updates",
+                public_rows + " The client performs watchlist snapshot updates.",
+                ("positive_watchlist_snapshot_operations",),
+            ),
+            (
+                "enables_auto_play",
+                public_rows + " The client enables auto-play.",
+                ("positive_autoplay",),
+            ),
+            (
+                "watched_updates",
+                public_rows + " The client performs watched updates.",
+                ("positive_watched_mutations",),
+            ),
+            (
+                "account_requests",
+                public_rows + " The client runs account requests.",
+                ("positive_account_queries",),
+            ),
+            (
+                "session_object_before_passive_verb",
+                public_rows + " session_id is always sent.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "session_passive_past",
+                public_rows + " session_id was passed with each request.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "automatically_plays",
+                public_rows + " The client automatically plays titles.",
+                ("positive_autoplay",),
+            ),
+            (
+                "marks_movie_watched",
+                public_rows + " The client marks the movie watched.",
+                ("positive_watched_mutations",),
+            ),
+            (
+                "background_metadata_prefetch_requests",
+                public_rows + " The client runs background metadata prefetch requests.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "trailer_show_preloading",
+                public_rows + " The client performs trailer/show preloading.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "mutates_watchlist_snapshot",
+                public_rows + " The client mutates the watchlist snapshot.",
+                ("positive_watchlist_snapshot_operations",),
+            ),
+            (
+                "account_writes",
+                public_rows + " The client performs account writes.",
+                ("positive_account_queries",),
+            ),
+            (
+                "czech_session_passive",
+                public_rows + " session_id je vždy odesláno.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "session_transmission_noun",
+                public_rows + " The client enables automatic transmission of session_id.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "starts_auto_play_separate_words",
+                public_rows + " The client starts auto play.",
+                ("positive_autoplay",),
+            ),
+            (
+                "czech_automatic_playback",
+                public_rows + " Klient automaticky spustí přehrávání.",
+                ("positive_autoplay",),
+            ),
+            (
+                "czech_marks_movie_watched",
+                public_rows + " Klient označí film jako zhlédnutý.",
+                ("positive_watched_mutations",),
+            ),
+            (
+                "czech_account_queries",
+                public_rows + " Klient provádí dotazy na účet.",
+                ("positive_account_queries",),
+            ),
+            (
+                "account_passive_query",
+                public_rows + " The public account is queried.",
+                ("positive_account_queries",),
+            ),
+            (
+                "watchlist_snapshot_writes",
+                public_rows + " The client writes the watchlist snapshot.",
+                ("positive_watchlist_snapshot_operations",),
+            ),
+            (
+                "czech_trailer_preloading",
+                public_rows + " Klient spouští přednačítání trailerů.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "slovak_trailer_preloading",
+                public_rows + " Klient spúšťa prednačítanie trailerov.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "metadata_preloading",
+                public_rows + " The client is preloading metadata.",
+                ("positive_background_metadata_prefetch",),
+            ),
+            (
+                "playing_automatically_object_order",
+                public_rows + " The client starts playing automatically.",
+                ("positive_autoplay",),
+            ),
+            (
+                "czech_playback_automatic_object_order",
+                public_rows + " Přehrávání se spustí automaticky.",
+                ("positive_autoplay",),
+            ),
         )
         for fixture_name, fixture, expected_reasons in negative_fixtures:
             with self.subTest(negative_fixture=fixture_name):
@@ -427,6 +649,20 @@ class DocumentationContractTests(unittest.TestCase):
             )
         )
         self.assertTrue(watchlist_reference_ok, watchlist_reference_reasons)
+        approved_negative_ok, approved_negative_reasons = public_native_result_contract(
+            public_rows
+            + " Never pass session_id; no autoplay; do not mark the movie watched; "
+            "skip account queries; skip watchlist snapshot requests; "
+            "no background prefetching; no trailer/show preloading; "
+            "session_id is never sent; session_id není odesláno; no automatic playback."
+        )
+        self.assertTrue(approved_negative_ok, approved_negative_reasons)
+        on_demand_ok, on_demand_reasons = public_native_result_contract(
+            public_rows
+            + " Ordinary Webshare search fetches results on demand; "
+            "the TMDB Watchlist menu item remains available."
+        )
+        self.assertTrue(on_demand_ok, on_demand_reasons)
 
         self.assertIn("InfoWall", native_view)
         self.assertIn("Estuary", native_view)
