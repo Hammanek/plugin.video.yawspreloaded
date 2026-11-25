@@ -188,9 +188,14 @@ def public_native_result_contract(paragraph):
         re.IGNORECASE,
     )
     positive_reasons = set()
+    # A bare "a" can be an English article. Czech/Slovak additive scopes
+    # split only on explicit phrases, not on every occurrence of that word.
     coordinator = (
-        r"\s*(?:,\s*)?\b(?:but|although|though|however|yet|whereas|while|"
-        r"ale|avšak|však|and|or|nor|ani|i|a)\b\s*"
+        r"\s*(?:,\s*)?(?:"
+        r"\b(?:but|although|though|however|yet|whereas|while|"
+        r"ale|avšak|však|and|or|nor|ani|i)\b|"
+        r"\ba\s+(?:zároveň|také|současně)\b"
+        r")\s*"
     )
     clauses = [
         clause.strip()
@@ -685,6 +690,16 @@ class DocumentationContractTests(unittest.TestCase):
                 ("positive_autoplay",),
             ),
             (
+                "native_player_invocation_with_english_article",
+                public_rows + " The client invokes a native player.",
+                ("positive_autoplay",),
+            ),
+            (
+                "native_player_invocation_with_article_and_request",
+                public_rows + " The client invokes a native player with one request.",
+                ("positive_autoplay",),
+            ),
+            (
                 "czech_active_session_send",
                 public_rows + " Klient odešle session_id.",
                 ("positive_session_transmission",),
@@ -725,7 +740,9 @@ class DocumentationContractTests(unittest.TestCase):
                 public_rows
                 + " No autoplay, but session_id is never sent; "
                 "no account queries but the client does not enable auto-play; "
-                "no autoplay, but the client does not perform watched updates."
+                "no autoplay, but the client does not perform watched updates; "
+                "No autoplay and no watchlist modification; "
+                "no watched changes and no account queries."
             )
         )
         self.assertTrue(coordinated_negative_ok, coordinated_negative_reasons)
