@@ -248,6 +248,42 @@ class GenreFileCacheTests(unittest.TestCase):
 
         self.assertEqual(self.cache().get("movie", "sk-SK"), names)
 
+    def test_unpaired_surrogate_escaped_names_are_unsupported_and_unchanged(self):
+        for escaped_name in (b"\\ud800", b"\\udfff"):
+            with self.subTest(escaped_name=escaped_name):
+                contents = (
+                    b'{"schema":1,"genres":{"movie/en-US":{"1":"'
+                    + escaped_name
+                    + b'"}}}'
+                )
+                self.write_bytes(contents)
+                cache = self.cache()
+
+                self.assertEqual(cache.read(), (UNSUPPORTED, None))
+                self.assertIsNone(cache.get("movie", "en-US"))
+                with self.assertLogs(self.logger, level="ERROR"):
+                    self.assertFalse(cache.store("movie", "en-US", {"2": "Replacement"}))
+                self.assertEqual(self.read_bytes(), contents)
+
+    def test_valid_non_ascii_and_surrogate_pair_survive_read_store_and_reload(self):
+        name = "Žluťoučký / 日本語 / 😀"
+        source = {"schema": 1, "genres": {"movie/en-US": {"12": name}}}
+        contents = json.dumps(source, ensure_ascii=True).encode("ascii")
+        self.assertIn(b"\\ud83d\\ude00", contents)
+        self.write_bytes(contents)
+
+        state, document = self.cache().read()
+        self.assertEqual(state, VALID)
+        self.assertEqual(document, source)
+        self.assertEqual(self.cache().get("movie", "en-US"), {"12": name})
+        self.assertTrue(self.cache().store("movie", "en-US", {"12": name}))
+
+        reader = self.cache()
+        self.assertEqual(reader.read(), (VALID, source))
+        self.assertEqual(reader.get("movie", "en-US"), {"12": name})
+        with open(self.path, encoding="utf-8") as stream:
+            self.assertEqual(json.load(stream), source)
+
     def test_json_special_numbers_and_excessive_nesting_are_unsupported(self):
         cases = (
             b'{"schema":NaN,"genres":{}}',

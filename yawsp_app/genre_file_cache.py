@@ -60,6 +60,7 @@ def _validated_group(mapping):
                 return None
             if len(name) > _MAX_NAME_LENGTH:
                 return None
+            name.encode("utf-8", errors="strict")
             if identifier in validated:
                 return None
             validated[identifier] = name
