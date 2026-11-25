@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
 
 from yawsp_app.download_jobs import DownloadJobManager
 from yawsp_app.json_cache import AtomicJsonCache
+from yawsp_app.service_queue import ServiceJobQueue, ServiceJobWorker
 from yawsp_app.runtime import (
     ActionRunner,
     CompletionKind,
@@ -184,17 +185,25 @@ class _ProductionOwner:
             session.headers.update(self.session.headers)
             return session
 
+        self.tmdb_queue = ServiceJobQueue(
+            os.path.join(self.profile, "tmdb_service_queue")
+        )
+        self.tmdb_worker = ServiceJobWorker(
+            self.tmdb_queue, abort=self.monitor.abortRequested
+        )
         self.background = BackgroundPrefetch(
             settings=self.settings,
             trailer_cache=self.trailer_cache,
             show_cache=self.show_cache,
             locale_mapper=self.language,
             session_factory=worker_session_factory,
+            worker=self.tmdb_worker,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
             snapshot_store=self.snapshot_store,
             genre_repository=self.genre_repository,
         )
+        self.tmdb_worker.bind_background(self.background)
         self.download_jobs = DownloadJobManager(
             session_factory=worker_session_factory,
             abort=self.monitor.abortRequested,
@@ -234,6 +243,7 @@ class _ProductionOwner:
 
     def handlers(self, runtime=None):
         """Create per-open repositories so persisted worker data is re-read."""
+        self.tmdb_worker.reap()
         runtime = runtime or self.runtime
         webshare_client = WebshareClient(self.session, self.settings)
         tmdb_client = TMDBClient(
