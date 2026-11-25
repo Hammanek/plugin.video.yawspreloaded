@@ -97,7 +97,7 @@ def public_native_result_contract(paragraph):
     session_action = (
         r"\b(?:send\w*|sent|pass\w*|include\w*|transmi\w*|present\w*|"
         r"forward\w*|provide?\w*|attach\w*|shar\w*|posíl\w*|odesíl\w*|"
-        r"odesl\w*|předáv\w*|předán\w*|zahrnuj\w*|vklád\w*|"
+        r"odesl\w*|odešl\w*|předáv\w*|předán\w*|zahrnuj\w*|vklád\w*|"
         r"posiel\w*|odosiel\w*|odosl\w*|odovzdáv\w*)\b"
     )
     auto = r"\b(?:autoplay|auto[\s-]+play(?:ing|back)?)\b"
@@ -110,9 +110,12 @@ def public_native_result_contract(paragraph):
     player = r"\b(?:native|plugin|Kodi)\s+(?:native\s+)?player\b"
     player_action = (
         r"\b(?:start\w*|enable\w*|launch\w*|play\w*|call\w*|open\w*|"
-        r"use\w*|activat\w*|spoušt\w*|přehráv\w*)\b"
+        r"use\w*|activat\w*|invok\w*|spoušt\w*|přehráv\w*)\b"
     )
-    watched = r"\b(?:watched(?:[\s-]+(?:state|status|flags?))?|zhlédnut\w*)\b"
+    watched = (
+        r"\b(?:watched(?:[\s-]+(?:state|status|flags?))?|zhlédnut\w*|"
+        r"zhliadnut\w*)\b"
+    )
     watched_action = (
         r"\b(?:updat\w*|writ\w*|mutat\w*|chang\w*|modif\w*|mark\w*|"
         r"set\w*|toggle\w*|označ\w*|nastav\w*|změn\w*|zmen\w*|"
@@ -185,7 +188,17 @@ def public_native_result_contract(paragraph):
         re.IGNORECASE,
     )
     positive_reasons = set()
-    for clause in re.split(r"(?<=[.!?;])\s+|[\r\n]+", unchecked):
+    coordinator = (
+        r"\s*(?:,\s*)?\b(?:but|although|though|however|yet|whereas|while|"
+        r"ale|avšak|však|and|or|nor|ani|i|a)\b\s*"
+    )
+    clauses = [
+        clause.strip()
+        for sentence in re.split(r"(?<=[.!?;])\s+|[\r\n]+", unchecked)
+        for clause in re.split(coordinator, sentence, flags=re.IGNORECASE)
+        if clause.strip()
+    ]
+    for clause in clauses:
         allow_negations = not double_negation.search(clause)
         for reason, positives, negatives in activity_rules:
             candidate = clause
@@ -631,6 +644,56 @@ class DocumentationContractTests(unittest.TestCase):
                 public_rows + " Přehrávání se spustí automaticky.",
                 ("positive_autoplay",),
             ),
+            (
+                "negative_autoplay_but_positive_session",
+                public_rows + " No autoplay, but session_id is sent.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "negative_account_but_positive_autoplay",
+                public_rows + " No account queries, but the client enables auto-play.",
+                ("positive_autoplay",),
+            ),
+            (
+                "negative_autoplay_but_positive_watched",
+                public_rows + " No autoplay, but the client performs watched updates.",
+                ("positive_watched_mutations",),
+            ),
+            (
+                "negative_autoplay_but_positive_session_without_comma",
+                public_rows + " No autoplay but session_id is sent.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "negative_account_ale_positive_autoplay",
+                public_rows + " No account queries ale klient povolí auto-play.",
+                ("positive_autoplay",),
+            ),
+            (
+                "negative_autoplay_avsak_positive_watched",
+                public_rows + " Bez autoplay avšak klient vykoná watched updates.",
+                ("positive_watched_mutations",),
+            ),
+            (
+                "negative_autoplay_vsak_positive_session",
+                public_rows + " Bez autoplay, však klient odešle session_id.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "native_player_invocation",
+                public_rows + " The native player is invoked for the result.",
+                ("positive_autoplay",),
+            ),
+            (
+                "czech_active_session_send",
+                public_rows + " Klient odešle session_id.",
+                ("positive_session_transmission",),
+            ),
+            (
+                "slovak_marks_movie_watched",
+                public_rows + " Klient označí film ako zhliadnutý.",
+                ("positive_watched_mutations",),
+            ),
         )
         for fixture_name, fixture, expected_reasons in negative_fixtures:
             with self.subTest(negative_fixture=fixture_name):
@@ -657,6 +720,15 @@ class DocumentationContractTests(unittest.TestCase):
             "session_id is never sent; session_id není odesláno; no automatic playback."
         )
         self.assertTrue(approved_negative_ok, approved_negative_reasons)
+        coordinated_negative_ok, coordinated_negative_reasons = (
+            public_native_result_contract(
+                public_rows
+                + " No autoplay, but session_id is never sent; "
+                "no account queries but the client does not enable auto-play; "
+                "no autoplay, but the client does not perform watched updates."
+            )
+        )
+        self.assertTrue(coordinated_negative_ok, coordinated_negative_reasons)
         on_demand_ok, on_demand_reasons = public_native_result_contract(
             public_rows
             + " Ordinary Webshare search fetches results on demand; "
