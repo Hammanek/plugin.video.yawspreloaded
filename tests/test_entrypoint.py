@@ -108,6 +108,7 @@ def install_kodi_stubs():
             30435: "Backup DB installed",
             30436: "Backup DB installation failed",
             30437: "Download could not be queued",
+            30438: "Refresh",
         },
     )
     addon.open_settings_calls = 0
@@ -724,7 +725,8 @@ class EntrypointTests(unittest.TestCase):
             recovered = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(recovered.succeeded)
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Current")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Current")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertIsNone(
                 owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
             )
@@ -768,7 +770,8 @@ class EntrypointTests(unittest.TestCase):
             recovered = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(recovered.succeeded)
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Česky")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Česky")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertIsNone(
                 owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
             )
@@ -874,9 +877,10 @@ class EntrypointTests(unittest.TestCase):
             self.assertIn("/watchlist/movies", session.calls[1]["url"])
             self.assertIn("/genre/movie/list", session.calls[2]["url"])
             self.assertEqual(
-                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                [item["listitem"].label.split(" (")[0] for item in recorder.items[:-1]],
                 ["Áčko", "Chata"],
             )
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             scope = SnapshotScope("account-1", "movies", "en-US")
             owner.snapshot_store.save_complete(scope, movies, 0.0)
             recorder.items.clear()
@@ -894,9 +898,10 @@ class EntrypointTests(unittest.TestCase):
                 [session.calls[2]],
             )
             self.assertEqual(
-                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                [item["listitem"].label.split(" (")[0] for item in recorder.items[:-1]],
                 ["Áčko", "Chata"],
             )
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertEqual(owner.snapshot_store.load(scope).results, movies)
             self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             watchlist_jobs = [
@@ -1617,7 +1622,8 @@ class EntrypointTests(unittest.TestCase):
                 ).results,
                 [{"id": 1, "title": "Staged"}],
             )
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Staged")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Staged")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
 
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []
