@@ -14,6 +14,7 @@ from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
 from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, xml
 from yawsp_app import router as production_router
+from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
     ActionResult,
@@ -332,6 +333,27 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(len(owner.plugin.end_of_directory_calls), 2)
         self.assertEqual(len(owner.plugin.resolved_url_calls), 3)
         self.assertFalse(owner.plugin.end_of_directory_calls[0]["succeeded"])
+
+    def test_real_owner_supplies_one_profile_genre_file_cache_without_startup_io(self):
+        with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
+            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
+        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+            production_router, "DownloadJobManager"
+        ):
+            translate = lambda value: profile
+            sys.modules["xbmc"].translatePath = translate
+            sys.modules["xbmcvfs"].translatePath = translate
+            production_router.close()
+            owner = production_router._get_owner()
+            try:
+                file_cache = owner.genre_repository._file_cache
+                expected_path = production_router.os.path.join(owner.profile, "tmdb_genres.json")
+                self.assertIsInstance(file_cache, GenreFileCache)
+                self.assertEqual(file_cache.path, expected_path)
+                self.assertIs(file_cache.logger, production_router._LOGGER)
+                self.assertFalse(production_router.os.path.exists(expected_path))
+            finally:
+                production_router.close()
 
     def test_real_kodi_adapters_share_one_default_executor_and_map_language(self):
         with install_kodi_stubs(), mock.patch.object(

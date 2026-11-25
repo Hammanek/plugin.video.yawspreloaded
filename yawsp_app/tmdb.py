@@ -589,15 +589,33 @@ class ShowRepository(_Repository):
 
 
 class GenreRepository:
-    """Share process-local genre mappings and deduplicate concurrent requests."""
+    """Share process-local genre mappings and optionally sequential public files."""
 
-    def __init__(self):
+    def __init__(self, file_cache=None):
+        self._file_cache = file_cache
         self._condition = threading.Condition(threading.RLock())
         self._values = {}
         self._pending = set()
 
     def get(self, client, media, language):
         key = (media, language)
+        file_cache = self._file_cache
+        if media not in ("movie", "tv") or language not in (
+            "en-US",
+            "cs-CZ",
+            "sk-SK",
+        ):
+            file_cache = None
+        if file_cache is not None:
+            try:
+                persisted = file_cache.get(media, language)
+                if persisted is not None:
+                    return {
+                        int(identifier): name for identifier, name in persisted.items()
+                    }
+            except Exception:
+                _LOGGER.warning("Public genre cache lookup failed")
+
         with self._condition:
             while True:
                 if key in self._values:
@@ -626,6 +644,20 @@ class GenreRepository:
                 self._pending.discard(key)
                 self._condition.notify_all()
             raise
+
+        if file_cache is not None:
+            try:
+                stored_values = {
+                    str(identifier): name
+                    for identifier, name in values.items()
+                    if identifier > 0 and name.strip() and len(name) <= 200
+                }
+                stored = file_cache.store(media, language, stored_values)
+            except Exception:
+                _LOGGER.warning("Public genre cache commit failed")
+            else:
+                if not stored:
+                    _LOGGER.warning("Public genre cache commit was not completed")
 
         with self._condition:
             self._values[key] = values

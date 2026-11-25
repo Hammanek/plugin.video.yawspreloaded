@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urlparse import parse_qsl
 
 from yawsp_app.download_jobs import DownloadJobManager
+from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import (
     ActionRunner,
@@ -177,7 +178,11 @@ class _ProductionOwner:
                 os.path.join(self.profile, "tmdb_watchlist.json"), logger=_LOGGER
             )
         )
-        self.genre_repository = GenreRepository()
+        self.genre_repository = GenreRepository(
+            file_cache=GenreFileCache(
+                os.path.join(self.profile, "tmdb_genres.json"), logger=_LOGGER
+            )
+        )
 
         def worker_session_factory():
             session = requests.Session()
