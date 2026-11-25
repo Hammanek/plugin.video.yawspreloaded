@@ -22,8 +22,15 @@ from yawsp_app.runtime import (
     KodiRuntime,
     completion_for,
 )
-from yawsp_app.tmdb import BackgroundPrefetch, ShowRepository, TMDBClient, TrailerRepository
+from yawsp_app.tmdb import (
+    BackgroundPrefetch,
+    GenreRepository,
+    ShowRepository,
+    TMDBClient,
+    TrailerRepository,
+)
 from yawsp_app.tmdb_ui import build_tmdb_handlers, kodi_language
+from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
 from yawsp_app.webshare import WebshareClient
 from yawsp_app.webshare_ui import build_webshare_handlers
 
@@ -164,6 +171,12 @@ class _ProductionOwner:
         self.show_cache = AtomicJsonCache(
             os.path.join(self.profile, "tmdb_shows.json"), logger=_LOGGER
         )
+        self.snapshot_store = WatchlistSnapshotStore(
+            AtomicJsonCache(
+                os.path.join(self.profile, "tmdb_watchlist.json"), logger=_LOGGER
+            )
+        )
+        self.genre_repository = GenreRepository()
         self.background = BackgroundPrefetch(
             settings=self.settings,
             trailer_cache=self.trailer_cache,
@@ -172,6 +185,8 @@ class _ProductionOwner:
             session_factory=requests.Session,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
+            snapshot_store=self.snapshot_store,
+            genre_repository=self.genre_repository,
         )
         self.runner = ActionRunner(
             self.plugin,

@@ -14,6 +14,7 @@ from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
+from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.tmdb import (
     BackgroundPrefetch,
     ShowRepository,
@@ -99,6 +100,8 @@ class Client:
         self.responses = {}
         self.post_results = []
         self.account_id = "account-1"
+        self.account_calls = 0
+        self.language = "en-US"
 
     def queue_get(self, path, *responses):
         self.responses.setdefault(path, []).extend(responses)
@@ -116,7 +119,11 @@ class Client:
         return response
 
     def get_account_id(self):
+        self.account_calls += 1
         return self.account_id
+
+    def locale_mapper(self):
+        return self.language
 
     def request(
         self, method, path, params=None, json_data=None, invalidate_on_unauthorized=True
@@ -176,6 +183,21 @@ class Background:
         self.shows.append(ids)
         self.show_missing_known.append(missing_known)
         return len(ids)
+
+
+class SnapshotBackground(Background):
+    def __init__(self, events, snapshot_store, genre_repository):
+        super().__init__(events)
+        self.snapshot_store = snapshot_store
+        self.genre_repository = genre_repository
+        self.watchlists = []
+
+    def submit_watchlist(self, scope, force=False):
+        if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
+            return 0
+        self.events.append("watchlist")
+        self.watchlists.append((scope, force))
+        return 1
 
 
 class UILogger(RecordingLogger):
@@ -278,6 +300,20 @@ class TMDBUITests(unittest.TestCase):
         return build_tmdb_handlers(
             self.runtime, lambda: self.client, repositories, self.background
         )
+
+    def enable_snapshots(self):
+        from yawsp_app.tmdb import GenreRepository
+        from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
+
+        store = WatchlistSnapshotStore(
+            AtomicJsonCache(
+                os.path.join(self.temporary_directory.name, "watchlist.json")
+            )
+        )
+        self.background = SnapshotBackground(self.events, store, GenreRepository())
+        self.background.clock = self.clock
+        self.handlers = self.build_handlers()
+        return store
 
     def queue_watchlist(self, results, total_pages=1):
         self.client.queue_get(
@@ -541,6 +577,289 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.addon.getSetting("tmdb_view_defaulted"), "true")
         self.assertLess(self.events.index("end"), self.events.index(view_commands[0]))
 
+    def test_warm_snapshot_has_zero_account_or_watchlist_calls_and_refreshes_after_end(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        movies = [
+            {"id": 1, "title": "Chata", "release_date": "2026-01-01"},
+            {
+                "id": 2,
+                "title": "Hora",
+                "release_date": "2025-01-01",
+                "poster_path": "/poster.jpg",
+                "backdrop_path": "/backdrop.jpg",
+            },
+            {"id": 3, "title": "Áčko", "release_date": "2024-01-01"},
+        ]
+        original = store.save_complete(scope, movies, 0.0)
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"total_pages": 1, "results": movies},
+        )
+        self.client.queue_get(
+            "/3/genre/movie/list",
+            {"genres": [{"id": 12, "name": "Adventure"}]},
+        )
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "movies"}
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.client.account_calls, 0)
+        self.assertEqual(
+            [call for call in self.client.calls if "/watchlist/" in call[1]], []
+        )
+        self.assertEqual(
+            [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+            ["Áčko", "Hora", "Chata"],
+        )
+        self.assertEqual(store.load(scope).revision, original.revision)
+        self.assertEqual(len(self.background.watchlists), 1)
+        self.assertEqual(self.background.watchlists[0], (scope, False))
+        self.assertLess(self.events.index("end"), self.events.index("watchlist"))
+        self.assertNotIn("Container.Refresh", self.plugin.builtin_commands)
+        artwork_item = next(
+            item["listitem"]
+            for item in self.plugin.items
+            if item["listitem"].label.startswith("Hora")
+        )
+        self.assertEqual(
+            artwork_item.art["poster"],
+            "https://image.tmdb.org/t/p/w500/poster.jpg",
+        )
+        self.assertIn("fanart", artwork_item.art)
+        self.assertEqual(len(artwork_item.commands), 3)
+
+        # A worker's replacement is not drawn until a later open. That open also
+        # reuses the same process-wide genre mapping without another request.
+        store.save_complete(scope, [movies[0]], self.clock())
+        self.plugin.items.clear()
+        self.handlers = self.build_handlers()
+        calls_before = list(self.client.calls)
+        self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+        self.assertEqual(len(self.plugin.items), 1)
+        self.assertEqual(self.plugin.items[0]["listitem"].label.split(" (")[0], "Chata")
+        self.assertEqual(self.client.calls, calls_before)
+
+    def test_warm_rating_year_sort_and_listitem_actions_match_cold_behavior(self):
+        for sort_mode, expected in ((2, ["High", "Low"]), (3, ["New", "Old"])):
+            with self.subTest(sort_mode=sort_mode):
+                self.setUp()
+                self.addon.setSetting("tmdb_sort", str(sort_mode))
+                store = self.enable_snapshots()
+                scope = SnapshotScope("account-1", "movies", "en-US")
+                store.save_complete(
+                    scope,
+                    [
+                        {
+                            "id": 1,
+                            "title": "Old" if sort_mode == 3 else "Low",
+                            "release_date": "2020-01-01",
+                            "vote_average": 2.0,
+                        },
+                        {
+                            "id": 2,
+                            "title": "New" if sort_mode == 3 else "High",
+                            "release_date": "2026-01-01",
+                            "vote_average": 9.0,
+                        },
+                    ],
+                    self.clock(),
+                )
+                self.client.queue_get(
+                    "/3/account/account-1/watchlist/movies",
+                    {
+                        "total_pages": 1,
+                        "results": store.load(scope).results,
+                    },
+                )
+                self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+                self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies"}
+                )
+
+                self.assertEqual(
+                    [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+                    expected,
+                )
+                self.assertEqual(self.client.account_calls, 0)
+                first_commands = self.plugin.items[0]["listitem"].commands
+                self.assertTrue(any("action=tmdb_trailer" in command for _, command in first_commands))
+                self.assertTrue(any("watched=" in command for _, command in first_commands))
+                self.assertTrue(any("action=search" in command for _, command in first_commands))
+
+    def test_cold_complete_pages_are_saved_once_without_immediate_refresh(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        path = "/3/account/account-1/watchlist/movies"
+        self.client.queue_get(
+            path,
+            {
+                "page": 1,
+                "total_pages": 2,
+                "results": [{"id": 1, "title": "Chata", "release_date": "2026-01-01"}],
+            },
+            {
+                "page": 2,
+                "total_pages": 2,
+                "results": [{"id": 2, "title": "Áčko", "release_date": "2025-01-01"}],
+            },
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+        self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "movies"}
+            )
+        )
+
+        self.assertEqual(self.client.account_calls, 1)
+        watchlist_calls = [call for call in self.client.calls if call[1] == path]
+        self.assertEqual(len(watchlist_calls), 2)
+        self.assertEqual([call[2]["page"] for call in watchlist_calls], [1, 2])
+        self.assertEqual(
+            [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+            ["Áčko", "Chata"],
+        )
+        snapshot = store.load(scope)
+        self.assertEqual([value["id"] for value in snapshot.results], [1, 2])
+        self.assertEqual(snapshot.revision, 1)
+        self.assertEqual(self.background.watchlists, [])
+
+    def test_failed_cold_page_never_saves_a_partial_snapshot(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        path = "/3/account/account-1/watchlist/movies"
+        self.client.queue_get(
+            path,
+            {
+                "page": 1,
+                "total_pages": 2,
+                "results": [{"id": 1, "title": "Partial"}],
+            },
+            TMDBError("second page failed"),
+        )
+
+        result = self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNone(store.load(scope))
+        self.assertEqual(len([call for call in self.client.calls if call[1] == path]), 2)
+
+    def test_only_other_account_snapshot_is_not_a_warm_fallback(self):
+        store = self.enable_snapshots()
+        other_scope = SnapshotScope("account-2", "movies", "en-US")
+        current_scope = SnapshotScope("account-1", "movies", "en-US")
+        store.save_complete(other_scope, [{"id": 99, "title": "Wrong account"}], 0.0)
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"total_pages": 1, "results": [{"id": 1, "title": "Current account"}]},
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+        self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+
+        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(len(self.plugin.items), 1)
+        self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Current account"))
+        self.assertEqual(store.load(other_scope).results[0]["title"], "Wrong account")
+        self.assertEqual(store.load(current_scope).results[0]["title"], "Current account")
+
+    def test_language_change_is_cold_and_does_not_reuse_old_language_rows(self):
+        store = self.enable_snapshots()
+        english_scope = SnapshotScope("account-1", "movies", "en-US")
+        czech_scope = SnapshotScope("account-1", "movies", "cs-CZ")
+        store.save_complete(english_scope, [{"id": 1, "title": "English"}], 0.0)
+        self.client.language = "cs-CZ"
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"total_pages": 1, "results": [{"id": 1, "title": "Česky"}]},
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+        self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+
+        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(len(self.plugin.items), 1)
+        self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Česky"))
+        self.assertEqual(store.load(english_scope).results[0]["title"], "English")
+        self.assertEqual(store.load(czech_scope).results[0]["title"], "Česky")
+
+    def test_complete_empty_cold_and_warm_results_skip_genre_requests(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"total_pages": 1, "results": []},
+        )
+
+        self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "movies"}
+            )
+        )
+
+        self.assertEqual(self.client.account_calls, 1)
+        self.assertFalse(any("/genre/" in call[1] for call in self.client.calls))
+        self.assertEqual(store.load(scope).results, [])
+        self.plugin.items.clear()
+        self.handlers = self.build_handlers()
+        calls_before = list(self.client.calls)
+        account_calls_before = self.client.account_calls
+        self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+        self.assertEqual(self.client.calls, calls_before)
+        self.assertEqual(self.client.account_calls, account_calls_before)
+        self.assertEqual(len(self.plugin.items), 1)
+
+    def test_watched_success_removes_snapshot_row_and_failed_removal_preserves_it(self):
+        for success in (True, False):
+            with self.subTest(success=success):
+                self.setUp()
+                store = self.enable_snapshots()
+                scope = SnapshotScope("account-1", "movies", "en-US")
+                original = store.save_complete(
+                    scope,
+                    [{"id": 42, "title": "Remove"}, {"id": 2, "title": "Keep"}],
+                    0.0,
+                )
+                self.client.post_results = [Response({"success": success})]
+
+                result = self.runner.run_action(
+                    lambda: self.handlers["tmdb_watchlist"](
+                        {
+                            "action": "tmdb_watchlist",
+                            "category": "movies",
+                            "watched": "42",
+                        }
+                    )
+                )
+
+                self.assertEqual(result.handled, success)
+                if success:
+                    self.assertEqual(store.load(scope).results, [{"id": 2, "title": "Keep"}])
+                    self.assertEqual(self.background.watchlists, [(scope, True)])
+                    self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
+                else:
+                    current = store.load(scope)
+                    self.assertEqual(current.results, original.results)
+                    self.assertEqual(current.revision, original.revision)
+                    self.assertEqual(self.background.watchlists, [])
+                    self.assertEqual(self.plugin.builtin_commands, [])
+
     def test_invalid_session_recovers_to_connection_entry_without_reusing_account(self):
         path = "/3/account/account-1/watchlist/movies"
 
@@ -563,6 +882,38 @@ class TMDBUITests(unittest.TestCase):
         self.handlers["tmdb_watchlist"]({"action": "tmdb_watchlist", "category": "movies"})
         self.assertEqual(self.addon.open_settings_calls, 2)
         self.assertEqual(len(self.client.calls), 1)
+
+    def test_http_identity_invalidation_removes_old_account_snapshots(self):
+        store = self.enable_snapshots()
+        old_scope = SnapshotScope("account-1", "movies", "en-US")
+        store.save_complete(old_scope, [{"id": 1, "title": "Old identity"}], 0.0)
+        self.client.language = "cs-CZ"
+
+        def invalidate():
+            self.addon.setSetting("tmdb_access_token", "")
+            self.addon.setSetting("tmdb_account_id", "")
+            raise TMDBError("session expired")
+
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies", invalidate
+        )
+        result = self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIsNone(store.load(old_scope))
+
+    def test_successful_reauthentication_invalidates_the_previous_identity_snapshots(self):
+        store = self.enable_snapshots()
+        old_scope = SnapshotScope("account-1", "movies", "en-US")
+        store.save_complete(old_scope, [{"id": 1, "title": "Old identity"}], 0.0)
+        self.client.post_results = [Response({"session_id": "new-session"})]
+
+        result = self.authenticate()
+
+        self.assertTrue(result.handled)
+        self.assertIsNone(store.load(old_scope))
 
     def test_successful_watched_post_closes_response_then_resolves_before_refresh(self):
         response = Response({"success": True}, 201)

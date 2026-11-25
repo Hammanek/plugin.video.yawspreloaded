@@ -13,7 +13,17 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
 
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
-from yawsp_app.tmdb import ShowRepository, TMDBError, TrailerRepository
+from yawsp_app.tmdb import (
+    GenreRepository,
+    ShowRepository,
+    TMDBError,
+    TrailerRepository,
+    fetch_complete_watchlist,
+)
+from yawsp_app.watchlist_snapshot import (
+    SnapshotPersistenceError,
+    SnapshotScope,
+)
 
 
 _IMAGE_URL = "https://image.tmdb.org/t/p/"
@@ -199,17 +209,15 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     client = client_factory()
     trailer_repository = repositories["trailers"]
     show_repository = repositories["shows"]
-    genres_cache = {}
+    snapshot_store = getattr(background, "snapshot_store", None)
+    genre_repository = getattr(background, "genre_repository", None) or GenreRepository()
 
-    def genres(media):
-        if media not in genres_cache:
-            data = client.get("/3/genre/{0}/list".format(media))
-            genres_cache[media] = {
-                genre["id"]: genre["name"]
-                for genre in data.get("genres", [])
-                if isinstance(genre, dict) and "id" in genre and "name" in genre
-            }
-        return genres_cache[media]
+    def genres(media, language):
+        return genre_repository.get(client, media, language)
+
+    def language():
+        mapper = getattr(client, "locale_mapper", None)
+        return mapper() if mapper is not None else "en-US"
 
     def valid_configuration():
         if not runtime.get_setting("tmdb_api_key").strip():
@@ -273,7 +281,15 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 if session_id:
                     # Identity belongs to the old session and must never leak into
                     # the newly authorized account.
+                    old_account_id = runtime.get_setting("tmdb_account_id").strip()
                     client.invalidate_identity()
+                    if snapshot_store is not None and old_account_id:
+                        try:
+                            snapshot_store.invalidate_identity(old_account_id)
+                        except SnapshotPersistenceError:
+                            runtime.logger.exception(
+                                "Unable to invalidate old watchlist identity"
+                            )
                     runtime.set_setting("tmdb_access_token", session_id)
                     runtime.notify(runtime.localized(30405))
                     return ActionResult(handled=True)
@@ -401,6 +417,19 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             if not _set_watchlist(client, media, params["watched"]):
                 runtime.notify(runtime.localized(30412))
                 return ActionResult(handled=False)
+            if snapshot_store is not None:
+                account_id = runtime.get_setting("tmdb_account_id").strip()
+                if account_id:
+                    scope = SnapshotScope(
+                        account_id,
+                        "movies" if media == "movie" else "tv",
+                        language(),
+                    )
+                    try:
+                        snapshot_store.remove(scope, int(params["watched"]))
+                    except (SnapshotPersistenceError, TypeError, ValueError):
+                        runtime.logger.exception("Unable to update watched snapshot")
+                    background.submit_watchlist(scope, force=True)
             runtime.notify(runtime.localized(30413))
             return ActionResult(handled=True, refresh=True)
         except Exception:
@@ -418,19 +447,27 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 sort_mode = int(runtime.get_setting("tmdb_sort") or 0)
             except (TypeError, ValueError):
                 sort_mode = 0
-            page_params = {"sort_by": "created_at.desc"} if sort_mode == 1 else {}
-            results = []
-            page = 1
-            account_id = client.get_account_id()
-            while True:
-                data = client.get(
-                    "/3/account/{0}/watchlist/{1}".format(account_id, watchlist_media),
-                    dict(page_params, page=page),
-                )
-                results.extend(data.get("results", []))
-                if page >= int(data.get("total_pages", 1) or 1):
-                    break
-                page += 1
+            snapshot = None
+            scope = None
+            account_id = runtime.get_setting("tmdb_account_id").strip()
+            if snapshot_store is not None and account_id:
+                scope = SnapshotScope(account_id, watchlist_media, language())
+                snapshot = snapshot_store.load(scope)
+            if snapshot is not None:
+                results = list(snapshot.results)
+            else:
+                # A missing/incompatible identity always follows the current cold
+                # account path; another account's sole cache entry is not a key hint.
+                account_id = client.get_account_id()
+                scope = SnapshotScope(account_id, watchlist_media, language())
+                results = fetch_complete_watchlist(client, scope)
+                if snapshot_store is not None:
+                    try:
+                        snapshot_store.save_complete(scope, results, runtime.clock())
+                    except SnapshotPersistenceError:
+                        # The complete data is still renderable; only its warm reuse
+                        # is unavailable on this invocation.
+                        runtime.logger.exception("Unable to persist watchlist snapshot")
 
             if is_movie and runtime.get_setting("tmdb_hide_unreleased") == "true":
                 today = runtime.today().isoformat()
@@ -461,7 +498,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     reverse=True,
                 )
 
-            genre_map = genres(media)
+            # Genuine complete empty results need no locale/genre request.
+            genre_map = genres(media, language()) if results else {}
             media_ids = [value["id"] for value in results]
             cached_trailers, missing_trailers = _cached_trailers(
                 trailer_repository, media, media_ids
@@ -571,6 +609,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
             def post_complete():
                 set_default_view(params)
+                if snapshot is not None:
+                    # submit_watchlist applies the five-minute throttle and reserves
+                    # the scope. A cold successful save deliberately skips this.
+                    background.submit_watchlist(scope)
                 # Cache misses were discovered with the row values above. Workers
                 # persist data but never refresh a running container.
                 if missing_trailers:
@@ -582,6 +624,15 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
             return DirectoryResult(post_complete=post_complete)
         except TMDBError as error:
+            if (
+                snapshot_store is not None
+                and account_id
+                and not runtime.get_setting("tmdb_account_id").strip()
+            ):
+                try:
+                    snapshot_store.invalidate_identity(account_id)
+                except SnapshotPersistenceError:
+                    runtime.logger.exception("Unable to invalidate watchlist identity")
             report_listing_error(error)
             return DirectoryResult(succeeded=False)
 

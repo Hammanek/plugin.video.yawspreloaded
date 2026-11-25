@@ -12,6 +12,8 @@ from typing import Literal, Optional
 
 import requests
 
+from yawsp_app.watchlist_snapshot import validated_results
+
 
 _LOGGER = logging.getLogger(__name__)
 _API_URL = "https://api.themoviedb.org"
@@ -19,6 +21,7 @@ _TIMEOUT = 15
 _MAX_ATTEMPTS = 3
 _RETRY_WAIT_SLICE = 0.25
 _FALLBACK_RETRY_CAP = 30.0
+_MAX_WATCHLIST_PAGES = 1000
 TRAILER_TTL = 7 * 24 * 60 * 60
 TRAILER_MISSING_TTL = 6 * 60 * 60
 SHOW_TTL = 24 * 60 * 60
@@ -195,6 +198,46 @@ class TMDBClient:
             return data
         finally:
             response.close()
+
+
+def fetch_complete_watchlist(client, scope):
+    """Fetch and validate a new full list; never append to an older snapshot."""
+    watchlist_path = "/3/account/{0}/watchlist/{1}".format(
+        scope.account_id, scope.media
+    )
+    pages = {}
+    expected_pages = None
+    page = 1
+    while expected_pages is None or page <= expected_pages:
+        data = client.get(
+            watchlist_path,
+            {"sort_by": "created_at.desc", "page": page},
+        )
+        try:
+            total_pages = data.get("total_pages", 1)
+            if (
+                type(total_pages) is not int
+                or total_pages < 1
+                or total_pages > _MAX_WATCHLIST_PAGES
+            ):
+                raise ValueError("invalid or excessive total_pages")
+            response_page = data.get("page", page)
+            if type(response_page) is not int or response_page != page:
+                raise ValueError("duplicate or inconsistent response page")
+            if expected_pages is None:
+                expected_pages = total_pages
+            elif total_pages != expected_pages:
+                raise ValueError("total_pages changed during complete fetch")
+            # Assignment by requested page makes accidental duplicate accumulation
+            # impossible; every response page is validated before it participates.
+            pages[page] = validated_results(data.get("results"))
+        except (TypeError, ValueError) as error:
+            raise TMDBError(
+                "TMDB watchlist response failed complete-page validation"
+            ) from error
+        page += 1
+
+    return [value for number in range(1, expected_pages + 1) for value in pages[number]]
 
 
 class _Repository:
@@ -467,6 +510,74 @@ class ShowRepository(_Repository):
             return next_episode
 
 
+class GenreRepository:
+    """Share process-local genre mappings and deduplicate concurrent requests."""
+
+    def __init__(self):
+        self._condition = threading.Condition(threading.RLock())
+        self._values = {}
+        self._pending = set()
+
+    def get(self, client, media, language):
+        key = (media, language)
+        with self._condition:
+            while True:
+                if key in self._values:
+                    return dict(self._values[key])
+                if key not in self._pending:
+                    self._pending.add(key)
+                    break
+                self._condition.wait()
+
+        try:
+            data = client.get(
+                "/3/genre/{0}/list".format(media), {"language": language}
+            )
+            raw_genres = data.get("genres")
+            if not isinstance(raw_genres, list):
+                raise TMDBError("TMDB genre response has no genres array")
+            values = {
+                genre["id"]: genre["name"]
+                for genre in raw_genres
+                if isinstance(genre, dict)
+                and type(genre.get("id")) is int
+                and isinstance(genre.get("name"), str)
+            }
+        except Exception:
+            with self._condition:
+                self._pending.discard(key)
+                self._condition.notify_all()
+            raise
+
+        with self._condition:
+            self._values[key] = values
+            self._pending.discard(key)
+            self._condition.notify_all()
+        return dict(values)
+
+
+class _WatchlistWorkerSettings:
+    """Keep one refresh on its captured session without persisting that secret."""
+
+    def __init__(self, settings, scope, session_id):
+        self.settings = settings
+        self.scope = scope
+        self.session_id = session_id
+
+    def get(self, key):
+        if key == "tmdb_access_token":
+            return self.session_id
+        if key == "tmdb_account_id":
+            return self.scope.account_id
+        return self.settings.get(key)
+
+    def set(self, key, value):
+        # A delayed 401 from an obsolete job must not invalidate a newly chosen
+        # identity. Otherwise preserve TMDBClient's normal invalidation behavior.
+        if str(self.settings.get("tmdb_access_token") or "").strip() == self.session_id:
+            self.settings.set(key, value)
+
+
 class BackgroundPrefetch:
     """A bounded, deduplicated queue with no presentation/UI responsibilities."""
 
@@ -484,10 +595,14 @@ class BackgroundPrefetch:
         max_pending=32,
         api_url=_API_URL,
         logger=None,
+        snapshot_store=None,
+        genre_repository=None,
     ):
         self.settings = settings
         self.trailer_cache = trailer_cache
         self.show_cache = show_cache
+        self.snapshot_store = snapshot_store
+        self.genre_repository = genre_repository or GenreRepository()
         self.locale_mapper = locale_mapper
         self.session_factory = session_factory
         self.worker = worker or ThreadPoolExecutor(
@@ -596,6 +711,77 @@ class BackgroundPrefetch:
             seen.add(key)
             keys.append((key, cache_key, normalized_id))
         return self._enqueue(keys, self._run_shows)
+
+    def _watchlist_identity(self, scope, session_id):
+        account_id = str(self.settings.get("tmdb_account_id") or "").strip()
+        current_session = str(self.settings.get("tmdb_access_token") or "").strip()
+        return (
+            bool(current_session)
+            and current_session == session_id
+            and account_id == scope.account_id
+            and self.locale_mapper() == scope.language
+        )
+
+    def submit_watchlist(self, scope, force=False):
+        """Reserve one compatible refresh; all network activity stays off the UI."""
+        if self.snapshot_store is None:
+            return 0
+        session_id = str(self.settings.get("tmdb_access_token") or "").strip()
+        if not self._watchlist_identity(scope, session_id):
+            return 0
+        if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
+            return 0
+        key = ("watchlist", scope)
+        accepted = self._reserve([key])
+        if not accepted:
+            return 0
+        try:
+            self.worker.submit(self._run_watchlist, accepted, scope, session_id)
+        except Exception:
+            self._release(accepted)
+            self.logger.exception("Unable to submit TMDB watchlist refresh")
+            return 0
+        return 1
+
+    def _run_watchlist(self, keys, scope, session_id):
+        session = None
+        try:
+            if self._abort_requested() or not self._watchlist_identity(
+                scope, session_id
+            ):
+                return
+            session = self.session_factory()
+            worker_settings = _WatchlistWorkerSettings(
+                self.settings, scope, session_id
+            )
+            client = TMDBClient(
+                session,
+                worker_settings,
+                self.locale_mapper,
+                api_url=self.api_url,
+                clock=self.clock,
+                sleeper=self.sleeper,
+                abort=self._abort_requested,
+                logger=self.logger,
+            )
+            results = fetch_complete_watchlist(client, scope)
+            # The account, session and language are all rechecked after the last
+            # response. A switched identity cannot write either old or new scope.
+            if not self._watchlist_identity(scope, session_id):
+                return
+            self.snapshot_store.save_complete(scope, results, self.clock())
+        except Exception:
+            if (
+                not str(self.settings.get("tmdb_access_token") or "").strip()
+                and not str(self.settings.get("tmdb_account_id") or "").strip()
+            ):
+                try:
+                    self.snapshot_store.invalidate_identity(scope.account_id)
+                except Exception:
+                    self.logger.exception("Unable to invalidate watchlist identity")
+            self.logger.exception("TMDB watchlist refresh failed")
+        finally:
+            self._finish(session, keys)
 
     def _finish(self, session, keys):
         try:

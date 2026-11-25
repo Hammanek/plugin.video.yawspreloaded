@@ -1,4 +1,5 @@
 from email.utils import formatdate
+import inspect
 import json
 import os
 import sys
@@ -10,9 +11,11 @@ from unittest.mock import patch
 
 import requests
 
+import yawsp_app.tmdb as tmdb_service
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import KodiRecorder
 from yawsp_app.json_cache import AtomicJsonCache
+from yawsp_app.watchlist_snapshot import SnapshotScope, WatchlistSnapshotStore
 from yawsp_app.tmdb import (
     BackgroundPrefetch,
     ShowRepository,
@@ -794,6 +797,326 @@ class DeferredPersistenceConcurrencyTests(TMDBServiceTestCase):
         self.assertEqual(persisted["next"], expected)
         self.assertEqual(persisted["ts"], clock())
         self.assertGreater(persisted["ts"], worker_timestamp)
+
+
+class WatchlistBackgroundTests(TMDBServiceTestCase):
+    def setUp(self):
+        super().setUp()
+        self.snapshot_cache = AtomicJsonCache(
+            os.path.join(self.temporary_directory.name, "watchlist.json")
+        )
+        self.snapshots = WatchlistSnapshotStore(self.snapshot_cache)
+        self.scope = SnapshotScope("42", "movies", "cs-CZ")
+        self.movie = {
+            "id": 1,
+            "title": "Film",
+            "release_date": "2026-01-02",
+            "genre_ids": [],
+            "vote_average": 7.0,
+        }
+
+    def require_refresh_support(self):
+        parameters = inspect.signature(BackgroundPrefetch).parameters
+        self.assertIn("snapshot_store", parameters, "watchlist refresh is not wired")
+
+    def make_watchlist_background(
+        self, sessions, worker, settings=None, locale=None, clock=None, abort=None
+    ):
+        self.require_refresh_support()
+        session_iter = iter(sessions)
+        created = []
+
+        def session_factory():
+            session = next(session_iter)
+            created.append(session)
+            return session
+
+        language = locale or {"value": "cs-CZ"}
+        background = BackgroundPrefetch(
+            settings=settings or MemorySettings(
+                tmdb_account_id="42", tmdb_access_token="session-token"
+            ),
+            trailer_cache=self.trailer_cache,
+            show_cache=self.show_cache,
+            locale_mapper=lambda: language["value"],
+            session_factory=session_factory,
+            worker=worker,
+            abort=abort,
+            clock=clock or FakeClock(),
+            snapshot_store=self.snapshots,
+        )
+        return background, created
+
+    def test_complete_fetch_rebuilds_pages_rejects_duplicate_pages_and_caps_metadata(self):
+        self.assertTrue(
+            hasattr(tmdb_service, "fetch_complete_watchlist"),
+            "complete watchlist pagination is not implemented",
+        )
+        client, session, _, _ = self.make_client(
+            [
+                json_response(
+                    {"page": 1, "total_pages": 2, "results": [self.movie]}
+                ),
+                json_response(
+                    {
+                        "page": 2,
+                        "total_pages": 2,
+                        "results": [dict(self.movie, id=2)],
+                    }
+                ),
+            ]
+        )
+
+        results = tmdb_service.fetch_complete_watchlist(client, self.scope)
+
+        self.assertEqual([value["id"] for value in results], [1, 2])
+        self.assertEqual(len(session.calls), 2)
+        self.assertTrue(
+            all(
+                call["kwargs"]["params"]["sort_by"] == "created_at.desc"
+                for call in session.calls
+            )
+        )
+        malformed = (
+            [
+                json_response(
+                    {"page": 1, "total_pages": 2, "results": [self.movie]}
+                ),
+                json_response(
+                    {"page": 1, "total_pages": 2, "results": [self.movie]}
+                ),
+            ],
+            [json_response({"total_pages": 1000000, "results": []})],
+            [json_response({"total_pages": True, "results": []})],
+            [json_response({"total_pages": 1, "results": {}})],
+        )
+        for responses in malformed:
+            with self.subTest(responses=responses):
+                client, session, _, _ = self.make_client(responses)
+                with self.assertRaises(TMDBError):
+                    tmdb_service.fetch_complete_watchlist(client, self.scope)
+                self.assertLessEqual(len(session.calls), len(responses))
+
+    def test_refresh_is_throttled_deduplicated_and_uses_only_a_worker_session(self):
+        self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        clock = FakeClock()
+        worker = ManualWorker()
+        refreshed = dict(self.movie, id=2, title="Nový")
+        session = FakeSession(
+            [json_response({"page": 1, "total_pages": 1, "results": [refreshed]})]
+        )
+        background, created = self.make_watchlist_background(
+            [session], worker, clock=clock
+        )
+
+        self.assertEqual(background.submit_watchlist(self.scope), 1)
+        self.assertEqual(background.submit_watchlist(self.scope), 0)
+        self.assertEqual(created, [])
+        self.assertEqual(self.snapshots.load(self.scope).revision, 1)
+
+        worker.run_all()
+
+        self.assertEqual(created, [session])
+        self.assertTrue(session.closed)
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(session.calls[0]["url"].split("?")[0], "https://api.themoviedb.org/3/account/42/watchlist/movies")
+        snapshot = self.snapshots.load(self.scope)
+        self.assertEqual(snapshot.results, [refreshed])
+        self.assertEqual(snapshot.revision, 2)
+        self.assertEqual(snapshot.created_at, clock())
+        self.assertEqual(background.submit_watchlist(self.scope), 0)
+        self.assertEqual(background.submit_watchlist(self.scope, force=True), 1)
+
+    def test_failed_refresh_preserves_previous_complete_snapshot_and_can_retry(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        worker = ManualWorker()
+        sessions = [
+            FakeSession([requests.Timeout("offline")]),
+            FakeSession(
+                [json_response({"total_pages": 1, "results": [dict(self.movie, id=3)]})]
+            ),
+        ]
+        background, _ = self.make_watchlist_background(sessions, worker)
+
+        background.submit_watchlist(self.scope, force=True)
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            worker.run_all()
+
+        self.assertEqual(self.snapshots.load(self.scope), original)
+        background.submit_watchlist(self.scope, force=True)
+        worker.run_all()
+        self.assertEqual(self.snapshots.load(self.scope).results[0]["id"], 3)
+
+    def test_unauthorized_refresh_invalidates_only_the_matching_identity(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        peer_scope = SnapshotScope("43", "movies", "cs-CZ")
+        peer = self.snapshots.save_complete(peer_scope, [dict(self.movie, id=2)], 0.0)
+        settings = MemorySettings(
+            tmdb_account_id="42", tmdb_access_token="session-token"
+        )
+        worker = ManualWorker()
+        session = FakeSession([json_response({}, status_code=401)])
+        background, _ = self.make_watchlist_background(
+            [session], worker, settings=settings
+        )
+        background.submit_watchlist(self.scope, force=True)
+
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            worker.run_all()
+
+        self.assertNotEqual(self.snapshots.load(self.scope), original)
+        self.assertIsNone(self.snapshots.load(self.scope))
+        self.assertEqual(self.snapshots.load(peer_scope), peer)
+        self.assertEqual(settings.get("tmdb_account_id"), "")
+        self.assertEqual(settings.get("tmdb_access_token"), "")
+
+    def test_identity_or_language_change_before_refresh_skips_network_and_save(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        for setting, value in (
+            ("tmdb_account_id", "43"),
+            ("tmdb_access_token", "new-session"),
+            ("language", "en-US"),
+        ):
+            with self.subTest(setting=setting, value=value):
+                settings = MemorySettings(
+                    tmdb_account_id="42", tmdb_access_token="session-token"
+                )
+                if setting == "language":
+                    locale = {"value": "en-US"}
+                else:
+                    locale = {"value": "cs-CZ"}
+                    settings.set(setting, value)
+                worker = ManualWorker()
+                session = FakeSession(
+                    [json_response({"total_pages": 1, "results": []})]
+                )
+                background, created = self.make_watchlist_background(
+                    [session], worker, settings=settings, locale=locale
+                )
+                # Submission captures the identity; invalidate it only after queueing.
+                if setting == "language":
+                    locale["value"] = "cs-CZ"
+                    background.submit_watchlist(self.scope, force=True)
+                    locale["value"] = "en-US"
+                else:
+                    settings.set(setting, "session-token" if setting == "tmdb_access_token" else "42")
+                    background.submit_watchlist(self.scope, force=True)
+                    settings.set(setting, value)
+
+                worker.run_all()
+
+                self.assertEqual(created, [])
+                self.assertEqual(session.calls, [])
+                self.assertEqual(self.snapshots.load(self.scope), original)
+                settings.set("tmdb_account_id", "42")
+                settings.set("tmdb_access_token", "session-token")
+
+    def test_identity_change_during_refresh_cannot_overwrite_old_or_new_scope(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        settings = MemorySettings(
+            tmdb_account_id="42", tmdb_access_token="session-token"
+        )
+
+        class IdentityChangingResponse(FakeResponse):
+            def json(inner):
+                settings.set("tmdb_account_id", "43")
+                settings.set("tmdb_access_token", "other-session")
+                return {"total_pages": 1, "results": [dict(self.movie, id=99)]}
+
+        worker = ManualWorker()
+        session = FakeSession([IdentityChangingResponse(json_data={})])
+        background, _ = self.make_watchlist_background(
+            [session], worker, settings=settings
+        )
+        background.submit_watchlist(self.scope, force=True)
+
+        worker.run_all()
+
+        self.assertEqual(self.snapshots.load(self.scope), original)
+        self.assertIsNone(self.snapshots.load(SnapshotScope("43", "movies", "cs-CZ")))
+        self.assertTrue(session.closed)
+
+    def test_close_prevents_queued_watchlist_network_and_releases_ownership(self):
+        worker = ShutdownWorker()
+        session = FakeSession([json_response({"total_pages": 1, "results": []})])
+        background, created = self.make_watchlist_background([session], worker)
+        background.submit_watchlist(self.scope, force=True)
+
+        background.close(wait=False)
+        background.close(wait=False)
+        worker.run_all()
+
+        self.assertEqual(worker.shutdown_calls, [False])
+        self.assertEqual(created, [])
+        self.assertEqual(session.calls, [])
+        self.assertEqual(background.submit_watchlist(self.scope, force=True), 0)
+
+
+class GenreRepositoryTests(TMDBServiceTestCase):
+    def repository(self):
+        self.assertTrue(
+            hasattr(tmdb_service, "GenreRepository"),
+            "shared genre repository is not implemented",
+        )
+        return tmdb_service.GenreRepository()
+
+    def test_genres_are_shared_by_media_and_language_across_clients(self):
+        repository = self.repository()
+        czech_client, czech_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 12, "name": "Dobrodružný"}]})]
+        )
+        english_client, english_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 12, "name": "Adventure"}]})]
+        )
+
+        first = repository.get(czech_client, "movie", "cs-CZ")
+        second = repository.get(czech_client, "movie", "cs-CZ")
+        english = repository.get(english_client, "movie", "en-US")
+
+        self.assertEqual(first, {12: "Dobrodružný"})
+        self.assertEqual(second, first)
+        self.assertEqual(english, {12: "Adventure"})
+        self.assertEqual(len(czech_session.calls), 1)
+        self.assertEqual(len(english_session.calls), 1)
+        self.assertEqual(
+            czech_session.calls[0]["kwargs"]["params"]["language"], "cs-CZ"
+        )
+
+    def test_concurrent_same_key_genre_lookup_has_one_request(self):
+        repository = self.repository()
+        client, session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "Drama"}]})]
+        )
+        original_get = client.get
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_get(path, params=None):
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return original_get(path, params)
+
+        client.get = blocking_get
+        values = []
+        errors = []
+
+        def lookup():
+            try:
+                values.append(repository.get(client, "movie", "cs-CZ"))
+            except Exception as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=lookup) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(entered.wait(2))
+        release.set()
+        for thread in threads:
+            thread.join(2)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(values, [{18: "Drama"}, {18: "Drama"}])
+        self.assertEqual(len(session.calls), 1)
 
 
 class BackgroundPrefetchTests(TMDBServiceTestCase):

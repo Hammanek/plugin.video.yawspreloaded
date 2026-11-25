@@ -265,6 +265,17 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
 
             self.assertEqual(background_type.call_count, 1)
+            self.assertTrue(
+                hasattr(owner, "snapshot_store"),
+                "production owner does not provide persistent watchlist snapshots",
+            )
+            self.assertIs(
+                background_type.call_args.kwargs["snapshot_store"], owner.snapshot_store
+            )
+            self.assertIs(
+                background_type.call_args.kwargs["genre_repository"],
+                owner.genre_repository,
+            )
             production_router.close()
             background.close.assert_called_once_with(wait=False)
 
