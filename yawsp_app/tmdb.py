@@ -355,14 +355,25 @@ class ShowRepository(_Repository):
 
     @staticmethod
     def _next_from_response(data):
-        episode = data.get("next_episode_to_air")
+        if "next_episode_to_air" not in data:
+            raise TMDBError("TMDB show response is missing next_episode_to_air")
+        episode = data["next_episode_to_air"]
         if episode is None:
             return None
         if not isinstance(episode, dict):
             raise TMDBError("TMDB next_episode_to_air must be an object or null")
+        season = episode.get("season_number")
+        episode_number = episode.get("episode_number")
+        if (
+            type(season) is not int
+            or season < 0
+            or type(episode_number) is not int
+            or episode_number < 1
+        ):
+            raise TMDBError("TMDB next episode has invalid season or episode numbers")
         return {
-            "season": episode.get("season_number"),
-            "episode": episode.get("episode_number"),
+            "season": season,
+            "episode": episode_number,
             "air_date": episode.get("air_date") or "",
         }
 

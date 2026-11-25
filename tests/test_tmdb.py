@@ -463,6 +463,85 @@ class ShowRepositoryTests(TMDBServiceTestCase):
         self.assertEqual(len(session.calls), 1)
         self.assertIsNone(self.read_cache(self.show_cache)["12"]["next"])
 
+    def test_malformed_show_payloads_are_logged_not_cached_and_remain_retryable(self):
+        malformed_payloads = (
+            {},
+            {"next_episode_to_air": {}},
+            {"next_episode_to_air": {"season_number": 1}},
+            {"next_episode_to_air": {"episode_number": 2}},
+            {"next_episode_to_air": {"season_number": None, "episode_number": 2}},
+            {"next_episode_to_air": {"season_number": 1, "episode_number": None}},
+            {"next_episode_to_air": {"season_number": "1", "episode_number": 2}},
+            {"next_episode_to_air": {"season_number": 1, "episode_number": "2"}},
+            {"next_episode_to_air": {"season_number": -1, "episode_number": 2}},
+            {"next_episode_to_air": {"season_number": 1, "episode_number": 0}},
+        )
+        for index, malformed in enumerate(malformed_payloads):
+            with self.subTest(payload=malformed):
+                clock = FakeClock()
+                show_id = 40 + index
+                valid_payload = {
+                    "next_episode_to_air": {
+                        "season_number": 2,
+                        "episode_number": 3,
+                        "air_date": "2026-03-01",
+                    }
+                }
+                client, session, _, _ = self.make_client(
+                    [json_response(malformed), json_response(valid_payload)], clock=clock
+                )
+                cache = AtomicJsonCache(
+                    os.path.join(self.temporary_directory.name, "malformed-{0}.json".format(index))
+                )
+                repository = ShowRepository(client, cache, clock=clock)
+
+                with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+                    self.assertIsNone(repository.next_episode(show_id))
+                self.assertFalse(os.path.exists(cache.path))
+
+                self.assertEqual(
+                    repository.next_episode(show_id),
+                    {"season": 2, "episode": 3, "air_date": "2026-03-01"},
+                )
+                self.assertEqual(len(session.calls), 2)
+                self.assertEqual(
+                    self.read_cache(cache)[str(show_id)]["next"],
+                    {"season": 2, "episode": 3, "air_date": "2026-03-01"},
+                )
+
+    def test_malformed_show_payload_preserves_stale_fallback_and_original_timestamp(self):
+        clock = FakeClock()
+        stale = {"season": 1, "episode": 2, "air_date": "2026-01-01"}
+        old_timestamp = clock() - 24 * 60 * 60 - 1
+        self.show_cache.save({"55": {"ts": old_timestamp, "next": stale}})
+        refreshed = {"season": 1, "episode": 3, "air_date": "2026-02-01"}
+        client, session, _, _ = self.make_client(
+            [
+                json_response({}),
+                json_response(
+                    {
+                        "next_episode_to_air": {
+                            "season_number": 1,
+                            "episode_number": 3,
+                            "air_date": "2026-02-01",
+                        }
+                    }
+                ),
+            ],
+            clock=clock,
+        )
+        repository = ShowRepository(client, self.show_cache, clock=clock)
+
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            self.assertEqual(repository.next_episode(55), stale)
+        self.assertEqual(
+            self.read_cache(self.show_cache)["55"],
+            {"ts": old_timestamp, "next": stale},
+        )
+
+        self.assertEqual(repository.next_episode(55), refreshed)
+        self.assertEqual(len(session.calls), 2)
+
     def test_failed_refresh_returns_stale_show_without_refreshing_timestamp_and_remains_retryable(self):
         clock = FakeClock()
         stale = {"season": 1, "episode": 2, "air_date": "2026-01-01"}
