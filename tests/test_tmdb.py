@@ -1991,6 +1991,74 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(set(self.read_cache(self.show_cache)), expected_cached)
         self.assertEqual(len(background._metadata_queued), 0)
 
+    def test_close_before_recovery_publication_cannot_restore_metadata_ownership(self):
+        abort_checks = []
+
+        def fail_once_after_first_lookup():
+            abort_checks.append(True)
+            if len(abort_checks) == 3:
+                raise RuntimeError("synthetic batch-level failure")
+            return False
+
+        worker = ManualWorker()
+        background, calls, _, _ = self.make_recording_background(
+            worker, abort=fail_once_after_first_lookup
+        )
+        background.submit_shows(range(1, 101), missing_known=True)
+        worker_thread = threading.Thread(target=worker.run_all)
+        publication_attempted = threading.Event()
+        close_completed = threading.Event()
+        original_condition = background._condition
+        condition_gate = {"armed": False}
+        background_reference = background
+
+        class ConditionProxy:
+            def __getattr__(self, name):
+                return getattr(original_condition, name)
+
+            def __enter__(self):
+                if (
+                    condition_gate["armed"]
+                    and threading.get_ident() == worker_thread.ident
+                    and not publication_attempted.is_set()
+                ):
+                    publication_attempted.set()
+                    if not close_completed.wait(2):
+                        raise AssertionError("close was not completed")
+                return original_condition.__enter__()
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return original_condition.__exit__(exc_type, exc_value, traceback)
+
+        original_flush = ShowRepository._flush
+
+        def arm_after_prior_success_flush(repository):
+            original_flush(repository)
+            if repository.cache is background_reference.show_cache:
+                condition_gate["armed"] = True
+
+        background._condition = ConditionProxy()
+        with patch.object(ShowRepository, "_flush", new=arm_after_prior_success_flush):
+            with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+                worker_thread.start()
+                self.assertTrue(publication_attempted.wait(2))
+                background.close(wait=False)
+                self.assertEqual(len(background._metadata_queued), 0)
+                close_completed.set()
+                worker_thread.join(2)
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(background._pending), 0)
+        self.assertEqual(len(background._metadata_queued), 0)
+        self.assertEqual(list(background._metadata_queues["show"]), [])
+        self.assertEqual(list(background._metadata_queues["trailer"]), [])
+        self.assertEqual(background._error_retry_at, {})
+        calls_after_worker_exit = len(calls)
+        background.submit_shows(range(1, 101), missing_known=True)
+        self.assertEqual(worker.jobs, [])
+        self.assertEqual(len(calls), calls_after_worker_exit)
+
     def test_close_during_claimed_on_demand_failure_cannot_requeue_retry(self):
         worker = ManualWorker()
         background, _, _, _ = self.make_recording_background(worker)

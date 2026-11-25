@@ -1294,11 +1294,11 @@ class BackgroundPrefetch:
                             "Unable to flush TMDB %s prefetch cache", family
                         )
             preserved = set()
-            if recoverable and not self._closed:
-                # Publish runnable recovery entries before old-flight release.
-                # A direct caller can then claim the item and its retry semantics
-                # rather than becoming an unowned ordinary flight in the gap.
-                with self._condition:
+            with self._condition:
+                if recoverable and not self._closed:
+                    # Publish runnable recovery entries before old-flight release.
+                    # A direct caller can then claim the item and its retry semantics
+                    # rather than becoming an unowned ordinary flight in the gap.
                     for item in reversed(recoverable):
                         self._requeue_metadata_locked(item, front=True)
                         preserved.add(item[0])
