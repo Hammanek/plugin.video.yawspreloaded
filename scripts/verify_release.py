@@ -395,8 +395,6 @@ def main():
     print("version=" + result.version)
     print("runtime_files={0}".format(result.file_count))
     print("sha256=" + result.sha256)
-    print("archive_root=" + result.archive_root)
-    print("archive_path=" + result.archive_path)
     return 0
 
 

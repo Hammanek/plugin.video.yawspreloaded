@@ -1,12 +1,16 @@
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import xml.etree.ElementTree as ET
 import zipfile
+
+import scripts.verify_release as release_verifier
 
 from scripts.verify_release import (
     ADDON_ID,
@@ -287,6 +291,23 @@ class ReleaseVerificationTests(unittest.TestCase):
         (fixture.root / "resources" / "icon.png").mkdir()
         with self.assertRaisesRegex(ReleaseVerificationError, "icon.png|regular file"):
             verify_release(fixture.root)
+
+    def test_cli_prints_only_version_runtime_count_and_hash(self):
+        result = mock.Mock(
+            version="1.2.3",
+            file_count=7,
+            sha256="a" * 64,
+            archive_root=ADDON_ID,
+            archive_path="inspection-only.zip",
+        )
+        with mock.patch.object(
+            release_verifier, "verify_release", return_value=result
+        ), mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(release_verifier.main(), 0)
+        self.assertEqual(
+            "version=1.2.3\nruntime_files=7\nsha256={0}\n".format("a" * 64),
+            output.getvalue(),
+        )
 
     def write_archive(self, root, entries, name="archive.zip"):
         path = root / name
