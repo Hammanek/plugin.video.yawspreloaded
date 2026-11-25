@@ -60,6 +60,7 @@ class TMDBClient:
         sleeper=time.sleep,
         abort=None,
         logger=None,
+        identity_lock=None,
     ):
         self.session = session
         self.settings = settings
@@ -69,6 +70,7 @@ class TMDBClient:
         self.sleeper = sleeper
         self.abort = abort or (lambda: False)
         self.logger = logger or _LOGGER
+        self.identity_lock = identity_lock
 
     def _setting(self, key):
         value = self.settings.get(key)
@@ -82,6 +84,12 @@ class TMDBClient:
         """Invalidate both the v3 session and its account-specific identity."""
         self.invalidate_identity()
         self.settings.set("tmdb_access_token", "")
+
+    def _invalidate_request_session(self, session_id):
+        """Clear a 401 identity only while its request session is still current."""
+        with self.identity_lock or nullcontext():
+            if self._setting("tmdb_access_token") == session_id:
+                self.invalidate_session()
 
     def get_account_id(self):
         account_id = self._setting("tmdb_account_id")
@@ -177,7 +185,7 @@ class TMDBClient:
                 response.raise_for_status()
             except requests.RequestException as error:
                 if response.status_code == 401 and invalidate_on_unauthorized:
-                    self.invalidate_session()
+                    self._invalidate_request_session(session_id)
                 raise TMDBError(
                     "TMDB {0} returned HTTP {1}".format(path, response.status_code)
                 ) from error
@@ -680,6 +688,7 @@ def resolve_watchlist_account(
         sleeper=client.sleeper,
         abort=client.abort,
         logger=client.logger,
+        identity_lock=identity_lock,
     )
     account_id = resolver.get_account_id()
     if not settings.commit(account_id):
@@ -702,6 +711,7 @@ def watchlist_operation_client(client, scope, session_id, identity_lock=None):
         sleeper=client.sleeper,
         abort=client.abort,
         logger=client.logger,
+        identity_lock=identity_lock,
     )
 
 
@@ -793,6 +803,7 @@ class BackgroundPrefetch:
             sleeper=self.sleeper,
             abort=self._abort_requested,
             logger=self.logger,
+            identity_lock=self._lock,
         )
 
     def attach_repositories(self, trailer_repository, show_repository):
@@ -1192,6 +1203,7 @@ class BackgroundPrefetch:
                 sleeper=self.sleeper,
                 abort=self._abort_requested,
                 logger=self.logger,
+                identity_lock=self._lock,
             )
             results = fetch_complete_watchlist(
                 client,

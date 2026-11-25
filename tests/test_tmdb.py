@@ -336,6 +336,26 @@ class ClientTests(TMDBServiceTestCase):
         self.assertEqual(settings.get("tmdb_access_token"), "")
         self.assertEqual(settings.get("tmdb_account_id"), "")
 
+    def test_stale_http_401_preserves_replacement_session_and_account_identity(self):
+        settings = MemorySettings()
+        response = json_response({}, status_code=401)
+        raise_for_status = response.raise_for_status
+
+        def replace_identity_before_401_handling():
+            settings.set("tmdb_account_id", "account-2")
+            settings.set("tmdb_access_token", "session-2")
+            raise_for_status()
+
+        response.raise_for_status = replace_identity_before_401_handling
+        client, _, _, _ = self.make_client([response], settings=settings)
+
+        with self.assertRaises(TMDBError):
+            client.get("/3/example")
+
+        self.assertTrue(response.closed)
+        self.assertEqual(settings.get("tmdb_access_token"), "session-2")
+        self.assertEqual(settings.get("tmdb_account_id"), "account-2")
+
     def test_missing_account_id_is_an_error_and_does_not_persist_empty_identity(self):
         settings = MemorySettings(tmdb_account_id="")
         client, _, _, _ = self.make_client([json_response({"username": "nobody"})], settings)

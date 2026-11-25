@@ -1340,6 +1340,165 @@ class EntrypointTests(unittest.TestCase):
             )
             self.assertEqual(owner.background.worker.jobs, [])
 
+    def _assert_production_stale_generic_401(self, stale_url, prepare_stale_request):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            original_request = session.request
+            unauthorized_responses = []
+
+            def route_response(method, url, **kwargs):
+                status_code = 200
+                if url.endswith(stale_url):
+                    data = {"success": False}
+                    status_code = 401
+                elif url.endswith("/3/account"):
+                    data = {"id": "account-2"}
+                elif url.endswith("/3/authentication/token/new"):
+                    data = {"request_token": "request-token"}
+                elif url.endswith("/3/authentication/session/new"):
+                    data = {"session_id": "session-2"}
+                elif url.endswith("/3/account/account-2/watchlist/movies"):
+                    data = {"total_pages": 1, "results": []}
+                else:
+                    raise AssertionError("unexpected offline URL: {0}".format(url))
+                response = json_response(data, status_code=status_code)
+                if status_code == 401:
+                    unauthorized_responses.append(response)
+                session.queue_response(response)
+                return original_request(method, url, **kwargs)
+
+            session.request = route_response
+            transition_condition = threading.Condition()
+            transition_state = []
+            qr_threads = []
+
+            def transition_advanced(state):
+                with transition_condition:
+                    transition_state.append(state)
+                    transition_condition.notify_all()
+
+            class ObservedIdentityLock:
+                def __init__(self, delegate):
+                    self.delegate = delegate
+
+                def __enter__(self):
+                    if qr_threads and threading.current_thread() is qr_threads[0]:
+                        # On broken production QR gets the free lock and must finish
+                        # replacement before the stale write. On fixed production it
+                        # blocks behind the request guard, so the old write completes
+                        # first and QR publishes its replacement afterwards.
+                        if self.delegate.acquire(blocking=False):
+                            transition_advanced("lock-acquired")
+                            return self
+                        transition_advanced("lock-waiting")
+                        self.delegate.acquire()
+                        return self
+                    self.delegate.acquire()
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback):
+                    self.delegate.release()
+
+                def __getattr__(self, name):
+                    return getattr(self.delegate, name)
+
+            owner.background._lock = ObservedIdentityLock(owner.background._lock)
+            original_set = addon.setSetting
+            stale_threads = []
+
+            def coordinate_exact_invalidation_boundary(key, value):
+                if (
+                    key == "tmdb_access_token"
+                    and value == "session-2"
+                    and qr_threads
+                    and threading.current_thread() is qr_threads[0]
+                ):
+                    original_set(key, value)
+                    transition_advanced("replaced")
+                    return
+                if (
+                    key == "tmdb_access_token"
+                    and value == ""
+                    and stale_threads
+                    and threading.current_thread() is stale_threads[0]
+                    and not qr_threads
+                ):
+                    qr_thread = threading.Thread(
+                        target=lambda: qr_results.append(
+                            production_router.router("action=tmdb_auth")
+                        )
+                    )
+                    qr_threads.append(qr_thread)
+                    qr_thread.start()
+                    with transition_condition:
+                        if not transition_condition.wait_for(
+                            lambda: "replaced" in transition_state
+                            or "lock-waiting" in transition_state,
+                            2,
+                        ):
+                            raise AssertionError("QR transition did not reach its seam")
+                original_set(key, value)
+
+            qr_results = []
+            stale_results = []
+            start_stale_request = prepare_stale_request(owner)
+            stale_thread = threading.Thread(
+                target=lambda: stale_results.append(start_stale_request())
+            )
+            stale_threads.append(stale_thread)
+            addon.setSetting = coordinate_exact_invalidation_boundary
+            with mock.patch.object(production_router._LOGGER, "exception"):
+                stale_thread.start()
+                stale_thread.join(2)
+                for qr_thread in qr_threads:
+                    qr_thread.join(2)
+
+                self.assertFalse(stale_thread.is_alive())
+                self.assertTrue(qr_threads)
+                self.assertFalse(qr_threads[0].is_alive())
+                self.assertTrue(qr_results[0].handled)
+                self.assertEqual(len(stale_results), 1)
+                first_persisted_pair = (
+                    addon.getSetting("tmdb_account_id"),
+                    addon.getSetting("tmdb_access_token"),
+                )
+                next_result = production_router.router(
+                    "action=tmdb_watchlist&category=movies"
+                )
+
+            stale_calls = [call for call in session.calls if call["url"].endswith(stale_url)]
+            self.assertEqual(len(stale_calls), 1)
+            self.assertEqual(
+                stale_calls[0]["kwargs"]["params"].get("session_id"), "session-1"
+            )
+            self.assertTrue(unauthorized_responses)
+            self.assertTrue(all(response.closed for response in unauthorized_responses))
+            self.assertEqual(first_persisted_pair, ("", "session-2"))
+            self.assertTrue(next_result.succeeded)
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            recovery_calls = [
+                call
+                for call in session.calls
+                if call["url"].endswith("/3/account/account-2/watchlist/movies")
+                and call["kwargs"]["params"].get("session_id") == "session-2"
+            ]
+            self.assertEqual(len(recovery_calls), 1)
+
+    def test_production_background_metadata_stale_401_cannot_clear_new_qr_session(self):
+        def prepare(owner):
+            self.assertEqual(owner.background.submit_trailers("movie", [42]), 1)
+            return owner.background.worker.run_all
+
+        self._assert_production_stale_generic_401("/3/movie/42/videos", prepare)
+
+    def test_production_main_ui_stale_401_cannot_clear_new_qr_session(self):
+        def prepare(owner):
+            return lambda: production_router.router(
+                "action=tmdb_watchlist&category=shows&show_id=42"
+            )
+
+        self._assert_production_stale_generic_401("/3/tv/42", prepare)
+
     def test_production_stale_account_401_cannot_clear_new_qr_session(self):
         self._assert_production_qr_switch_after_final_guard(
             "action=tmdb_watchlist&category=movies",

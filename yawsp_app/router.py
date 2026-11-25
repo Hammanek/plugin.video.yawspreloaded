@@ -242,6 +242,7 @@ class _ProductionOwner:
             locale_mapper=self.language,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
+            identity_lock=self.background._lock,
         )
         webshare = build_webshare_handlers(
             runtime,
