@@ -442,6 +442,42 @@ class WebshareUITests(unittest.TestCase):
         )
         self.assertEqual(self.client.api_calls[1][1]["ids[]"], ["download-1"])
 
+    def test_history_removal_never_clears_missing_or_blank_download_ids(self):
+        download_id_elements = (
+            "<download_id />",
+            "",
+            "<download_id> \t </download_id>",
+        )
+        for download_id_element in download_id_elements:
+            with self.subTest(download_id_element=download_id_element):
+                history_item = (
+                    "<file><name>Movie.mkv</name><ident>abc</ident>"
+                    + download_id_element
+                    + "<started_at>today</started_at><ended_at>today</ended_at></file>"
+                )
+                self.client.api_responses = {
+                    "history": [
+                        xml(
+                            "<response><status>OK</status>"
+                            + history_item
+                            + "</response>"
+                        ),
+                        xml("<response><status>OK</status></response>"),
+                    ],
+                    # Keep the assertion focused on the forbidden request, not a
+                    # fake-session error if the production guard regresses.
+                    "clear_history": [xml("<response><status>OK</status></response>")],
+                }
+                self.client.api_calls.clear()
+
+                result = self.handlers["history"]({"action": "history", "remove": "abc"})
+
+                self.assertTrue(result.update_listing)
+                self.assertEqual(
+                    [call[0] for call in self.client.api_calls],
+                    ["history", "history"],
+                )
+
     def test_malformed_queue_and_history_status_fail_through_real_runner(self):
         responses = (
             "<response />",

@@ -392,8 +392,9 @@ def build_webshare_handlers(runtime, client_factory):
             ids = []
             if notify_api_result(xml, None):
                 for element in xml.iter("file"):
-                    if element.findtext("ident") == params["remove"] and element.findtext("download_id"):
-                        ids.append(element.findtext("download_id"))
+                    download_id = (element.findtext("download_id") or "").strip()
+                    if element.findtext("ident") == params["remove"] and download_id:
+                        ids.append(download_id)
             if ids:
                 notify_api_result(
                     client._post("clear_history", {"ids[]": ids, "wst": token}),

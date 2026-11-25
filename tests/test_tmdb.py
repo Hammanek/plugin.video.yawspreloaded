@@ -1,13 +1,17 @@
 from email.utils import formatdate
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import requests
 
 from tests.support.http_stubs import FakeResponse, FakeSession
+from tests.support.kodi_stubs import KodiRecorder
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.tmdb import (
     BackgroundPrefetch,
@@ -723,6 +727,26 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         background.submit_shows([31])
 
         self.assertEqual(self.read_cache(self.show_cache)["31"]["next"], None)
+
+    def test_real_background_completion_does_not_call_kodi_or_plugin_ui(self):
+        session = FakeSession([json_response({"id": 32, "next_episode_to_air": None})])
+        worker = InlineWorker()
+        background, created = self.make_background([session], worker)
+        kodi = KodiRecorder()
+        plugin = KodiRecorder()
+        kodi_module = SimpleNamespace(executebuiltin=kodi.executeBuiltin)
+
+        with patch.dict(
+            sys.modules, {"xbmc": kodi_module, "xbmcplugin": plugin}
+        ):
+            self.assertEqual(background.submit_shows([32]), 1)
+
+        self.assertEqual(self.read_cache(self.show_cache)["32"]["next"], None)
+        self.assertEqual(created, [session])
+        self.assertTrue(session.closed)
+        self.assertEqual(kodi.builtin_commands, [])
+        self.assertEqual(kodi.calls, [])
+        self.assertEqual(plugin.calls, [])
 
 
 if __name__ == "__main__":
