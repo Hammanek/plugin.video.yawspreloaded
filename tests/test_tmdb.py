@@ -1559,6 +1559,9 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
     def test_worker_flushes_prior_successes_after_unexpected_job_failure(self):
         session = FakeSession([json_response({"next_episode_to_air": None})])
+        recovery_session = FakeSession(
+            [json_response({"next_episode_to_air": None})]
+        )
         abort_checks = []
 
         def failing_abort():
@@ -1568,7 +1571,9 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
             return False
 
         worker = ManualWorker()
-        background, _ = self.make_background([session], worker, abort=failing_abort)
+        background, _ = self.make_background(
+            [session, recovery_session], worker, abort=failing_abort
+        )
         background.submit_shows([34, 35], missing_known=True)
 
         with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
@@ -1578,7 +1583,11 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(fsync.call_count, 1)
         self.assertEqual(set(self.read_cache(self.show_cache)), {"34"})
         self.assertTrue(session.closed)
-        self.assertEqual(background.submit_shows([35], missing_known=True), 1)
+        self.assertEqual(len(worker.jobs), 1)
+        worker.run_all()
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"34", "35"})
+        self.assertTrue(recovery_session.closed)
+        self.assertEqual(background.submit_shows([35]), 0)
 
     def test_direct_lookup_persistence_remains_immediate(self):
         client, _, _, _ = self.make_client(
@@ -1621,7 +1630,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(kodi.calls, [])
         self.assertEqual(plugin.calls, [])
 
-    def make_recording_background(self, worker, failures=None, clock=None):
+    def make_recording_background(self, worker, failures=None, clock=None, abort=None):
         calls = []
         attempts = {}
         sessions = []
@@ -1639,6 +1648,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
             locale_mapper=lambda: "en-US",
             session_factory=session_factory,
             worker=worker,
+            abort=abort,
             clock=clock,
             sleeper=clock.sleep,
             max_pending=32,
@@ -1669,6 +1679,260 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(active_counts[-1], 0)
         self.assertEqual(len(calls), 100)
         self.assertTrue(all(session.closed for session in sessions))
+
+    def test_unexpected_batch_failure_requeues_only_unfinished_items_and_drains(self):
+        abort_checks = []
+
+        def fail_once_after_first_lookup():
+            abort_checks.append(True)
+            if len(abort_checks) == 3:
+                raise RuntimeError("synthetic batch-level failure")
+            return False
+
+        worker = ManualWorker()
+        background, calls, attempts, _ = self.make_recording_background(
+            worker, abort=fail_once_after_first_lookup
+        )
+        background.submit_shows(range(1, 101), missing_known=True)
+
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            while worker.jobs:
+                worker.run_all()
+
+        self.assertEqual(len(calls), 100)
+        self.assertEqual(
+            attempts,
+            {("show", media_id): 1 for media_id in range(1, 101)},
+        )
+        self.assertEqual(set(self.read_cache(self.show_cache)), {str(i) for i in range(1, 101)})
+        self.assertEqual(len(background._pending), 0)
+        self.assertEqual(len(background._metadata_queued), 0)
+
+    def test_on_demand_claims_deferred_key_at_continuation_handoff_without_overwrite(self):
+        worker = ManualWorker()
+        background, _, attempts, _ = self.make_recording_background(worker)
+        background.submit_shows(range(1, 101), missing_known=True)
+        original_schedule = background._schedule_metadata
+        handoff_reached = threading.Event()
+        continue_scheduling = threading.Event()
+
+        def pause_at_handoff():
+            if not handoff_reached.is_set():
+                handoff_reached.set()
+                if not continue_scheduling.wait(2):
+                    raise AssertionError("continuation release was not signalled")
+            return original_schedule()
+
+        background._schedule_metadata = pause_at_handoff
+        worker_thread = threading.Thread(target=worker.run_all)
+        worker_thread.start()
+        self.assertTrue(handoff_reached.wait(2))
+
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [json_response({"next_episode_to_air": {"season_number": 9, "episode_number": 9}})]
+        )
+        original_request = on_demand_session.request
+        direct_request_started = threading.Event()
+        release_direct_request = threading.Event()
+
+        def blocking_request(method, url, **kwargs):
+            direct_request_started.set()
+            if not release_direct_request.wait(2):
+                raise AssertionError("on-demand response release was not signalled")
+            return original_request(method, url, **kwargs)
+
+        on_demand_session.request = blocking_request
+        repository = ShowRepository(on_demand_client, self.show_cache)
+        repository._coordinator = background
+        direct_results = []
+        direct_errors = []
+
+        def direct_lookup():
+            try:
+                direct_results.append(repository.next_episode(33))
+            except BaseException as error:
+                direct_errors.append(error)
+
+        direct_thread = threading.Thread(target=direct_lookup)
+        direct_thread.start()
+        self.assertTrue(direct_request_started.wait(2))
+        continue_scheduling.set()
+        worker_thread.join(2)
+        worker.run_all()
+        # The direct response is deliberately blocked before FakeSession records it;
+        # direct_request_started nevertheless proves its one real client attempt.
+        attempts_during_handoff = attempts.get(("show", 33), 0) + int(
+            direct_request_started.is_set()
+        )
+        release_direct_request.set()
+        direct_thread.join(2)
+        while worker.jobs:
+            worker.run_all()
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_errors, [])
+        self.assertEqual(attempts_during_handoff, 1)
+        self.assertEqual(
+            direct_results,
+            [{"season": 9, "episode": 9, "air_date": ""}],
+        )
+        self.assertEqual(len(on_demand_session.calls), 1)
+        combined_attempts = dict(attempts)
+        combined_attempts[("show", 33)] = (
+            combined_attempts.get(("show", 33), 0) + len(on_demand_session.calls)
+        )
+        self.assertEqual(
+            combined_attempts,
+            {("show", media_id): 1 for media_id in range(1, 101)},
+        )
+
+    def test_deferred_on_demand_claim_waits_for_capacity_before_reserving(self):
+        worker = ManualWorker()
+        background, _, _, _ = self.make_recording_background(worker)
+        background.submit_shows(range(1, 101), missing_known=True)
+        original_schedule = background._schedule_metadata
+        handoff_reached = threading.Event()
+        continue_scheduling = threading.Event()
+
+        def pause_at_handoff():
+            if not handoff_reached.is_set():
+                handoff_reached.set()
+                if not continue_scheduling.wait(2):
+                    raise AssertionError("continuation release was not signalled")
+            return original_schedule()
+
+        background._schedule_metadata = pause_at_handoff
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [json_response({"next_episode_to_air": None})]
+        )
+        original_request = on_demand_session.request
+        decision_reached = threading.Event()
+        request_recorded = threading.Event()
+        pending_at_request = []
+
+        def recording_request(method, url, **kwargs):
+            with background._condition:
+                pending_at_request.append(len(background._pending))
+            decision_reached.set()
+            request_recorded.set()
+            return original_request(method, url, **kwargs)
+
+        on_demand_session.request = recording_request
+        original_wait = background._condition.wait
+
+        def observed_wait(timeout=None):
+            decision_reached.set()
+            return original_wait(timeout)
+
+        background._condition.wait = observed_wait
+        repository = ShowRepository(on_demand_client, self.show_cache)
+        repository._coordinator = background
+        results = []
+        direct_thread = threading.Thread(
+            target=lambda: results.append(repository.next_episode(33))
+        )
+        direct_thread.start()
+        self.assertTrue(decision_reached.wait(2))
+        worker_thread = threading.Thread(target=worker.run_all)
+        worker_thread.start()
+        self.assertTrue(handoff_reached.wait(2))
+        self.assertTrue(request_recorded.wait(2))
+        direct_thread.join(2)
+        continue_scheduling.set()
+        worker_thread.join(2)
+        while worker.jobs:
+            worker.run_all()
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(results, [None])
+        self.assertEqual(len(pending_at_request), 1)
+        self.assertGreater(pending_at_request[0], 0)
+        self.assertLessEqual(pending_at_request[0], 32)
+
+    def test_abort_before_first_batch_clears_deferred_legacy_work(self):
+        aborted = threading.Event()
+        aborted.set()
+        worker = ManualWorker()
+        background, calls, attempts, _ = self.make_recording_background(
+            worker, abort=aborted.is_set
+        )
+        background.submit_shows(range(1, 101), missing_known=True)
+
+        worker.run_all()
+
+        self.assertEqual(calls, [])
+        aborted.clear()
+        background.submit_shows([200], missing_known=True)
+        while worker.jobs:
+            worker.run_all()
+
+        self.assertEqual(attempts, {("show", 200): 1})
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"200"})
+        self.assertEqual(len(background._metadata_queued), 0)
+
+    def test_abort_during_continuation_flushes_successes_and_discards_old_remainder(self):
+        worker = ManualWorker()
+        background, calls, attempts, _ = self.make_recording_background(worker)
+        background.abort = lambda: len(calls) >= 34
+        background.submit_shows(range(1, 101), missing_known=True)
+
+        while worker.jobs:
+            worker.run_all()
+        attempts_before_reset = dict(attempts)
+        background.abort = lambda: False
+        background.submit_shows([200], missing_known=True)
+        while worker.jobs:
+            worker.run_all()
+
+        self.assertEqual(
+            attempts_before_reset,
+            {("show", media_id): 1 for media_id in range(1, 35)},
+        )
+        expected_attempts = dict(attempts_before_reset)
+        expected_attempts[("show", 200)] = 1
+        self.assertEqual(attempts, expected_attempts)
+        expected_cached = {str(media_id) for media_id in range(1, 35)} | {"200"}
+        self.assertEqual(set(self.read_cache(self.show_cache)), expected_cached)
+        self.assertEqual(len(background._metadata_queued), 0)
+
+    def test_close_during_claimed_on_demand_failure_cannot_requeue_retry(self):
+        worker = ManualWorker()
+        background, _, _, _ = self.make_recording_background(worker)
+        background.submit_shows(range(1, 101), missing_known=True)
+        background._schedule_metadata = lambda: 0
+        worker.run_all()
+        on_demand_client, on_demand_session, _, _ = self.make_client(
+            [requests.Timeout("synthetic failed on-demand request")]
+        )
+        original_request = on_demand_session.request
+        direct_request_started = threading.Event()
+        release_direct_request = threading.Event()
+
+        def blocking_request(method, url, **kwargs):
+            direct_request_started.set()
+            if not release_direct_request.wait(2):
+                raise AssertionError("failed response release was not signalled")
+            return original_request(method, url, **kwargs)
+
+        on_demand_session.request = blocking_request
+        repository = ShowRepository(on_demand_client, self.show_cache)
+        repository._coordinator = background
+        results = []
+        direct_thread = threading.Thread(target=lambda: results.append(repository.next_episode(33)))
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            direct_thread.start()
+            self.assertTrue(direct_request_started.wait(2))
+            background.close(wait=False)
+            release_direct_request.set()
+            direct_thread.join(2)
+
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(results, [None])
+        self.assertEqual(len(background._pending), 0)
+        self.assertEqual(len(background._metadata_queued), 0)
+        self.assertEqual(list(background._metadata_queues["show"]), [])
 
     def test_mixed_submission_alternates_trailer_and_show_lookups_deterministically(self):
         worker = InlineWorker()

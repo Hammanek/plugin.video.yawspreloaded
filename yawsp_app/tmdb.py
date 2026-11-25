@@ -743,9 +743,26 @@ class BackgroundPrefetch:
         self._closed = False
 
     def _abort_requested(self):
-        with self._lock:
-            closed = self._closed
-        return closed or self.abort()
+        with self._condition:
+            if self._closed:
+                return True
+            aborted = self.abort()
+            if aborted:
+                self._cancel_metadata()
+            return aborted
+
+    def _cancel_metadata(self):
+        """Forget both active and deferred derivative work on close/observed abort."""
+        with self._condition:
+            self._metadata_queues = {"trailer": deque(), "show": deque()}
+            self._metadata_queued.clear()
+            self._error_retry_at.clear()
+            for key, flight in list(self._pending.items()):
+                del self._pending[key]
+                if not flight.done:
+                    flight.done = True
+                    flight.result = _CANCELLED
+            self._condition.notify_all()
 
     def _client(self, session):
         return TMDBClient(
@@ -788,10 +805,9 @@ class BackgroundPrefetch:
             if self._closed:
                 return
             self._closed = True
-            self._metadata_queues = {"trailer": deque(), "show": deque()}
-            self._metadata_queued.clear()
+            self._cancel_metadata()
             self._watchlist_followups.clear()
-            self._release(list(self._pending) + list(self._watchlist_pending))
+            self._release(list(self._watchlist_pending))
         shutdown = getattr(self.worker, "shutdown", None)
         if shutdown is not None:
             shutdown(wait=wait)
@@ -809,7 +825,9 @@ class BackgroundPrefetch:
                 self._metadata_queued.discard(key)
             self._condition.notify_all()
 
-    def _execute_flight(self, key, flight, operation, release=True):
+    def _execute_flight(
+        self, key, flight, operation, release=True, result_handler=None
+    ):
         try:
             result = operation()
         except BaseException as error:
@@ -821,6 +839,8 @@ class BackgroundPrefetch:
                 self._condition.notify_all()
             raise
         with self._condition:
+            if result_handler is not None:
+                result_handler(result)
             flight.result = result
             flight.done = True
             if release and self._pending.get(key) is flight:
@@ -837,9 +857,62 @@ class BackgroundPrefetch:
         # caller in that interval receives this result instead of fetching again.
         return self._execute_flight(key, flight, operation, release=False)
 
+    def _claim_deferred_locked(self, key):
+        """Atomically turn a deferred queue item into an on-demand flight."""
+        if key not in self._metadata_queued:
+            return None
+        family = key[0]
+        queue = self._metadata_queues[family]
+        for index, item in enumerate(queue):
+            if item[0] == key:
+                del queue[index]
+                return item
+        return None
+
+    def _requeue_metadata_locked(self, item, front=False):
+        queue = self._metadata_queues[item[2]]
+        if any(queued[0] == item[0] for queued in queue):
+            return
+        self._metadata_queued.add(item[0])
+        if front:
+            queue.appendleft(item)
+        else:
+            queue.append(item)
+
+    def _record_metadata_result(self, item, result):
+        key, _, family, media, media_id, attempts, _ = item
+        if result is _CANCELLED or self._closed or self.abort():
+            return
+        if family == "trailer":
+            succeeded = result.status != "error"
+        else:
+            succeeded = result[1]
+        if succeeded:
+            self._metadata_queued.discard(key)
+            self._error_retry_at.pop(key, None)
+        elif attempts < 1:
+            retry_at = self.clock() + _METADATA_RETRY_BACKOFF
+            self._error_retry_at[key] = retry_at
+            self._requeue_metadata_locked(
+                self._metadata_item(
+                    family,
+                    item[1],
+                    media,
+                    media_id,
+                    attempts=1,
+                    retry_at=retry_at,
+                )
+            )
+        else:
+            # Errors remain memory-only and expire after one short backoff; no
+            # timestamp or negative value enters the cache.
+            self._metadata_queued.discard(key)
+            self._error_retry_at[key] = self.clock() + _METADATA_RETRY_BACKOFF
+
     def run_shared(self, key, operation):
         """Run one operation per key; existing waiters receive that same outcome."""
         owned_flight = None
+        claimed_item = None
         with self._condition:
             while True:
                 flight = self._pending.get(key)
@@ -851,17 +924,37 @@ class BackgroundPrefetch:
                     if flight.result is not _CANCELLED:
                         return flight.result
                     continue
-                if self._closed or self.abort():
+                if self._abort_requested():
                     break
                 if len(self._pending) >= self.max_pending:
                     self._condition.wait()
                     continue
+                claimed_item = self._claim_deferred_locked(key)
                 owned_flight = _PendingLookup()
                 self._pending[key] = owned_flight
                 break
         if owned_flight is None:
             return operation()
-        return self._execute_flight(key, owned_flight, operation)
+        try:
+            if claimed_item is None:
+                return self._execute_flight(key, owned_flight, operation)
+            return self._execute_flight(
+                key,
+                owned_flight,
+                operation,
+                result_handler=lambda result: self._record_metadata_result(
+                    claimed_item, result
+                ),
+            )
+        except BaseException:
+            if claimed_item is not None:
+                with self._condition:
+                    if not self._closed and not self.abort():
+                        self._requeue_metadata_locked(claimed_item, front=True)
+            raise
+        finally:
+            if claimed_item is not None and not self._abort_requested():
+                self._schedule_metadata()
 
     @staticmethod
     def _metadata_item(family, cache_key, media, media_id, attempts=0, retry_at=0.0):
@@ -907,9 +1000,15 @@ class BackgroundPrefetch:
                 self._next_metadata_family = "show"
             elif not self._metadata_queues["show"] and self._metadata_queues["trailer"]:
                 self._next_metadata_family = "trailer"
-            keys = [item[0] for item in batch]
-            for key in keys:
+            owned_batch = []
+            for item in batch:
+                key = item[0]
+                if key in self._pending:
+                    continue
                 self._pending[key] = _PendingLookup()
+                owned_batch.append(item)
+            batch = owned_batch
+            keys = [item[0] for item in batch]
         try:
             if batch:
                 self.worker.submit(self._run_metadata, batch)
@@ -1114,6 +1213,8 @@ class BackgroundPrefetch:
         """Run one mixed batch, retaining deferred saves and bounded retries."""
         session = None
         repositories = {}
+        resolved_keys = set()
+        unexpected_failure = False
         try:
             # The executor job, not the directory/UI thread, creates and owns
             # one HTTP session for this batch's entire lifetime.
@@ -1151,9 +1252,6 @@ class BackgroundPrefetch:
                             "trailer"
                         ]._lookup(media, media_id),
                     )
-                    succeeded = (
-                        result is not _CANCELLED and result.status != "error"
-                    )
                 else:
                     result = self._run_reserved(
                         key,
@@ -1161,36 +1259,30 @@ class BackgroundPrefetch:
                             media_id
                         ),
                     )
-                    succeeded = result is not _CANCELLED and result[1]
                 if result is _CANCELLED:
                     break
                 with self._condition:
-                    if succeeded:
-                        self._metadata_queued.discard(key)
-                        self._error_retry_at.pop(key, None)
-                    elif attempts < 1:
-                        retry_at = self.clock() + _METADATA_RETRY_BACKOFF
-                        self._error_retry_at[key] = retry_at
-                        self._metadata_queues[family].append(
-                            self._metadata_item(
-                                family,
-                                item[1],
-                                media,
-                                media_id,
-                                attempts=1,
-                                retry_at=retry_at,
-                            )
-                        )
-                    else:
-                        # Errors remain memory-only and expire after one short
-                        # backoff; no timestamp or negative value enters the cache.
-                        self._metadata_queued.discard(key)
-                        self._error_retry_at[key] = (
-                            self.clock() + _METADATA_RETRY_BACKOFF
-                        )
+                    self._record_metadata_result(item, result)
+                resolved_keys.add(key)
         except Exception:
+            unexpected_failure = True
             self.logger.exception("TMDB metadata prefetch failed")
         finally:
+            recoverable = []
+            if unexpected_failure:
+                with self._condition:
+                    for item in keys:
+                        key = item[0]
+                        if key in resolved_keys:
+                            continue
+                        flight = self._pending.get(key)
+                        if (
+                            flight is not None
+                            and flight.done
+                            and flight.result is not _MISSING
+                        ):
+                            continue
+                        recoverable.append(item)
             if not self._closed:
                 for family, repository in repositories.items():
                     try:
@@ -1200,5 +1292,10 @@ class BackgroundPrefetch:
                             "Unable to flush TMDB %s prefetch cache", family
                         )
             self._finish(session, [item[0] for item in keys])
-            if not self._abort_requested():
+            should_resume = not self._abort_requested()
+            if recoverable and should_resume:
+                with self._condition:
+                    for item in reversed(recoverable):
+                        self._requeue_metadata_locked(item, front=True)
+            if should_resume:
                 self._schedule_metadata()
