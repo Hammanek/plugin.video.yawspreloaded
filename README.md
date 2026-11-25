@@ -52,7 +52,7 @@ Hlavní menu má v této větvi přesné pořadí **Objevit → Vyhledávání �
 
 Objevit nepotřebuje osobní TMDB účet, session ani watchlist snapshot; nadále však potřebuje TMDB API klíč. Karty obsahují artwork, lokalizovaný název a metadata, rok, žánry, hodnocení a popis. Výsledek otevře existující hledání Webshare s `sort=largest`, tedy seřazené od největších souborů, bez autoplay, watched změn a background prefetch. Menu původního názvu používá stávající Webshare trasu.
 
-Výchozí vlastní prezentace je nativní okno `WindowXML` inspirované Netflixem se čtyřmi tlačítky kategorií, viditelným fokusem plakátu a detailem vybrané položky. Ovládání respektuje dálkový ovladač i klávesnici a akce **Back**; okno rozlišuje načítání, prázdný výsledek i chybu a v chybovém stavu zaměří tlačítko **Obnovit**. Nastavení `discovery_native_wall=true` přepne až příštím otevření Objevit na běžný nativní pohled **InfoWall**; nevyžaduje reinstalaci a pohled ani styl watchlistu se nemění. Oba způsoby používají stejná data i Webshare handoff.
+Výchozí vlastní prezentace je nativní okno `WindowXML` inspirované Netflixem se čtyřmi tlačítky kategorií, viditelným fokusem plakátu a detailem vybrané položky. Ovládání respektuje dálkový ovladač i klávesnici a akce **Back**; okno rozlišuje načítání, prázdný výsledek i chybu a v chybovém stavu zaměří tlačítko **Obnovit**. Nastavení `discovery_native_wall=true` přepne Objevit až při příštím otevření na běžný nativní pohled **InfoWall**; nevyžaduje reinstalaci a pohled ani styl watchlistu se nemění. Oba způsoby používají stejná data i Webshare handoff.
 
 ## 🧩 Architektura
 
