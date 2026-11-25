@@ -191,12 +191,14 @@ class SnapshotBackground(Background):
         self.snapshot_store = snapshot_store
         self.genre_repository = genre_repository
         self.watchlists = []
+        self.watchlist_missing_accounts = []
 
-    def submit_watchlist(self, scope, force=False):
+    def submit_watchlist(self, scope, force=False, allow_missing_account=False):
         if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
             return 0
         self.events.append("watchlist")
         self.watchlists.append((scope, force))
+        self.watchlist_missing_accounts.append(allow_missing_account)
         return 1
 
 
@@ -852,6 +854,7 @@ class TMDBUITests(unittest.TestCase):
                 if success:
                     self.assertEqual(store.load(scope).results, [{"id": 2, "title": "Keep"}])
                     self.assertEqual(self.background.watchlists, [(scope, True)])
+                    self.assertEqual(self.background.watchlist_missing_accounts, [False])
                     self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
                 else:
                     current = store.load(scope)

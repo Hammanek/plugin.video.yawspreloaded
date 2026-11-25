@@ -697,7 +697,7 @@ class BackgroundPrefetch:
         self.api_url = api_url
         self.logger = logger or _LOGGER
         self._pending = set()
-        self._watchlist_followups = set()
+        self._watchlist_followups = {}
         self._lock = threading.Lock()
         self._closed = False
 
@@ -808,14 +808,13 @@ class BackgroundPrefetch:
             and self.locale_mapper() == scope.language
         )
 
-    def submit_watchlist(self, scope, force=False):
+    def submit_watchlist(
+        self, scope, force=False, allow_missing_account=False
+    ):
         """Reserve one compatible refresh; all network activity stays off the UI."""
         if self.snapshot_store is None:
             return 0
         session_id = str(self.settings.get("tmdb_access_token") or "").strip()
-        allow_missing_account = not str(
-            self.settings.get("tmdb_account_id") or ""
-        ).strip()
         if not self._watchlist_identity(
             scope, session_id, allow_missing_account
         ):
@@ -832,7 +831,7 @@ class BackgroundPrefetch:
                         # A forced request made after a local mutation must not be
                         # lost behind an older fetch. Coalesce repeated requests to
                         # exactly one later job rather than recursively refreshing.
-                        self._watchlist_followups.add(scope)
+                        self._watchlist_followups[scope] = allow_missing_account
                         return 1
             return 0
         try:
@@ -907,10 +906,13 @@ class BackgroundPrefetch:
         finally:
             self._finish(session, keys)
             with self._lock:
-                followup = scope in self._watchlist_followups
-                self._watchlist_followups.discard(scope)
-            if followup:
-                self.submit_watchlist(scope, force=True)
+                followup_allow_missing = self._watchlist_followups.pop(scope, None)
+            if followup_allow_missing is not None:
+                self.submit_watchlist(
+                    scope,
+                    force=True,
+                    allow_missing_account=followup_allow_missing,
+                )
 
     def _finish(self, session, keys):
         try:

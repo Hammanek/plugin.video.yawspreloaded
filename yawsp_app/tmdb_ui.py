@@ -469,7 +469,11 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     snapshot_store.remove(scope, int(params["watched"]))
                 except (SnapshotPersistenceError, TypeError, ValueError):
                     runtime.logger.exception("Unable to update watched snapshot")
-                background.submit_watchlist(scope, force=True)
+                background.submit_watchlist(
+                    scope,
+                    force=True,
+                    allow_missing_account=account_was_missing,
+                )
             runtime.notify(runtime.localized(30413))
             return ActionResult(handled=True, refresh=True)
         except Exception:

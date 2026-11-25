@@ -637,6 +637,90 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
             self.assertEqual(recorder.builtin_commands, [])
 
+    def test_production_stored_account_cleared_before_submit_rejects_refresh(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            scope = SnapshotScope("account-1", "movies", "en-US")
+            owner.snapshot_store.save_complete(
+                scope,
+                [{"id": 42, "title": "Remove"}, {"id": 2, "title": "Keep"}],
+                100.0,
+            )
+            remove = owner.snapshot_store.remove
+
+            def remove_then_clear_account(scope, media_id):
+                snapshot = remove(scope, media_id)
+                addon.setSetting("tmdb_account_id", "")
+                return snapshot
+
+            owner.snapshot_store.remove = remove_then_clear_account
+            session.queue_response(json_response({"success": True}))
+
+            result = production_router.router(
+                "action=tmdb_watchlist&category=movies&watched=42"
+            )
+
+            self.assertTrue(result.handled)
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
+            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(len(session.calls), 1)
+            self.assertEqual(
+                session.calls[0]["url"],
+                "https://api.themoviedb.org/3/account/account-1/watchlist",
+            )
+            self.assertEqual(
+                session.calls[0]["kwargs"]["params"]["session_id"], "session-1"
+            )
+            self.assertEqual(
+                owner.snapshot_store.load(scope).results,
+                [{"id": 2, "title": "Keep"}],
+            )
+
+    def test_production_initially_missing_account_keeps_refresh_scope_and_session(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            scope = SnapshotScope("account-1", "movies", "en-US")
+            owner.snapshot_store.save_complete(
+                scope,
+                [{"id": 42, "title": "Remove"}, {"id": 2, "title": "Keep"}],
+                100.0,
+            )
+            addon.setSetting("tmdb_account_id", "")
+            session.queue_response(json_response({"id": "account-1"}))
+            session.queue_response(json_response({"success": True}))
+            session.queue_response(
+                json_response(
+                    {"total_pages": 1, "results": [{"id": 2, "title": "Refreshed"}]}
+                )
+            )
+
+            result = production_router.router(
+                "action=tmdb_watchlist&category=movies&watched=42"
+            )
+
+            self.assertTrue(result.handled)
+            self.assertEqual(len(owner.background.worker.jobs), 1)
+            owner.background.worker.run_all()
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
+            self.assertEqual(len(session.calls), 3)
+            self.assertEqual(
+                session.calls[0]["url"], "https://api.themoviedb.org/3/account"
+            )
+            self.assertEqual(
+                session.calls[1]["url"],
+                "https://api.themoviedb.org/3/account/account-1/watchlist",
+            )
+            self.assertEqual(
+                session.calls[2]["url"],
+                "https://api.themoviedb.org/3/account/account-1/watchlist/movies",
+            )
+            for call in session.calls:
+                self.assertEqual(call["kwargs"]["params"]["session_id"], "session-1")
+            self.assertEqual(
+                owner.snapshot_store.load(scope).results,
+                [{"id": 2, "title": "Refreshed"}],
+            )
+
     def test_production_cold_account_lookup_switch_preserves_new_identity_and_recovers(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_account_id", "")

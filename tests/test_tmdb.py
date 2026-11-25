@@ -938,6 +938,140 @@ class WatchlistBackgroundTests(TMDBServiceTestCase):
         self.assertEqual(worker.jobs, [])
         self.assertTrue(all(session.closed for session in sessions))
 
+    def test_stored_account_cleared_before_direct_submit_rejects_refresh(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        settings = MemorySettings(
+            tmdb_account_id="42", tmdb_access_token="session-token"
+        )
+        worker = ManualWorker()
+        session = FakeSession(
+            [json_response({"total_pages": 1, "results": [dict(self.movie, id=2)]})]
+        )
+        background, created = self.make_watchlist_background(
+            [session], worker, settings=settings
+        )
+
+        # The operation captured a stored account. Clearing it before submission
+        # must not make this refresh look like an initially missing-account operation.
+        settings.set("tmdb_account_id", "")
+        accepted = background.submit_watchlist(self.scope, force=True)
+        worker.run_all()
+
+        self.assertEqual(accepted, 0)
+        self.assertEqual(created, [])
+        self.assertEqual(session.calls, [])
+        self.assertEqual(self.snapshots.load(self.scope), original)
+
+    def test_direct_submit_defaults_to_strict_account_identity(self):
+        original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
+        settings = MemorySettings(
+            tmdb_account_id="", tmdb_access_token="session-token"
+        )
+        worker = ManualWorker()
+        session = FakeSession(
+            [json_response({"total_pages": 1, "results": [dict(self.movie, id=2)]})]
+        )
+        background, created = self.make_watchlist_background(
+            [session], worker, settings=settings
+        )
+
+        accepted = background.submit_watchlist(self.scope, force=True)
+        worker.run_all()
+
+        self.assertEqual(accepted, 0)
+        self.assertEqual(created, [])
+        self.assertEqual(session.calls, [])
+        self.assertEqual(self.snapshots.load(self.scope), original)
+
+    def test_initially_missing_account_uses_explicit_scope_and_session(self):
+        settings = MemorySettings(
+            tmdb_account_id="", tmdb_access_token="session-token"
+        )
+        worker = ManualWorker()
+        session = FakeSession(
+            [json_response({"total_pages": 1, "results": [self.movie]})]
+        )
+        background, created = self.make_watchlist_background(
+            [session], worker, settings=settings
+        )
+
+        accepted = background.submit_watchlist(
+            self.scope, force=True, allow_missing_account=True
+        )
+        worker.run_all()
+
+        self.assertEqual(accepted, 1)
+        self.assertEqual(created, [session])
+        self.assertEqual(
+            session.calls[0]["url"].split("?")[0],
+            "https://api.themoviedb.org/3/account/42/watchlist/movies",
+        )
+        self.assertEqual(
+            session.calls[0]["kwargs"]["params"]["session_id"], "session-token"
+        )
+        self.assertEqual(settings.get("tmdb_account_id"), "")
+        self.assertEqual(settings.get("tmdb_access_token"), "session-token")
+        self.assertEqual(self.snapshots.load(self.scope).results, [self.movie])
+
+    def test_missing_account_provenance_survives_forced_followup(self):
+        removed = dict(self.movie, id=42, title="Watched")
+        retained = dict(self.movie, id=2, title="Keep")
+        original = self.snapshots.save_complete(
+            self.scope, [removed, retained], 0.0
+        )
+        settings = MemorySettings(
+            tmdb_account_id="", tmdb_access_token="session-token"
+        )
+        sessions = [
+            FakeSession(
+                [json_response({"total_pages": 1, "results": [removed, retained]})]
+            ),
+            FakeSession(
+                [json_response({"total_pages": 1, "results": [retained]})]
+            ),
+        ]
+        worker = ManualWorker()
+        background, _ = self.make_watchlist_background(sessions, worker, settings=settings)
+
+        self.assertEqual(
+            background.submit_watchlist(
+                self.scope, force=True, allow_missing_account=True
+            ),
+            1,
+        )
+        self.snapshots.remove(self.scope, 42)
+        self.assertEqual(
+            background.submit_watchlist(
+                self.scope, force=True, allow_missing_account=True
+            ),
+            1,
+        )
+
+        worker.run_all()
+
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [retained])
+        self.assertEqual(current.created_at, original.created_at)
+        self.assertEqual(len(worker.jobs), 1)
+
+        worker.run_all()
+
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [retained])
+        self.assertEqual(current.created_at, background.clock())
+        self.assertEqual(worker.jobs, [])
+        self.assertEqual(settings.get("tmdb_account_id"), "")
+        self.assertEqual(settings.get("tmdb_access_token"), "session-token")
+        for session in sessions:
+            self.assertEqual(
+                session.calls[0]["url"].split("?")[0],
+                "https://api.themoviedb.org/3/account/42/watchlist/movies",
+            )
+            self.assertEqual(
+                session.calls[0]["kwargs"]["params"]["session_id"], "session-token"
+            )
+            self.assertTrue(session.closed)
+
     def test_refresh_is_throttled_deduplicated_and_uses_only_a_worker_session(self):
         self.snapshots.save_complete(self.scope, [self.movie], 0.0)
         clock = FakeClock()
