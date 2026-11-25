@@ -442,6 +442,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 session_id,
                 operation_language,
                 account_resolution_valid,
+                identity_lock=identity_lock,
             )
 
             def operation_valid():

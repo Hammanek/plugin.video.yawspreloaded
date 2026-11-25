@@ -1041,7 +1041,7 @@ class EntrypointTests(unittest.TestCase):
                 [{"id": 9, "title": "Current"}],
             )
 
-    def test_production_qr_switch_after_final_guard_cannot_publish_mixed_identity(self):
+    def _assert_production_qr_switch_after_final_guard(self, initial_query):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_account_id", "")
             original_request = session.request
@@ -1054,6 +1054,8 @@ class EntrypointTests(unittest.TestCase):
                     data = {"request_token": "request-token"}
                 elif url.endswith("/3/authentication/session/new"):
                     data = {"session_id": "session-2"}
+                elif method.upper() == "POST" and url.endswith("/watchlist"):
+                    data = {"success": True}
                 elif url.endswith("/watchlist/movies"):
                     data = {"total_pages": 1, "results": []}
                 else:
@@ -1122,7 +1124,7 @@ class EntrypointTests(unittest.TestCase):
             first_results = []
             first_thread = threading.Thread(
                 target=lambda: first_results.append(
-                    production_router.router("action=tmdb_watchlist&category=movies")
+                    production_router.router(initial_query)
                 )
             )
             with mock.patch.object(production_router._LOGGER, "exception"):
@@ -1163,6 +1165,16 @@ class EntrypointTests(unittest.TestCase):
                     for call in session.calls
                 )
             )
+
+    def test_production_qr_switch_after_final_guard_cannot_publish_mixed_identity(self):
+        self._assert_production_qr_switch_after_final_guard(
+            "action=tmdb_watchlist&category=movies"
+        )
+
+    def test_production_watched_qr_switch_after_final_guard_cannot_publish_mixed_identity(self):
+        self._assert_production_qr_switch_after_final_guard(
+            "action=tmdb_watchlist&category=movies&watched=42"
+        )
 
     def test_production_watched_account_lookup_switch_preserves_new_identity_and_recovers(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
