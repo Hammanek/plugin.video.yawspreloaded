@@ -1041,6 +1041,129 @@ class EntrypointTests(unittest.TestCase):
                 [{"id": 9, "title": "Current"}],
             )
 
+    def test_production_qr_switch_after_final_guard_cannot_publish_mixed_identity(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_account_id", "")
+            original_request = session.request
+
+            def route_response(method, url, **kwargs):
+                if url.endswith("/3/account"):
+                    session_id = kwargs["params"]["session_id"]
+                    data = {"id": "account-1" if session_id == "session-1" else "account-2"}
+                elif url.endswith("/3/authentication/token/new"):
+                    data = {"request_token": "request-token"}
+                elif url.endswith("/3/authentication/session/new"):
+                    data = {"session_id": "session-2"}
+                elif url.endswith("/watchlist/movies"):
+                    data = {"total_pages": 1, "results": []}
+                else:
+                    raise AssertionError("unexpected offline URL: {0}".format(url))
+                session.queue_response(json_response(data))
+                return original_request(method, url, **kwargs)
+
+            session.request = route_response
+            transition_condition = threading.Condition()
+            transition_state = []
+            qr_threads = []
+
+            def transition_advanced(state):
+                with transition_condition:
+                    transition_state.append(state)
+                    transition_condition.notify_all()
+
+            class ObservedIdentityLock:
+                def __init__(self, delegate):
+                    self.delegate = delegate
+
+                def __enter__(self):
+                    if qr_threads and threading.current_thread() is qr_threads[0]:
+                        transition_advanced("lock-waiting")
+                    self.delegate.acquire()
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback):
+                    self.delegate.release()
+
+                def __getattr__(self, name):
+                    return getattr(self.delegate, name)
+
+            owner.background._lock = ObservedIdentityLock(owner.background._lock)
+            original_set = addon.setSetting
+
+            def coordinate_exact_publication_boundary(key, value):
+                if (
+                    key == "tmdb_access_token"
+                    and value == "session-2"
+                    and qr_threads
+                    and threading.current_thread() is qr_threads[0]
+                ):
+                    original_set(key, value)
+                    transition_advanced("replaced")
+                    return
+                if key == "tmdb_account_id" and value == "account-1" and not qr_threads:
+                    # This is after account_resolution_valid returned and immediately
+                    # before _WatchlistResolutionSettings' real old-account write.
+                    qr_thread = threading.Thread(
+                        target=lambda: qr_results.append(
+                            production_router.router("action=tmdb_auth")
+                        )
+                    )
+                    qr_threads.append(qr_thread)
+                    qr_thread.start()
+                    with transition_condition:
+                        if not transition_condition.wait_for(
+                            lambda: bool(transition_state), 2
+                        ):
+                            raise AssertionError("QR transition did not reach its seam")
+                original_set(key, value)
+
+            addon.setSetting = coordinate_exact_publication_boundary
+            qr_results = []
+            first_results = []
+            first_thread = threading.Thread(
+                target=lambda: first_results.append(
+                    production_router.router("action=tmdb_watchlist&category=movies")
+                )
+            )
+            with mock.patch.object(production_router._LOGGER, "exception"):
+                first_thread.start()
+                first_thread.join(2)
+                for qr_thread in qr_threads:
+                    qr_thread.join(2)
+
+                self.assertFalse(first_thread.is_alive())
+                self.assertTrue(qr_threads)
+                self.assertFalse(qr_threads[0].is_alive())
+                self.assertTrue(qr_results[0].handled)
+                self.assertEqual(len(first_results), 1)
+                first_persisted_pair = (
+                    addon.getSetting("tmdb_account_id"),
+                    addon.getSetting("tmdb_access_token"),
+                )
+
+                second_result = production_router.router(
+                    "action=tmdb_watchlist&category=movies"
+                )
+
+            mixed_requests = [
+                call
+                for call in session.calls
+                if call["url"].endswith("/3/account/account-1/watchlist/movies")
+                and call["kwargs"]["params"]["session_id"] == "session-2"
+            ]
+            self.assertEqual(mixed_requests, [])
+            self.assertEqual(first_persisted_pair, ("", "session-2"))
+            self.assertTrue(second_result.succeeded)
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertTrue(
+                any(
+                    call["url"].endswith("/3/account/account-2/watchlist/movies")
+                    and call["kwargs"]["params"]["session_id"] == "session-2"
+                    for call in session.calls
+                )
+            )
+
     def test_production_watched_account_lookup_switch_preserves_new_identity_and_recovers(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_account_id", "")

@@ -1,5 +1,6 @@
 """TMDB Kodi presentation; completion remains owned by the router adapters."""
 
+from contextlib import nullcontext
 from datetime import date
 import io
 import os
@@ -217,6 +218,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     if attach_repositories is not None:
         attach_repositories(trailer_repository, show_repository)
     snapshot_store = getattr(background, "snapshot_store", None)
+    identity_lock = getattr(background, "_lock", None)
     genre_repository = getattr(background, "genre_repository", None) or GenreRepository()
 
     def genres(media, language):
@@ -287,17 +289,19 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 session_id = _pending_session_id(client, request_token)
                 if session_id:
                     # Identity belongs to the old session and must never leak into
-                    # the newly authorized account.
-                    old_account_id = runtime.get_setting("tmdb_account_id").strip()
-                    client.invalidate_identity()
-                    if snapshot_store is not None and old_account_id:
-                        try:
-                            snapshot_store.invalidate_identity(old_account_id)
-                        except SnapshotPersistenceError:
-                            runtime.logger.exception(
-                                "Unable to invalidate old watchlist identity"
-                            )
-                    runtime.set_setting("tmdb_access_token", session_id)
+                    # the newly authorized account. The resolver commits under this
+                    # same owner lock; network polling above remains outside it.
+                    with identity_lock or nullcontext():
+                        old_account_id = runtime.get_setting("tmdb_account_id").strip()
+                        client.invalidate_identity()
+                        if snapshot_store is not None and old_account_id:
+                            try:
+                                snapshot_store.invalidate_identity(old_account_id)
+                            except SnapshotPersistenceError:
+                                runtime.logger.exception(
+                                    "Unable to invalidate old watchlist identity"
+                                )
+                        runtime.set_setting("tmdb_access_token", session_id)
                     runtime.notify(runtime.localized(30405))
                     return ActionResult(handled=True)
                 if monitor.waitForAbort(_AUTH_POLL_INTERVAL):
@@ -523,6 +527,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     operation_session,
                     operation_language,
                     account_resolution_valid,
+                    identity_lock=identity_lock,
                 )
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
                 if snapshot_store is not None:

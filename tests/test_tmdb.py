@@ -2000,6 +2000,143 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(len(background._metadata_queued), 0)
         self.assertTrue(all(session.closed for session in sessions))
 
+    def test_distinct_deferred_claims_share_one_priority_slot_and_drain_once(self):
+        worker = ManualWorker()
+        background, calls, attempts, sessions = self.make_recording_background(worker)
+        self.assertEqual(
+            background.submit_shows(range(1, 101), missing_known=True), 32
+        )
+        direct_ids = list(range(33, 73))
+        release_first = threading.Event()
+        release_waiters = threading.Event()
+        settled = {media_id: threading.Event() for media_id in direct_ids}
+        threads = []
+        direct_sessions = {}
+        results = {}
+        errors = []
+        pending_observations = []
+        front_at_first_wait = {}
+        wait_calls = []
+        active_lock = threading.Lock()
+        active_direct = [0]
+        max_active_direct = [0]
+
+        original_wait = background._condition.wait
+        current_direct_ids = {}
+
+        def observed_wait(timeout=None):
+            media_id = current_direct_ids.get(threading.get_ident())
+            if media_id is not None and media_id != 33:
+                wait_calls.append(media_id)
+                front_at_first_wait.setdefault(
+                    media_id, background._metadata_queues["show"][0][0]
+                )
+                pending_observations.append(len(background._pending))
+                settled[media_id].set()
+            return original_wait(timeout)
+
+        background._condition.wait = observed_wait
+
+        def start_direct(media_id):
+            client, direct_session, _, _ = self.make_client(
+                [json_response({"next_episode_to_air": None})]
+            )
+            direct_sessions[media_id] = direct_session
+            original_request = direct_session.request
+
+            def coordinated_request(method, url, **kwargs):
+                with active_lock:
+                    active_direct[0] += 1
+                    max_active_direct[0] = max(
+                        max_active_direct[0], active_direct[0]
+                    )
+                try:
+                    with background._condition:
+                        pending_observations.append(len(background._pending))
+                    release = release_first if media_id == 33 else release_waiters
+                    settled[media_id].set()
+                    if not release.wait(2):
+                        raise AssertionError("direct response release was not signalled")
+                    return original_request(method, url, **kwargs)
+                finally:
+                    with active_lock:
+                        active_direct[0] -= 1
+
+            direct_session.request = coordinated_request
+            repository = ShowRepository(client, self.show_cache)
+            repository._coordinator = background
+
+            def direct_lookup():
+                current_direct_ids[threading.get_ident()] = media_id
+                try:
+                    results[media_id] = repository.next_episode(media_id)
+                except BaseException as error:
+                    errors.append((media_id, error))
+
+            thread = threading.Thread(target=direct_lookup)
+            threads.append(thread)
+            thread.start()
+
+        pending_after_all_started = None
+        calls_before_release = None
+        try:
+            start_direct(33)
+            self.assertTrue(settled[33].wait(2))
+            for media_id in direct_ids[1:]:
+                start_direct(media_id)
+                self.assertTrue(settled[media_id].wait(2))
+            with background._condition:
+                pending_after_all_started = len(background._pending)
+            calls_before_release = list(calls)
+            wait_calls_before_release = list(wait_calls)
+            release_first.set()
+            threads[0].join(2)
+            release_waiters.set()
+        finally:
+            release_first.set()
+            release_waiters.set()
+            for thread in threads:
+                thread.join(2)
+            while worker.jobs:
+                worker.run_all()
+
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual(results, {media_id: None for media_id in direct_ids})
+        self.assertEqual(len(direct_sessions), 40)
+        self.assertTrue(
+            all(len(direct_session.calls) == 1 for direct_session in direct_sessions.values())
+        )
+        self.assertEqual(calls_before_release, [])
+        self.assertEqual(pending_after_all_started, 33)
+        self.assertLessEqual(max(pending_observations), 33)
+        self.assertEqual(max_active_direct[0], 1)
+        self.assertNotIn(33, wait_calls_before_release)
+        self.assertEqual(
+            {media_id: wait_calls_before_release.count(media_id) for media_id in direct_ids[1:]},
+            {media_id: 1 for media_id in direct_ids[1:]},
+        )
+        self.assertEqual(
+            front_at_first_wait,
+            {media_id: ("show", media_id) for media_id in direct_ids[1:]},
+        )
+        self.assertEqual(len(calls), 60)
+        self.assertEqual(
+            attempts,
+            {
+                ("show", media_id): 1
+                for media_id in range(1, 101)
+                if media_id not in direct_ids
+            },
+        )
+        self.assertEqual(
+            set(self.read_cache(self.show_cache)),
+            {str(media_id) for media_id in range(1, 101)},
+        )
+        self.assertEqual(len(background._metadata_queued), 0)
+        self.assertEqual(len(background._pending), 0)
+        self.assertTrue(all(session.closed for session in sessions))
+
     def test_abort_before_first_batch_clears_deferred_legacy_work(self):
         aborted = threading.Event()
         aborted.set()

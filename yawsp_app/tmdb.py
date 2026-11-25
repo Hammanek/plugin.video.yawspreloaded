@@ -2,6 +2,7 @@
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -611,10 +612,11 @@ class _WatchlistWorkerSettings:
 class _WatchlistResolutionSettings:
     """Stage a resolved account ID until its captured identity is still current."""
 
-    def __init__(self, settings, session_id, identity_valid):
+    def __init__(self, settings, session_id, identity_valid, identity_lock=None):
         self.settings = settings
         self.session_id = session_id
         self.identity_valid = identity_valid
+        self.identity_lock = identity_lock
         self.staged_account_id = ""
 
     def get(self, key):
@@ -635,18 +637,21 @@ class _WatchlistResolutionSettings:
 
     def commit(self, account_id):
         """Publish a staged ID only while its captured identity is still current."""
-        current_account = str(self.settings.get("tmdb_account_id") or "").strip()
-        if not (
-            self.staged_account_id == account_id
-            and current_account in ("", account_id)
-            and self.identity_valid(account_id)
-        ):
-            return False
-        self.settings.set("tmdb_account_id", account_id)
-        return True
+        with self.identity_lock or nullcontext():
+            current_account = str(self.settings.get("tmdb_account_id") or "").strip()
+            if not (
+                self.staged_account_id == account_id
+                and current_account in ("", account_id)
+                and self.identity_valid(account_id)
+            ):
+                return False
+            self.settings.set("tmdb_account_id", account_id)
+            return True
 
 
-def resolve_watchlist_account(client, session_id, language, identity_valid):
+def resolve_watchlist_account(
+    client, session_id, language, identity_valid, identity_lock=None
+):
     """Resolve without letting an obsolete /account response overwrite new settings."""
     if not isinstance(client, TMDBClient):
         return client.get_account_id()
@@ -655,7 +660,7 @@ def resolve_watchlist_account(client, session_id, language, identity_valid):
         return cached_account
 
     settings = _WatchlistResolutionSettings(
-        client.settings, session_id, identity_valid
+        client.settings, session_id, identity_valid, identity_lock=identity_lock
     )
     resolver = TMDBClient(
         client.session,
@@ -932,6 +937,13 @@ class BackgroundPrefetch:
                 if self._abort_requested():
                     break
                 claimed_item = self._claim_deferred_locked(key)
+                if (
+                    claimed_item is not None
+                    and len(self._pending) >= self.max_pending + 1
+                ):
+                    self._requeue_metadata_locked(claimed_item, front=True)
+                    self._condition.wait()
+                    continue
                 if claimed_item is None and len(self._pending) >= self.max_pending:
                     self._condition.wait()
                     continue
