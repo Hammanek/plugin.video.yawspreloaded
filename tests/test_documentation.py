@@ -236,6 +236,7 @@ class DocumentationContractTests(unittest.TestCase):
             "yawsp_app/search.py",
             "yawsp_app/downloads.py",
             "yawsp_app/json_cache.py",
+            "yawsp_app/genre_file_cache.py",
             "yawsp_app/metadata.py",
             "yawsp_app/discovery_ui.py",
             "yawsp_app/tmdb.py",
@@ -385,8 +386,8 @@ class DocumentationContractTests(unittest.TestCase):
             r"(?i)(?:nastavte|povolte|zapněte).{0,100}discovery_native_wall|discovery_native_wall.{0,100}(?:přepne|povolí|zapne)",
         )
         self.assertNotRegex(section, r"(?i)výchozí vlastní prezentace|vlastní okno.{0,50}(?:nabízí|se otevírá)")
-        self.assertGreaterEqual(len(paragraphs), 4)
-        selector, public_rows, native_view, retirement = paragraphs[:4]
+        self.assertGreaterEqual(len(paragraphs), 5)
+        selector, public_rows, native_view, retirement, sequential = paragraphs[:5]
 
         self.assertIn(
             "**Objevit → Vyhledávání → Chci si stáhnout → Historie stahování → Nastavení → TMDB Watchlist**",
@@ -783,6 +784,31 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(retirement, r"(?i)žádný samostatný skript|žádné samostatné skripty")
         self.assertNotIn("| `yawsp_app/discovery_window.py` |", self.readme)
 
+        self.assertIn('{"schema":1,"genres":{...}}', sequential)
+        for group in (
+            "movie/en-US",
+            "movie/cs-CZ",
+            "movie/sk-SK",
+            "tv/en-US",
+            "tv/cs-CZ",
+            "tv/sk-SK",
+        ):
+            with self.subTest(group=group):
+                self.assertIn("`" + group + "`", sequential)
+        self.assertIn("Platná přítomná prázdná mapa je platný cache hit", sequential)
+        self.assertIn("žádné TTL ani časovou expiraci", sequential)
+        self.assertIn("neznámý, poškozený ani nepodporovaný vstup není přepsán", sequential)
+        self.assertIn("jiné jazyky zůstávají v původním procesním režimu", sequential)
+        self.assertIn("pozdější nový owner znovu načte veřejná data", sequential)
+        self.assertIn("běžné síťové volání kategorizovaného seznamu", sequential)
+        self.assertNotRegex(sequential, r"(?i)thread[- ]safe|OS lock důkaz")
+        self.assertIn("není cross-process transakce ani důkaz OS zámku", sequential)
+        self.assertIn("neřeší aktivní background shutdown HANG", sequential)
+        self.assertRegex(
+            sequential,
+            r"response\.close[^\n]+validac[^\n]+os\.replace[^\n]+reload[^\n]+pozdější invoker",
+        )
+
     def test_readme_documents_ci_verifier_without_persistent_archive(self):
         for phrase in (
             ".github/workflows/tests.yml",
@@ -815,7 +841,7 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(self.readme, r"(?i)Temp.{0,180}originál|originál.{0,180}Temp")
         self.assertRegex(self.readme, r"(?i)ne(?:vypis|zobraz)\w*.{0,80}(?:obsah|taj|přihlaš)|bez.{0,50}výpis\w*.{0,50}(?:obsah|archiv)")
 
-    def test_readme_limits_live_environment_claims_and_marks_task4_pending(self):
+    def test_readme_limits_live_environment_claims_and_marks_external_review_pending(self):
         self.assertIn("Kodi 21.2 (Omega), Windows Store x64", self.readme)
         for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS", "Task 4"):
             with self.subTest(phrase=phrase):
@@ -835,9 +861,19 @@ class DocumentationContractTests(unittest.TestCase):
         lifecycle = re.sub(r"\s+", " ", lifecycle_match.group(1))
         self.assertRegex(
             lifecycle,
-            r"(?i)současn\w*.{0,100}Objevit.{0,180}nebyl\w*.{0,80}(?:živě|interaktiv)",
+            r"(?i)izolovan\w* profil.{0,180}Objevit|Objevit.{0,180}izolovan\w* profil",
         )
-        self.assertRegex(lifecycle, r"(?i)Task 4.{0,180}izolovan\w* profil")
+        for phrase in (
+            "4 běžné list requesty",
+            "1 movie + 1 TV genre GET",
+            "ActionRunner",
+            "getVideoInfoTag()",
+            "Application.Quit",
+            "exit 0",
+        ):
+            with self.subTest(native_evidence=phrase):
+                self.assertIn(phrase, lifecycle)
+        self.assertRegex(lifecycle, r"(?i)extern\w*.{0,180}(?:vizuální|interaktiv).{0,100}ne|ne.{0,100}extern\w*.{0,100}(?:vizuální|interaktiv)")
         self.assertRegex(
             lifecycle,
             r"(?i)HANG.{0,220}(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,120}nezávisl|(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,180}HANG.{0,120}nezávisl",
@@ -859,8 +895,12 @@ class DocumentationContractTests(unittest.TestCase):
             if entry.get("status", "active") == "active"
             for test_selector in entry["mutation_sensitive_tests"]
         ]
-        self.assertEqual(len(active_selectors), 31)
-        self.assertEqual(len(set(active_selectors)), 31)
+        self.assertEqual(len(active_selectors), 32)
+        self.assertEqual(len(set(active_selectors)), 32)
+        self.assertIn(
+            "tests.test_tmdb.GenreRepositoryTests.test_file_backed_commit_precedes_offline_fresh_owner_with_integer_ids",
+            mappings["PERF-06"]["mutation_sensitive_tests"],
+        )
         for entry in coverage["requirements"]:
             if entry.get("status", "active") != "active":
                 continue
@@ -876,12 +916,12 @@ class DocumentationContractTests(unittest.TestCase):
                     r"(?i)discovery_window|discovery_script|create_discovery_window|discovery_native_wall",
                 )
         execution = coverage["current_selector_execution"]
-        self.assertEqual(execution["mapped_selector_entries"], 31)
-        self.assertEqual(execution["unique_selectors"], 31)
-        self.assertEqual(execution["passed"], 31)
+        self.assertEqual(execution["mapped_selector_entries"], 32)
+        self.assertEqual(execution["unique_selectors"], 32)
+        self.assertEqual(execution["passed"], 32)
         self.assertEqual(
             execution["runs"][-1],
-            {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"},
+            {"log": "task-3-sequential-active-selectors.log", "tests": 32, "status": "OK"},
         )
 
     def test_performance_coverage_resolves_real_symbols_and_test_methods(self):

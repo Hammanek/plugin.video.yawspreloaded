@@ -24,15 +24,16 @@
   },
   "current_selector_execution": {
     "status": "OK",
-    "mapped_selector_entries": 31,
-    "unique_selectors": 31,
-    "passed": 31,
+    "mapped_selector_entries": 32,
+    "unique_selectors": 32,
+    "passed": 32,
     "runs": [
       {"log": "../2026-11-25-kodi-usability-improvements/task-7-active-selectors.log", "tests": 29, "status": "OK"},
       {"log": "task-8-active-selectors.log", "tests": 30, "status": "OK"},
-      {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"}
+      {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"},
+      {"log": "task-3-sequential-active-selectors.log", "tests": 32, "status": "OK"}
     ],
-    "note": "Active post-removal selectors plus the six-item discovery-root and four-category missing-source selector HTTP/lifecycle guards; all 31 were executed together in task-native-first-selectors.log. selector_execution above preserves the historical 40-selector pre-removal evidence; DB-only symbols and deleted test selectors are retained solely in historical_* / historical_removed_* fields."
+    "note": "All 32 current active mapped unique selectors, including the new ordered fresh-owner integer-ID genre regression, were executed together directly by a fail-closed Python runner in task-3-sequential-active-selectors.log in 1.009 seconds. The earlier 31-selector entry and historical 40-selector pre-removal evidence remain separate; DB-only symbols and deleted test selectors are retained solely in historical_* / historical_removed_* fields."
   },
   "live_verification": {
     "kodi": "21.2",
@@ -265,13 +266,15 @@
         {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch.submit_metadata"},
         {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch._schedule_metadata"},
         {"module": "yawsp_app.tmdb", "symbol": "_Repository._shared_lookup"},
+        {"module": "yawsp_app.tmdb", "symbol": "GenreRepository.get"},
         {"module": "yawsp_app.tmdb_ui", "symbol": "build_tmdb_handlers"}
       ],
       "mutation_sensitive_tests": [
         "tests.test_tmdb.BackgroundPrefetchTests.test_large_direct_submission_drains_every_key_without_exceeding_active_cap",
         "tests.test_tmdb.BackgroundPrefetchTests.test_mixed_submission_alternates_trailer_and_show_lookups_deterministically",
         "tests.test_tmdb.BackgroundPrefetchTests.test_persistent_failures_retry_once_after_other_rows_without_negative_cache",
-        "tests.test_tmdb.BackgroundPrefetchTests.test_concurrent_on_demand_and_worker_lookup_share_one_http_request"
+        "tests.test_tmdb.BackgroundPrefetchTests.test_concurrent_on_demand_and_worker_lookup_share_one_http_request",
+        "tests.test_tmdb.GenreRepositoryTests.test_file_backed_commit_precedes_offline_fresh_owner_with_integer_ids"
       ],
       "benchmarks": [
         {
@@ -283,7 +286,7 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "A 100-key direct submission now covers all 100 keys exactly once in four <=32-key batches rather than silently dropping IDs 33-100. The gain is complete bounded draining and deduplication, not fewer total requests.",
+        "summary": "A 100-key direct submission now covers all 100 keys exactly once in four <=32-key batches rather than silently dropping IDs 33-100. The gain is complete bounded draining and deduplication, not fewer total requests. The added GenreRepository fresh-owner regression separately proves ordered response-close, validated save/replace, strict reload, then an offline fresh reader with integer public IDs; it does not change the original shared-worker coverage or claim a general list cache.",
         "comparisons": [
           {"operation": "100 successful direct trailer IDs", "unit": "covered keys", "baseline": 32, "current": 100, "repetitions": 1},
           {"operation": "100 successful direct trailer IDs", "unit": "actual HTTP lookups", "baseline": 32, "current": 100, "repetitions": 1},
@@ -296,7 +299,8 @@
       "limitations": [
         "Making 100 rather than 32 calls is intentional completeness, not evidence of reduced network traffic or lower latency.",
         "Each UI open schedules only the first 50 visible rows per family; all rows still render and on-demand lookup remains available.",
-        "One worker and process-local shared flights remain the lifecycle/concurrency boundary."
+        "One worker and process-local shared flights remain the lifecycle/concurrency boundary.",
+        "The public genre sidecar applies only to movie/tv with en-US/cs-CZ/sk-SK, has no inferred TTL, and is proven only for an ordered completed writer followed by a fresh reader; it is not a cross-process locking or background-shutdown remedy."
       ]
     },
     {
