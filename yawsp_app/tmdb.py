@@ -812,7 +812,8 @@ class BackgroundPrefetch:
         if shutdown is not None:
             shutdown(wait=wait)
 
-    def _release(self, keys):
+    def _release(self, keys, preserve_metadata=()):
+        preserve_metadata = set(preserve_metadata)
         with self._condition:
             for key in list(keys):
                 self._watchlist_pending.discard(key)
@@ -822,7 +823,8 @@ class BackgroundPrefetch:
                 if not flight.done:
                     flight.done = True
                     flight.result = _CANCELLED
-                self._metadata_queued.discard(key)
+                if key not in preserve_metadata:
+                    self._metadata_queued.discard(key)
             self._condition.notify_all()
 
     def _execute_flight(
@@ -1200,14 +1202,14 @@ class BackgroundPrefetch:
             if not self._abort_requested():
                 self._schedule_metadata()
 
-    def _finish(self, session, keys):
+    def _finish(self, session, keys, preserve_metadata=()):
         try:
             if session is not None:
                 session.close()
         except Exception:
             self.logger.exception("Unable to close TMDB background HTTP session")
         finally:
-            self._release(keys)
+            self._release(keys, preserve_metadata=preserve_metadata)
 
     def _run_metadata(self, keys):
         """Run one mixed batch, retaining deferred saves and bounded retries."""
@@ -1291,11 +1293,19 @@ class BackgroundPrefetch:
                         self.logger.exception(
                             "Unable to flush TMDB %s prefetch cache", family
                         )
-            self._finish(session, [item[0] for item in keys])
-            should_resume = not self._abort_requested()
-            if recoverable and should_resume:
+            preserved = set()
+            if recoverable and not self._closed:
+                # Publish runnable recovery entries before old-flight release.
+                # A direct caller can then claim the item and its retry semantics
+                # rather than becoming an unowned ordinary flight in the gap.
                 with self._condition:
                     for item in reversed(recoverable):
                         self._requeue_metadata_locked(item, front=True)
-            if should_resume:
+                        preserved.add(item[0])
+            self._finish(
+                session,
+                [item[0] for item in keys],
+                preserve_metadata=preserved,
+            )
+            if not self._abort_requested():
                 self._schedule_metadata()

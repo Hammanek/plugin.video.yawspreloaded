@@ -1708,6 +1708,100 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(len(background._pending), 0)
         self.assertEqual(len(background._metadata_queued), 0)
 
+    def test_recovery_handoff_claim_failure_preserves_runnable_retry_ownership(self):
+        abort_checks = []
+
+        def fail_once_after_first_lookup():
+            abort_checks.append(True)
+            if len(abort_checks) == 3:
+                raise RuntimeError("synthetic batch-level failure")
+            return False
+
+        worker = ManualWorker()
+        background, _, attempts, _ = self.make_recording_background(
+            worker, abort=fail_once_after_first_lookup
+        )
+        background.submit_shows(range(1, 101), missing_known=True)
+        active_counts = [len(background._pending)]
+        original_finish = background._finish
+        recovery_released = threading.Event()
+        allow_recovery_scheduling = threading.Event()
+
+        def pause_after_recovery_release(session, keys, preserve_metadata=()):
+            original_finish(
+                session, keys, preserve_metadata=preserve_metadata
+            )
+            if not recovery_released.is_set():
+                recovery_released.set()
+                if not allow_recovery_scheduling.wait(2):
+                    raise AssertionError("recovery scheduling was not released")
+
+        background._finish = pause_after_recovery_release
+        worker_thread = threading.Thread(target=worker.run_all)
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            worker_thread.start()
+            self.assertTrue(recovery_released.wait(2))
+
+            on_demand_client, on_demand_session, _, _ = self.make_client(
+                [requests.Timeout("direct recovery-handoff failure")]
+            )
+            original_request = on_demand_session.request
+            direct_request_started = threading.Event()
+            release_direct_failure = threading.Event()
+
+            def blocking_failure(method, url, **kwargs):
+                direct_request_started.set()
+                if not release_direct_failure.wait(2):
+                    raise AssertionError("direct failure was not released")
+                return original_request(method, url, **kwargs)
+
+            on_demand_session.request = blocking_failure
+            repository = ShowRepository(on_demand_client, self.show_cache)
+            repository._coordinator = background
+            direct_results = []
+            direct_errors = []
+
+            def fail_direct_lookup():
+                try:
+                    direct_results.append(repository.next_episode(2))
+                except BaseException as error:
+                    direct_errors.append(error)
+
+            direct_thread = threading.Thread(target=fail_direct_lookup)
+            direct_thread.start()
+            self.assertTrue(direct_request_started.wait(2))
+            allow_recovery_scheduling.set()
+            worker_thread.join(2)
+            self.assertEqual(attempts.get(("show", 2), 0), 0)
+            worker.run_all()
+            active_counts.append(len(background._pending))
+            release_direct_failure.set()
+            direct_thread.join(2)
+            while worker.jobs:
+                worker.run_all()
+                active_counts.append(len(background._pending))
+
+        self.assertFalse(worker_thread.is_alive())
+        self.assertFalse(direct_thread.is_alive())
+        self.assertEqual(direct_errors, [])
+        self.assertEqual(direct_results, [None])
+        self.assertEqual(len(on_demand_session.calls), 1)
+        show_key = ("show", 2)
+        self.assertEqual(attempts.get(show_key), 1)
+        self.assertNotIn(show_key, background._metadata_queued)
+        self.assertNotIn(show_key, background._pending)
+        self.assertFalse(
+            any(item[0] == show_key for item in background._metadata_queues["show"])
+        )
+        expected_attempts = {("show", media_id): 1 for media_id in range(1, 101)}
+        expected_attempts[show_key] = 2
+        combined_attempts = dict(attempts)
+        combined_attempts[show_key] += len(on_demand_session.calls)
+        self.assertEqual(combined_attempts, expected_attempts)
+        self.assertLessEqual(max(active_counts), 32)
+        self.assertIn("2", self.read_cache(self.show_cache))
+        self.assertEqual(background.submit_shows([2]), 0)
+
     def test_on_demand_claims_deferred_key_at_continuation_handoff_without_overwrite(self):
         worker = ManualWorker()
         background, _, attempts, _ = self.make_recording_background(worker)
