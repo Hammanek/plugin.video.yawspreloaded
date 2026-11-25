@@ -91,6 +91,83 @@ class WatchlistSnapshotTests(unittest.TestCase):
         self.assertTrue(store.refresh_due(scope, 1_300.0))
         self.assertTrue(store.refresh_due(self.scope(account_id="other"), 1_000.0))
 
+    def test_refresh_state_uses_one_load_for_snapshot_generation_and_threshold(self):
+        scope = self.scope()
+        store = self.store()
+        original = store.save_complete(scope, [MOVIE], 1_000.0)
+
+        for now, refresh_due in ((1_299.999, False), (1_300.0, True)):
+            with self.subTest(now=now, refresh_due=refresh_due):
+                with patch.object(self.cache, "load", wraps=self.cache.load) as load:
+                    state = store.refresh_state(scope, now)
+
+                self.assertEqual(load.call_count, 1)
+                self.assertIsInstance(state, self.module.SnapshotRefreshState)
+                self.assertEqual(state.snapshot, original)
+                self.assertEqual(state.generation, 0)
+                self.assertEqual(state.refresh_due, refresh_due)
+                state.snapshot.results[0]["title"] = "local mutation"
+                self.assertEqual(store.load(scope).results, [MOVIE])
+
+        with patch.object(self.cache, "load", wraps=self.cache.load) as load:
+            missing = store.refresh_state(self.scope(account_id="other"), 1_000.0)
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(missing.snapshot, None)
+        self.assertEqual(missing.generation, 0)
+        self.assertTrue(missing.refresh_due)
+
+    def test_accepted_save_uses_one_transactional_load_and_preserves_peer_and_copies(self):
+        scope = self.scope()
+        peer_scope = self.scope(account_id="account-2")
+        peer_results = [dict(MOVIE, id=2, title="Peer")]
+        store = self.store()
+        store.save_complete(scope, [MOVIE], 100.0)
+        store.save_complete(peer_scope, peer_results, 100.0)
+        results = [dict(MOVIE, id=3, title="Committed")]
+
+        with patch.object(self.cache, "load", wraps=self.cache.load) as load, patch.object(
+            self.cache, "save", wraps=self.cache.save
+        ) as save:
+            saved = store.save_complete(
+                scope, results, 200.0, expected_generation=0
+            )
+
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(saved.revision, 2)
+        self.assertEqual(saved.generation, 0)
+        results[0]["title"] = "input changed"
+        saved.results[0]["title"] = "return changed"
+        self.assertEqual(store.load(scope).results[0]["title"], "Committed")
+        self.assertEqual(store.load(peer_scope).results, peer_results)
+
+    def test_rejected_generation_uses_one_load_and_never_writes(self):
+        scope = self.scope()
+        store = self.store()
+        original = store.save_complete(
+            scope, [MOVIE, dict(MOVIE, id=2)], 100.0, increment_generation=True
+        )
+        previous_bytes = Path(self.cache.path).read_bytes()
+
+        with patch.object(self.cache, "load", wraps=self.cache.load) as load, patch.object(
+            self.cache, "save", wraps=self.cache.save
+        ) as save, patch.object(
+            self.cache, "save_merged", wraps=self.cache.save_merged
+        ) as save_merged:
+            rejected = store.save_complete(
+                scope,
+                [dict(MOVIE, id=3)],
+                200.0,
+                expected_generation=0,
+            )
+
+        self.assertIsNone(rejected)
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(save.call_count, 0)
+        self.assertEqual(save_merged.call_count, 0)
+        self.assertEqual(Path(self.cache.path).read_bytes(), previous_bytes)
+        self.assertEqual(store.load(scope), original)
+
     def test_revisions_are_monotonic_and_remove_does_not_reset_refresh_age(self):
         scope = self.scope()
         store = self.store()
@@ -238,7 +315,7 @@ class WatchlistSnapshotTests(unittest.TestCase):
         original = store.save_complete(scope, [MOVIE], 100.0)
         previous_bytes = Path(self.cache.path).read_bytes()
 
-        with patch.object(self.cache, "save_merged", return_value=False):
+        with patch.object(self.cache, "save", return_value=False):
             with self.assertRaises(RuntimeError):
                 store.save_complete(scope, [dict(MOVIE, id=2)], 200.0)
 

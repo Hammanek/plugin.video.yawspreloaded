@@ -163,6 +163,13 @@ class DeferredWorker:
         self.jobs.append((function, args))
 
 
+class ManualWorker(DeferredWorker):
+    def drain(self):
+        jobs, self.jobs = self.jobs, []
+        for function, args in jobs:
+            function(*args)
+
+
 class Background:
     def __init__(self, events):
         self.events = events
@@ -209,13 +216,28 @@ class SnapshotBackground(Background):
         self.genre_repository = genre_repository
         self.watchlists = []
         self.watchlist_missing_accounts = []
+        self.watchlist_states = []
 
-    def submit_watchlist(self, scope, force=False, allow_missing_account=False):
-        if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
+    def submit_watchlist(
+        self,
+        scope,
+        force=False,
+        allow_missing_account=False,
+        refresh_due=None,
+        generation=None,
+    ):
+        if (
+            not force
+            and refresh_due is None
+            and not self.snapshot_store.refresh_due(scope, self.clock())
+        ):
+            return 0
+        if refresh_due is False and not force:
             return 0
         self.events.append("watchlist")
         self.watchlists.append((scope, force))
         self.watchlist_missing_accounts.append(allow_missing_account)
+        self.watchlist_states.append((refresh_due, generation))
         return 1
 
 
@@ -333,6 +355,30 @@ class TMDBUITests(unittest.TestCase):
         self.background.clock = self.clock
         self.handlers = self.build_handlers()
         return store
+
+    def enable_real_snapshots(self, sessions):
+        store = self.enable_snapshots()
+        worker = ManualWorker()
+        session_iter = iter(sessions)
+        created = []
+
+        def session_factory():
+            session = next(session_iter)
+            created.append(session)
+            return session
+
+        self.background = BackgroundPrefetch(
+            settings=ServiceSettings(self.addon),
+            trailer_cache=self.trailer_cache,
+            show_cache=self.show_cache,
+            locale_mapper=lambda: "en-US",
+            session_factory=session_factory,
+            worker=worker,
+            clock=self.clock,
+            snapshot_store=store,
+        )
+        self.handlers = self.build_handlers()
+        return store, worker, created
 
     def queue_watchlist(self, results, total_pages=1):
         self.client.queue_get(
@@ -724,6 +770,59 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(len(self.plugin.items), 1)
         self.assertEqual(self.plugin.items[0]["listitem"].label.split(" (")[0], "Chata")
         self.assertEqual(self.client.calls, calls_before)
+
+    def test_fresh_warm_snapshot_reuses_one_store_load_and_queues_no_worker(self):
+        store, worker, created = self.enable_real_snapshots([])
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        original = store.save_complete(scope, [], self.clock())
+
+        with patch.object(store.cache, "load", wraps=store.cache.load) as load:
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies"}
+                )
+            )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(worker.jobs, [])
+        self.assertEqual(created, [])
+        self.assertEqual(self.client.account_calls, 0)
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertEqual(store.load(scope), original)
+
+    def test_stale_warm_snapshot_and_worker_save_use_two_store_loads(self):
+        movie = {"id": 1, "title": "Film", "release_date": "2026-01-01"}
+        session = FakeSession(
+            [FakeResponse(json_data={"total_pages": 1, "results": [movie]})]
+        )
+        store, worker, created = self.enable_real_snapshots([session])
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        store.save_complete(scope, [], 0.0)
+
+        with patch.object(store.cache, "load", wraps=store.cache.load) as load:
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies"}
+                )
+            )
+            self.assertEqual(len(worker.jobs), 1)
+            worker.drain()
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(load.call_count, 2)
+        self.assertEqual(worker.jobs, [])
+        self.assertEqual(created, [session])
+        self.assertEqual(self.client.account_calls, 0)
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(
+            session.calls[0]["kwargs"]["params"]["session_id"], "session-token"
+        )
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertTrue(session.closed)
+        self.assertEqual(store.load(scope).results, [movie])
 
     def test_warm_rating_year_sort_and_listitem_actions_match_cold_behavior(self):
         for sort_mode, expected in ((2, ["High", "Low"]), (3, ["New", "Old"])):

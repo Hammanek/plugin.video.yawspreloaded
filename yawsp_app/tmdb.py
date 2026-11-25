@@ -1096,7 +1096,12 @@ class BackgroundPrefetch:
         )
 
     def submit_watchlist(
-        self, scope, force=False, allow_missing_account=False
+        self,
+        scope,
+        force=False,
+        allow_missing_account=False,
+        refresh_due=None,
+        generation=None,
     ):
         """Reserve one compatible refresh; all network activity stays off the UI."""
         if self.snapshot_store is None:
@@ -1106,10 +1111,14 @@ class BackgroundPrefetch:
             scope, session_id, allow_missing_account
         ):
             return 0
-        if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
-            return 0
+        if not force:
+            if refresh_due is None:
+                refresh_due = self.snapshot_store.refresh_due(scope, self.clock())
+            if not refresh_due:
+                return 0
         key = ("watchlist", scope)
-        generation = self.snapshot_store.generation(scope)
+        if generation is None:
+            generation = self.snapshot_store.generation(scope)
         # Full account snapshots have an independent reservation: derivative
         # trailer/show bursts must never postpone identity refreshes indefinitely.
         accepted = self._reserve([key], ignore_capacity=True)

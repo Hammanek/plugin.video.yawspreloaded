@@ -4,6 +4,7 @@ import copy
 from dataclasses import dataclass
 import json
 import math
+from typing import Optional
 
 
 SCHEMA_VERSION = 1
@@ -41,6 +42,13 @@ class Snapshot:
     created_at: float
     revision: int
     generation: int = 0
+
+
+@dataclass(frozen=True)
+class SnapshotRefreshState:
+    snapshot: Optional[Snapshot]
+    generation: int
+    refresh_due: bool
 
 
 class SnapshotPersistenceError(RuntimeError):
@@ -190,7 +198,8 @@ class WatchlistSnapshotStore:
             raise ValueError("expected generation must be a non-negative integer")
         with self.cache.transaction():
             key = self._key(scope)
-            previous_record = self.cache.load().get(key)
+            current = self.cache.load()
+            previous_record = current.get(key)
             generation = self._generation(previous_record)
             if (
                 expected_generation is not None
@@ -206,7 +215,8 @@ class WatchlistSnapshotStore:
                 self._revision(previous_record) + 1,
                 generation,
             )
-            saved = self.cache.save_merged({key: record})
+            current[key] = record
+            saved = self.cache.save(current)
         if not saved:
             raise SnapshotPersistenceError("Unable to persist complete watchlist snapshot")
         return Snapshot(
@@ -253,11 +263,20 @@ class WatchlistSnapshotStore:
                 )
         return bool(updates)
 
-    def refresh_due(self, scope, now):
+    def refresh_state(self, scope, now):
+        """Capture a compatible snapshot, generation and refresh decision in one load."""
         if not _timestamp(now):
             raise ValueError("current time must be finite")
-        snapshot = self.load(scope)
-        return snapshot is None or now - snapshot.created_at >= self.refresh_interval
+        record = self.cache.load().get(self._key(scope))
+        snapshot = self._snapshot(scope, record)
+        return SnapshotRefreshState(
+            snapshot,
+            self._generation(record),
+            snapshot is None or now - snapshot.created_at >= self.refresh_interval,
+        )
+
+    def refresh_due(self, scope, now):
+        return self.refresh_state(scope, now).refresh_due
 
     def remove(self, scope, media_id):
         """Atomically remove from the latest rows and invalidate older refresh work."""

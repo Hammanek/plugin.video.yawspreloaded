@@ -496,6 +496,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             except (TypeError, ValueError):
                 sort_mode = 0
             snapshot = None
+            refresh_state = None
             scope = None
             operation_session = runtime.get_setting("tmdb_access_token").strip()
             operation_language = language()
@@ -503,7 +504,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             account_was_missing = not account_id
             if snapshot_store is not None and account_id:
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
-                snapshot = snapshot_store.load(scope)
+                refresh_state = snapshot_store.refresh_state(scope, runtime.clock())
+                snapshot = refresh_state.snapshot
             if snapshot is None:
                 # A missing/incompatible identity always follows the current cold
                 # account path; another account's sole cache entry is not a key hint.
@@ -526,7 +528,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 if snapshot_store is not None:
                     # Identity resolution may recover a scope whose snapshot was
                     # saved before this process forgot the optional account ID.
-                    snapshot = snapshot_store.load(scope)
+                    refresh_state = snapshot_store.refresh_state(scope, runtime.clock())
+                    snapshot = refresh_state.snapshot
 
             def operation_valid():
                 return (
@@ -551,7 +554,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 results = list(snapshot.results)
             else:
                 expected_generation = (
-                    snapshot_store.generation(scope)
+                    refresh_state.generation
                     if snapshot_store is not None
                     else None
                 )
@@ -736,6 +739,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                         background.submit_watchlist(
                             scope,
                             allow_missing_account=account_was_missing,
+                            refresh_due=refresh_state.refresh_due,
+                            generation=refresh_state.generation,
                         )
                     except Exception:
                         runtime.logger.exception("Unable to submit watchlist refresh")
