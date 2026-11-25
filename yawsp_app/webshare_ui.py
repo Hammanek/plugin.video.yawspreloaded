@@ -16,6 +16,7 @@ from yawsp_app.backup_db import BackupDBStore
 from yawsp_app.downloads import stream_download
 from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult
 from yawsp_app.search import matches_filename, page_offsets, parse_query
+from yawsp_app.webshare import WebshareError
 
 
 _CATEGORIES = ("", "video", "images", "audio", "archives", "docs", "adult")
@@ -26,7 +27,10 @@ _BACKUP_DB = "D1iIcURxlR"
 
 
 def _is_ok(xml):
-    return xml.findtext("status") == "OK"
+    status = xml.find("status")
+    if status is None or status.text is None or not status.text.strip():
+        raise WebshareError("Webshare response is missing required <status>")
+    return status.text == "OK"
 
 
 def _to_dict(xml, skip=()):
@@ -612,6 +616,8 @@ def build_webshare_handlers(runtime, client_factory):
         query = params.get("query")
         if query is None:
             query = runtime.ask("", runtime.localized(30216))
+        if query is not None:
+            query = query.strip()
         if not query:
             return DirectoryResult()
         return database_listing(

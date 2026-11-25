@@ -11,7 +11,7 @@ from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.test_runtime import RecordingLogger
 from yawsp_app.runtime import ActionRunner, DirectoryResult, KodiRuntime, PlaybackResult
-from yawsp_app.webshare import XmlSearchPage
+from yawsp_app.webshare import WebshareError, XmlSearchPage
 from yawsp_app.webshare_ui import build_webshare_handlers
 
 
@@ -160,7 +160,7 @@ def xml(text):
     return ET.fromstring(text)
 
 
-def archive_bytes():
+def archive_bytes(filename="A.txt"):
     output = io.BytesIO()
     payload = json.dumps(
         {
@@ -181,7 +181,7 @@ def archive_bytes():
         }
     ).encode("utf-8")
     with zipfile.ZipFile(output, "w") as archive:
-        archive.writestr("A.txt", payload)
+        archive.writestr(filename, payload)
     return output.getvalue()
 
 
@@ -260,7 +260,14 @@ class WebshareUITests(unittest.TestCase):
             logger=self.logger,
         )
         self.handlers = build_webshare_handlers(self.runtime, lambda: self.client)
-        self.runner = ActionRunner(self.plugin, 9, ListItem, logger=self.logger)
+        self.errors = []
+        self.runner = ActionRunner(
+            self.plugin,
+            9,
+            ListItem,
+            logger=self.logger,
+            error_handler=self.errors.append,
+        )
 
     def make_keyboard(self, default, heading):
         value = self.keyboard_values.pop(0)
@@ -435,6 +442,55 @@ class WebshareUITests(unittest.TestCase):
         )
         self.assertEqual(self.client.api_calls[1][1]["ids[]"], ["download-1"])
 
+    def test_malformed_queue_and_history_status_fail_through_real_runner(self):
+        responses = (
+            "<response />",
+            "<response><status /></response>",
+            "<response><status> \t </status></response>",
+        )
+        for action, endpoint in (("queue", "queue"), ("history", "history")):
+            for response in responses:
+                with self.subTest(action=action, response=response):
+                    self.client.api_responses = {endpoint: [xml(response)]}
+                    error_count = len(self.errors)
+                    completion_count = len(self.plugin.end_of_directory_calls)
+                    notification_count = len(self.plugin.notifications)
+
+                    result = self.runner.run_directory(
+                        lambda: self.handlers[action]({"action": action})
+                    )
+
+                    self.assertFalse(result.succeeded)
+                    self.assertEqual(len(self.errors), error_count + 1)
+                    self.assertIsInstance(self.errors[-1], WebshareError)
+                    self.assertEqual(
+                        len(self.plugin.end_of_directory_calls), completion_count + 1
+                    )
+                    self.assertFalse(self.plugin.end_of_directory_calls[-1]["succeeded"])
+                    self.assertEqual(
+                        len(self.plugin.notifications), notification_count
+                    )
+                    self.assertEqual(len(self.client.api_calls), 1)
+                    self.client.api_calls.clear()
+
+    def test_non_ok_queue_and_history_status_remain_business_rejections(self):
+        for action, endpoint in (("queue", "queue"), ("history", "history")):
+            with self.subTest(action=action):
+                self.client.api_responses = {
+                    endpoint: [xml("<response><status>ERROR</status></response>")]
+                }
+                notification_count = len(self.plugin.notifications)
+
+                result = self.runner.run_directory(
+                    lambda: self.handlers[action]({"action": action})
+                )
+
+                self.assertTrue(result.succeeded)
+                self.assertEqual(self.errors, [])
+                self.assertEqual(len(self.plugin.notifications), notification_count + 1)
+                self.assertTrue(self.plugin.end_of_directory_calls[-1]["succeeded"])
+                self.client.api_calls.clear()
+
     def test_invalid_play_link_returns_failure_and_runner_resolves_once(self):
         self.client.link_results = [""]
 
@@ -495,6 +551,36 @@ class WebshareUITests(unittest.TestCase):
         with open(destination, "rb") as downloaded:
             self.assertEqual(downloaded.read(), b"movie")
         self.assertEqual(len(self.session.responses), 0)
+
+    def test_whitespace_only_searchdb_is_cancelled_without_downloading_database(self):
+        self.keyboard_values = [" \t "]
+        self.client.link_results = ["https://cdn.invalid/db.zip"]
+        self.session.queue_response(FakeResponse(content=archive_bytes()))
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["searchdb"]({"action": "searchdb"})
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+        self.assertTrue(self.plugin.end_of_directory_calls[0]["succeeded"])
+
+    def test_padded_searchdb_query_uses_trimmed_group_and_filter(self):
+        self.client.link_results = ["https://cdn.invalid/db.zip"]
+        self.session.queue_response(FakeResponse(content=archive_bytes("F.txt")))
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["searchdb"](
+                {"action": "searchdb", "query": "  Film  "}
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(self.find_item("Film"))
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+        self.assertTrue(self.plugin.end_of_directory_calls[0]["succeeded"])
 
     def test_cancelled_and_empty_searchdb_complete_without_loading_database(self):
         self.keyboard_values = [None, ""]
