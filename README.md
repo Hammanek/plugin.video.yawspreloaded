@@ -36,6 +36,35 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 2. Zkopírujte **API Key** (32 znaků) do nastavení doplňku, sekce **TMDB**.
 3. Klikněte **Připojit k TMDB...** a naskenujte telefonem zobrazený **QR kód** – po schválení je vše nastavené (jednorázově).
 
+## 🧩 Architektura
+
+| Modul | Odpovědnost |
+| --- | --- |
+| `main.py` | Vstupní bod doplňku; předává parametry Kodi jednotnému routeru. |
+| `yawsp.py` | Tenká kompatibilní fasáda bez původní monolitické logiky. |
+| `yawsp_app/runtime.py` | Kontext Kodi, sestavování URL, lokalizace a dokončení akcí. |
+| `yawsp_app/webshare.py` | Webshare HTTP, XML validace, autentizace a doménové operace. |
+| `yawsp_app/search.py` | Normalizace dotazů, Unicode porovnávání, stránkování a české řazení. |
+| `yawsp_app/downloads.py` | Kontrolované streamování a bezpečný přechod přes dočasný soubor. |
+| `yawsp_app/backup_db.py` | Validace ZIP/JSON zálohy DB a její obnovitelná instalace. |
+| `yawsp_app/json_cache.py` | Defenzivní načítání, TTL záznamy a atomické ukládání cache. |
+| `yawsp_app/tmdb.py` | TMDB HTTP, relace/účet, cache trailerů a omezený prefetch. |
+| `yawsp_app/webshare_ui.py` | Prezentace vyhledávání, fronty, historie, přehrávání a Backup DB. |
+| `yawsp_app/tmdb_ui.py` | Prezentace TMDB autorizace, QR, watchlistu, epizod a trailerů. |
+| `yawsp_app/router.py` | Jednotné směrování akcí, adaptéry dokončení a hraniční zpracování chyb. |
+
+Služby neimportují Kodi moduly; runtime/UI vrstvy jim vkládají potřebné adaptéry.
+
+## ✅ Ověření pro vývojáře
+
+Spusťte z kořene repozitáře:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+Testy používají syntetická data a testovací dvojníky pro HTTP i Kodi. Běží offline, bez přístupu k síti a bez přihlašovacích údajů. Nebyla provedena živá ověření v reálném Kodi ani testy Webshare/TMDB API; tato kontrola proto nedokazuje kompatibilitu s konkrétní verzí Kodi ani aktuální chování vzdálených služeb.
+
 ## 📝 Changelog
 
 Historie změn je v [GitHub releasesech](https://github.com/Hammanek/plugin.video.yawspreloaded/releases).
