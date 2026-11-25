@@ -12,6 +12,7 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
+from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
 from yawsp_app.tmdb import (
@@ -339,8 +340,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             if season.get("poster_path"):
                 artwork["poster"] = _IMAGE_URL + "w500" + season["poster_path"]
             item.setArt(artwork)
-            item.setInfo(
-                "video",
+            apply_video_metadata(
+                item,
                 {
                     "title": runtime.localized(30410).format(season_number),
                     "mediatype": "season",
@@ -402,7 +403,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             }
             if air_date:
                 info["aired"] = air_date
-            item.setInfo("video", info)
+            apply_video_metadata(item, info)
             runtime.add_item(
                 _url(
                     runtime,
@@ -701,8 +702,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     )
                 )
                 item.addContextMenuItems(commands)
-                item.setInfo(
-                    "video",
+                apply_video_metadata(
+                    item,
                     {
                         "title": label,
                         "mediatype": "movie" if is_movie else "tvshow",

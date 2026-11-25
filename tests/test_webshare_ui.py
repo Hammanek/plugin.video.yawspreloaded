@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.test_metadata import RecordingInfoTag
 from tests.test_runtime import RecordingLogger
 from yawsp_app.download_jobs import DownloadJobManager
 from yawsp_app.runtime import ActionRunner, DirectoryResult, KodiRuntime, PlaybackResult
@@ -50,6 +51,20 @@ class KodiLikeListItem(ListItem):
 
     def getLabel(self):
         return self.__dict__["label"]
+
+
+class NativeListItem(ListItem):
+    def __init__(self, label="", path=""):
+        super().__init__(label, path)
+        self.video_tag = RecordingInfoTag()
+        self.get_video_info_tag_calls = 0
+
+    def getVideoInfoTag(self):
+        self.get_video_info_tag_calls += 1
+        return self.video_tag
+
+    def setInfo(self, kind, info):
+        raise AssertionError("native rows must not use ListItem.setInfo")
 
 
 class LocalFileOps:
@@ -190,26 +205,23 @@ def xml(text):
     return ET.fromstring(text)
 
 
-def archive_bytes(filename="A.txt"):
+def archive_bytes(filename="A.txt", plot=None):
     output = io.BytesIO()
-    payload = json.dumps(
-        {
-            "data": [
-                {
-                    "id": "movie-1",
-                    "title": "Film",
-                    "streams": [
-                        {
-                            "ident": "stream-1",
-                            "quality": "HD",
-                            "lang": "CZ",
-                            "size": "1 MB",
-                        }
-                    ],
-                }
-            ]
-        }
-    ).encode("utf-8")
+    item = {
+        "id": "movie-1",
+        "title": "Film",
+        "streams": [
+            {
+                "ident": "stream-1",
+                "quality": "HD",
+                "lang": "CZ",
+                "size": "1 MB",
+            }
+        ],
+    }
+    if plot is not None:
+        item["plot"] = plot
+    payload = json.dumps({"data": [item]}).encode("utf-8")
     with zipfile.ZipFile(output, "w") as archive:
         archive.writestr(filename, payload)
     return output.getvalue()
@@ -368,6 +380,54 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(self.plugin.items[0]["listitem"].getLabel(), "Movie.mkv (?)")
         self.assertEqual(self.client.revalidate_calls, 1)
         self.assertEqual(len(self.client.search_calls), 1)
+
+    def test_native_file_row_sets_filename_title_without_legacy_info(self):
+        self.runtime.listitem_factory = NativeListItem
+        self.client.search_page = XmlSearchPage(
+            files=(
+                xml(
+                    "<file><name>Příliš žluťoučký.mkv</name><ident>abc</ident>"
+                    "<size>12</size><img>https://img.invalid/thumb.jpg</img></file>"
+                ),
+            ),
+            raw_count=1,
+        )
+
+        result = self.handlers["search"]({"what": "%#NONE#%", "sort": "recent"})
+
+        self.assertTrue(result.succeeded)
+        item = self.plugin.items[0]["listitem"]
+        self.assertEqual(
+            item.video_tag.calls,
+            [("setTitle", "Příliš žluťoučký.mkv (12B)")],
+        )
+        self.assertEqual(item.get_video_info_tag_calls, 1)
+        self.assertEqual(item.art["thumb"], "https://img.invalid/thumb.jpg")
+        self.assertEqual(item.properties["IsPlayable"], "true")
+        self.assertEqual(self.client.revalidate_calls, 1)
+
+    def test_native_backup_rows_preserve_selected_title_and_plot(self):
+        from yawsp_app.backup_db import BackupDBStore
+
+        BackupDBStore(self.profile).ensure_installed(
+            lambda: archive_bytes(plot="Vybraný popisek filmu")
+        )
+        self.runtime.listitem_factory = NativeListItem
+
+        self.handlers["db"]({"file": "A.txt"})
+        movie = self.find_item("Film")["listitem"]
+        self.assertEqual(
+            movie.video_tag.calls,
+            [("setTitle", "Film"), ("setPlot", "Vybraný popisek filmu")],
+        )
+
+        self.plugin.items.clear()
+        self.handlers["db"]({"file": "A.txt", "key": "movie-1"})
+        stream = self.find_item("HD - CZ (1 MB)")["listitem"]
+        self.assertEqual(stream.video_tag.calls, [("setTitle", "Film")])
+        self.assertEqual(stream.properties["IsPlayable"], "true")
+        self.assertEqual(self.client.revalidate_calls, 0)
+        self.assertEqual(len(self.client.search_calls), 0)
 
     def test_search_menu_without_query_skips_authentication_and_network(self):
         with io.open(os.path.join(self.profile, "search_history"), "w", encoding="utf-8") as output:

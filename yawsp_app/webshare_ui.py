@@ -21,6 +21,7 @@ from yawsp_app.download_jobs import (
     media_job_key,
 )
 from yawsp_app.downloads import stream_download
+from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult, is_vfs_path
 from yawsp_app.search import matches_filename, page_offsets, parse_query
 from yawsp_app.webshare import WebshareError
@@ -159,7 +160,7 @@ def _add_file(runtime, file_data, extra_commands=()):
     item = runtime.list_item(label=label)
     if file_data.get("img"):
         item.setArt({"thumb": file_data["img"]})
-    item.setInfo("video", {"title": label})
+    apply_video_metadata(item, {"title": label})
     item.setProperty("IsPlayable", "true")
     commands = [
         (
@@ -927,7 +928,7 @@ def build_webshare_handlers(
                         )
                     ]
                     item = runtime.list_item(label=_label(file_data))
-                    item.setInfo("video", {"title": selected["title"]})
+                    apply_video_metadata(item, {"title": selected["title"]})
                     item.setProperty("IsPlayable", "true")
                     item.addContextMenuItems(commands)
                     _add_item(
@@ -948,7 +949,7 @@ def build_webshare_handlers(
                     continue
                 item = runtime.list_item(label=title)
                 if "plot" in data_item:
-                    item.setInfo("video", {"title": title, "plot": data_item["plot"]})
+                    apply_video_metadata(item, {"title": title, "plot": data_item["plot"]})
                 _add_item(
                     runtime,
                     _url(

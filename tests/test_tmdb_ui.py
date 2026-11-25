@@ -11,6 +11,7 @@ import requests
 
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.test_metadata import RecordingInfoTag
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
@@ -46,6 +47,20 @@ class ListItem:
 
     def setProperty(self, key, value):
         self.properties[key] = value
+
+
+class NativeListItem(ListItem):
+    def __init__(self, label="", path=""):
+        super().__init__(label, path)
+        self.video_tag = RecordingInfoTag()
+        self.get_video_info_tag_calls = 0
+
+    def getVideoInfoTag(self):
+        self.get_video_info_tag_calls += 1
+        return self.video_tag
+
+    def setInfo(self, kind, info):
+        raise AssertionError("native rows must not use ListItem.setInfo")
 
 
 class Addon(AddonRecorder):
@@ -416,6 +431,86 @@ class TMDBUITests(unittest.TestCase):
         self.assertFalse(any("PlayMedia" in command for _, command in commands))
         self.assertLess(self.events.index("add"), self.events.index("trailers") if "trailers" in self.events else len(self.events))
         self.assertEqual(self.plugin.builtin_commands, [])
+
+    def test_native_watchlist_movies_and_shows_preserve_all_display_metadata(self):
+        self.runtime.listitem_factory = NativeListItem
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {
+                "total_pages": 1,
+                "results": [
+                    {
+                        "id": 11,
+                        "title": "Film",
+                        "release_date": "2026-01-02",
+                        "overview": "Filmový popis",
+                        "genre_ids": [18, 35],
+                        "vote_average": 7.25,
+                        "poster_path": "/movie.jpg",
+                    }
+                ],
+            },
+        )
+        self.client.queue_get(
+            "/3/genre/movie/list",
+            {"genres": [{"id": 18, "name": "Drama"}, {"id": 35, "name": "Comedy"}]},
+        )
+
+        result = self.handlers["tmdb_watchlist"]({"category": "movies"})
+
+        self.assertTrue(result.succeeded)
+        movie = self.plugin.items[0]["listitem"]
+        self.assertEqual(
+            movie.video_tag.calls,
+            [
+                ("setTitle", "Film (2026)"),
+                ("setMediaType", "movie"),
+                ("setPlot", "Filmový popis"),
+                ("setYear", 2026),
+                ("setGenres", ["Drama", "Comedy"]),
+                ("setRating", 7.25),
+            ],
+        )
+        self.assertEqual(movie.art["thumb"], "https://image.tmdb.org/t/p/w500/movie.jpg")
+        self.assertEqual(query(self.plugin.items[0]["url"])["action"], "search")
+
+        self.plugin.items.clear()
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {
+                "total_pages": 1,
+                "results": [
+                    {
+                        "id": 12,
+                        "name": "Seriál",
+                        "first_air_date": "2025-03-04",
+                        "overview": "Seriálový popis",
+                        "genre_ids": [18],
+                        "vote_average": 8.5,
+                    }
+                ],
+            },
+        )
+        self.client.queue_get(
+            "/3/genre/tv/list", {"genres": [{"id": 18, "name": "Drama"}]}
+        )
+
+        result = self.handlers["tmdb_watchlist"]({"category": "shows"})
+
+        self.assertTrue(result.succeeded)
+        show = self.plugin.items[0]["listitem"]
+        self.assertEqual(
+            show.video_tag.calls,
+            [
+                ("setTitle", "Seriál (2025)"),
+                ("setMediaType", "tvshow"),
+                ("setPlot", "Seriálový popis"),
+                ("setYear", 2025),
+                ("setGenres", ["Drama"]),
+                ("setRating", 8.5),
+            ],
+        )
+        self.assertEqual(query(self.plugin.items[0]["url"])["action"], "tmdb_watchlist")
 
     def test_cached_watchlist_trailer_checks_youtube_without_direct_playmedia(self):
         self.trailer_cache.save(
@@ -1217,6 +1312,76 @@ class TMDBUITests(unittest.TestCase):
         info = self.plugin.items[-1]["listitem"].info[0][1]
         self.assertEqual(info["duration"], 3000)
         self.assertEqual(info["aired"], "2026-11-20")
+
+    def test_native_season_and_episode_rows_keep_counts_dates_runtime_and_labels(self):
+        self.runtime.listitem_factory = NativeListItem
+        self.addon.strings.update({30408: "Unknown", 30410: "Season {0}"})
+        self.client.queue_get(
+            "/3/tv/8",
+            {
+                "name": "Seriál",
+                "original_name": "Original",
+                "seasons": [
+                    {"season_number": 2, "episode_count": 3, "poster_path": "/s.jpg"}
+                ],
+            },
+        )
+
+        self.handlers["tmdb_watchlist"]({"category": "shows", "show_id": "8"})
+
+        season = self.plugin.items[-1]["listitem"]
+        self.assertEqual(
+            season.video_tag.calls,
+            [
+                ("setTitle", "Season 2"),
+                ("setMediaType", "season"),
+                ("setSeason", 2),
+                ("setEpisode", 3),
+            ],
+        )
+        self.assertEqual(season.art["poster"], "https://image.tmdb.org/t/p/w500/s.jpg")
+
+        self.client.queue_get(
+            "/3/tv/8/season/2",
+            {
+                "episodes": [
+                    {
+                        "episode_number": 4,
+                        "name": "Díl",
+                        "air_date": "2026-11-20",
+                        "overview": "Děj dílu",
+                        "vote_average": 8.5,
+                        "runtime": 50,
+                        "still_path": "/episode.jpg",
+                    }
+                ]
+            },
+        )
+
+        self.handlers["tmdb_watchlist"](query(self.plugin.items[-1]["url"]))
+
+        episode = self.plugin.items[-1]["listitem"]
+        expected_label = "Díl [COLOR gray] (20.11.2026)[/COLOR]"
+        self.assertEqual(episode.label, expected_label)
+        self.assertEqual(
+            episode.video_tag.calls,
+            [
+                ("setTitle", expected_label),
+                ("setMediaType", "episode"),
+                ("setPlot", "Děj dílu"),
+                ("setRating", 8.5),
+                ("setSeason", 2),
+                ("setEpisode", 4),
+                ("setDuration", 3000),
+                ("setFirstAired", "2026-11-20"),
+            ],
+        )
+        self.assertEqual(
+            episode.art["thumb"], "https://image.tmdb.org/t/p/w300/episode.jpg"
+        )
+        self.assertEqual(
+            query(self.plugin.items[-1]["url"])["what"], "Original S02E04"
+        )
 
     def authenticate_with_real_client(self, *responses):
         token_response = FakeResponse(json_data={"request_token": "request-token"})
