@@ -69,13 +69,15 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(self.readme, r"(?i)bez (?:přístupu k )?síti|offline")
         self.assertRegex(self.readme, r"(?i)nebyl[ay]? .{0,100}(?:Kodi|Webshare|TMDB)")
         self.assertRegex(self.readme, r"(?i)žádné (?:skutečné )?přihlašovací údaje|bez přihlašovacích údajů")
-        self.assertNotRegex(self.readme, r"(?i)(?:testováno|ověřeno) (?:v|na) (?:reálném |živém )?Kodi")
-        self.assertNotRegex(self.readme, r"(?i)živé (?:API )?testy (?:byly )?(?:úspěšně )?(?:spuštěny|prošly)")
+        self.assertNotRegex(self.readme, r"(?i)Nebyla provedena živá ověření v reálném Kodi")
+        self.assertIn("live smoke v hlavním profilu Kodi 21.2", self.readme)
+        self.assertIn("338 výsledků", self.readme)
+        self.assertIn("66 filmů", self.readme)
 
     def test_readme_preserves_version_installation_and_tmdb_qr_setup(self):
         addon_version = ET.parse(str(ROOT / "addon.xml")).getroot().get("version")
-        self.assertEqual(addon_version, "1.3.15")
-        self.assertIn("verze-1.3.15-blue.svg", self.readme)
+        self.assertEqual(addon_version, "2.0.0")
+        self.assertIn("verze-2.0.0-blue.svg", self.readme)
         self.assertIn(
             "https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest",
             self.readme,
@@ -112,7 +114,7 @@ class DocumentationContractTests(unittest.TestCase):
                 self.assertIn(phrase, self.readme)
         self.assertRegex(self.readme, r"(?i)sidecar|postranní")
         self.assertRegex(self.readme, r"(?i)jeden JSON dokument|jednoho JSON dokumentu")
-        self.assertRegex(self.readme, r"(?i)bez (?:živého |reálného )?Kodi|nebyl[ay]?.{0,80}Kodi")
+        self.assertIn("Nebyla provedena živá ověření na ARM, NFS/SMB či vzdáleném VFS", self.readme)
         self.assertRegex(self.readme, r"(?i)medián.{0,80}(?:rozsah|minimum|maximum)|rozsah.{0,80}medián")
         self.assertIn("performance-coverage.json", self.readme)
         for benchmark in (
@@ -130,14 +132,15 @@ class DocumentationContractTests(unittest.TestCase):
     def test_performance_coverage_resolves_real_symbols_and_test_methods(self):
         coverage = json.loads(COVERAGE_PATH.read_text(encoding="utf-8"))
         self.assertEqual(coverage["schema_version"], 1)
-        self.assertEqual(coverage["version"], "1.3.15")
+        self.assertEqual(coverage["version"], "2.0.0")
         self.assertFalse(coverage["released"])
         self.assertEqual(
             coverage["standard_test_command"],
             "python -m unittest discover -s tests -v",
         )
         self.assertTrue(coverage["measurement_scope"]["offline_only"])
-        self.assertFalse(coverage["measurement_scope"]["live_kodi_verified"])
+        self.assertTrue(coverage["measurement_scope"]["live_kodi_verified"])
+        self.assertTrue(coverage["measurement_scope"]["live_network_verified"])
         mappings = {entry["id"]: entry for entry in coverage["requirements"]}
         self.assertEqual(set(mappings), PERFORMANCE_IDS)
         self.assertEqual(len(coverage["requirements"]), len(PERFORMANCE_IDS))

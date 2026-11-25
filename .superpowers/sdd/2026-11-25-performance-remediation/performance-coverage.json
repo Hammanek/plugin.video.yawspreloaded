@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "branch": "functional-remediation",
-  "version": "1.3.15",
+  "branch": "main",
+  "version": "2.0.0",
   "released": false,
   "standard_test_command": "python -m unittest discover -s tests -v",
   "measurement_scope": {
     "offline_only": true,
     "platform": "Windows-11-10.0.26300-SP0 / CPython 3.12.10",
-    "live_kodi_verified": false,
-    "live_network_verified": false,
+    "live_kodi_verified": true,
+    "live_network_verified": true,
     "timing_gate": false,
     "note": "Synthetic local doubles and real production services; desktop timings are not Kodi, ARM, network, SMB/NFS or remote VFS promises. Counts and event ordering are authoritative where stated; repeated timings use medians and min/max ranges."
   },
@@ -21,6 +21,18 @@
     ],
     "focused_regressions": {"log": "final-focused-tests.log", "tests": 10, "status": "OK"},
     "full_suite": {"log": "final-full-tests.log", "baseline_tests": 307, "tests": 316, "status": "OK"}
+  },
+  "live_verification": {
+    "kodi": "21.2",
+    "scope": "main Windows Store profile",
+    "runtime_commit": "35b4e4a09ad85f9111632206c21b4390a64c0d69",
+    "version_at_test": "1.3.15",
+    "main_menu_items": 6,
+    "webshare_matrix_results": 338,
+    "tmdb_movie_watchlist_results": 66,
+    "keyboard_open_and_cancel_verified": true,
+    "addon_error_matches": 0,
+    "note": "The following release changes only addon metadata and documentation; the verified runtime source is unchanged. No untested QR reauthentication or a paid media download was performed. ARM/NFS/SMB/remote-VFS latency was not measured."
   },
   "requirements": [
     {

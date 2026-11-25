@@ -1,12 +1,13 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-1.3.15-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-2.0.0-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
 
 ## ✨ Klíčové funkce
 
+- 🧩 **Modulární architektura 2.0.0** – Webshare, TMDB, download a Kodi UI jsou oddělené komponenty, s jednotným routerem a zachovanými veřejnými akcemi i nastavením.
 - 📺 **Integrace TMDB** – Watchlist filmů a seriálů z TheMovieDB (náhrada za zpoplatněný Trakt), české názvy, popisy a žánry přímo z TMDB.
 - 🔍 **Pokročilé vyhledávání** – Rychlé a přesné vyhledávání přímo v databázi Webshare.
 - 🎬 **Trailer systém** – Možnost přehrát trailery před samotným spuštěním filmu.
@@ -25,7 +26,7 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 
 ## 🚀 Instalace
 
-1. Stáhněte si instalační ZIP z [nejnovějšího release](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest) (soubor `plugin.video.yawspreloaded-*.zip`).
+1. Stáhněte **[plugin.video.yawspreloaded-2.0.0.zip](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/download/v2.0.0/plugin.video.yawspreloaded-2.0.0.zip)** z [release v2.0.0](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/tag/v2.0.0) (případně použijte [nejnovější release](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest)).
 2. V Kodi zvolte **Doplňky** -> **Instalovat ze souboru zip**.
 3. Vyhledejte stažený soubor a potvrďte instalaci.
 4. V nastavení doplňku vyplňte přihlašovací údaje k Webshare.
@@ -59,21 +60,25 @@ Služby neimportují Kodi moduly; runtime/UI vrstvy jim vkládají potřebné ad
 
 ## ⚡ Výkon, snapshoty a úlohy na pozadí
 
-Tato optimalizace zůstává ve vývojové větvi; nemění vydanou verzi **1.3.15** a není novým release.
+Verze **2.0.0** dokončuje přechod z původního monolitu na modulární architekturu. Měření níže rozlišuje počty requestů, I/O a souběžných rezervací od tvrzení o latenci.
 
 - **TMDB watchlist:** kompletní snapshot je klíčovaný podle **účtu TMDB, typu média, jazyka a verze schématu**, bez tokenů či přihlašovacích údajů. Warm kompatibilní snapshot se vykreslí lokálně s **nulovými account/watchlist HTTP požadavky**; filtrování a globální řazení stále pracují nad celým seznamem. Data mohou být **dočasně zastaralá**, protože obnova na pozadí se projeví až při **pozdějším otevření** (stale-while-revalidate). Při chybějícím, nekompatibilním nebo poškozeném snapshotu cold cesta znovu načte všechny stránky. Uloží se až po úspěchu a validaci **všech stránek**; při chybě vznikne **žádný částečný snapshot** a předchozí kompletní data zůstanou zachována. Změna identity, autentizace a pravidla watched akcí invalidují pouze příslušný rozsah.
-- **TMDB metadata:** listování použije jeden průchod cache trailerů a epizod a odesílání se skládá do `post_complete` až po `endOfDirectory`. Worker ukládá atomicky po nejvýše osmi validovaných změnách (32 změn = nejvýše čtyři flush operace), zatímco on-demand akce ukládají okamžitě. Férový jednovláknový prefetch střídá trailery a seriály, sdílí stejný klíč s on-demand požadavkem, drží nejvýše 32 aktivních rezervací a dokončí navázané dávky. Každé otevření předá metadata prvních 50 viditelných řádků, nikoli neomezenou historii.
+- **TMDB metadata:** listování použije jeden průchod cache trailerů a epizod a odesílání se skládá do `post_complete` až po `endOfDirectory`. Worker ukládá atomicky po nejvýše osmi validovaných změnách (32 změn = nejvýše čtyři flush operace), zatímco on-demand akce ukládají okamžitě. Férový prefetch střídá trailery a seriály, sdílí aktivní request stejného klíče s on-demand akcí a drží nejvýše **32 background rezervací**. Jedna interaktivní položka může projít před nezahájenou frontou bez čekání na kapacitu; další souběžné interaktivní klíče čekají v jediném prioritním slotu, takže strop je 32 background + 1 interaktivní rezervace. Dokončení, chyba i retry vrací vlastnictví správné claim/frontě. Každé otevření předá metadata prvních 50 viditelných řádků, nikoli neomezenou historii.
 - **Backup DB:** atomický **sidecar** mimo datový adresář obsahuje relativní jméno, velikost a `mtime_ns` každého souboru. Shodná teplá instalace provede pouze **O(F)** kontrol metadat bez úplného parsování; `load()` parsuje **pouze vybraný soubor**. Chybějící, navíc nebo změněný soubor a neplatný sidecar vynutí úplnou validaci či opravu, nikoli zrychlené akceptování poškozených dat.
 - **Cold DB a média:** při chybějící/invalidní DB je jedna profilová instalace zařazena do `DownloadJobManager` a invocation vrátí stavovou položku. **Přijetí úlohy do fronty není dokončení vzdálené operace ani vzdálený úspěch.** Skutečná instalace/uspořádání souboru proběhne až ve workeru. `Container.Refresh` se spustí **až po úspěšné validaci a atomickém přesunu cold DB**; při chybě není žádný úspěch ani `Container.Refresh`. Teplá instalovaná DB se otevírá přímo z lokálních metadat bez fronty a Webshare revalidace.
 - **Omezený životní cyklus:** jeden procesní vlastník drží jeden `BackgroundPrefetch` a jeden `DownloadJobManager`. Media/DB fronta má jednoho workera a **nejvýše čtyři** běžící i čekající úlohy; duplicitní cíl/profil se odmítne. Každá přijatá práce používá a zavře **vlastní HTTP relaci**. `close(wait=False)` je idempotentní, odmítne novou práci a ruší čekající úlohy; rušení již blokovaného OS/socket I/O zůstává kooperativní.
-- **Webshare a historie:** statické hlavní menu a platná lokální DB nevyžadují autentizaci; vzdálená akce si token ověří až při použití. Historie používá rekurzivní kanonický klíč celého obsahu s O(H) deduplikací, zachovává první výskyt a při odstranění bez platného ID znovu použije již staženou odpověď.
+- **Webshare a historie:** hlavní menu, lokální hledání/historie, zrušení klávesnice, odstranění historie a platná lokální DB nevyžadují síťovou autentizaci. Skutečné hledání a zařazení do fronty ověří token až při použití a sdílí jej v rámci jedné akce. Historie používá rekurzivní kanonický klíč celého obsahu s O(H) deduplikací, zachovává první výskyt a při odstranění bez platného ID znovu použije již staženou odpověď.
+- **TMDB identity:** account ID se uloží až po validované odpovědi a za stále platné session/jazyka. Cold i watched cesty, operace i background worker sdílejí owner lock krátké lokální identity transakce. Zpožděná 401 starého účtu nesmí smazat právě dokončenou novou QR session; explicitní odhlášení a aktuální 401 nadále invalidují identitu podle původního kontraktu. HTTP a retry čekání nejsou pod tímto lockem.
+- **Snapshot I/O:** jedna refresh-state transakce sdílí snapshot, generation a due rozhodnutí. Fresh warm cesta používá **1 JSON load místo 2**, stale UI + worker save **2 místo 5** a accepted complete save **1 místo 2**. Generation konflikt stále odmítne zápis a cizí účet/scope obsah nezmění.
 - **Streamování:** média i ZIP používají výchozí bloky **256 KiB**, kontrolované zápisy, dočasné soubory a teprve potom replacement. Produkce nečte celé `response.content` ani nevytváří celoarchivový `BytesIO`; kompletná extrakce kontroluje CRC bez druhého `testzip()` průchodu. Strukturální validace stále načítá `json.load()` **jeden JSON dokument** najednou, takže paměť není nezávisle omezená velikostí největšího členu. Atomičnost vzdáleného VFS rename závisí na backendu.
 
 ### Naměřené chování a jeho hranice
 
-Offline Windows/CPython benchmarky používají syntetická data, testovací HTTP/Kodi/VFS dvojníky a skutečné produkční služby. Časové výsledky uvádějí opakovaný **medián a rozsah minimum–maximum**, nikoli jediný běh ani akceptační časový limit. Prokazují například warm watchlist bez account/watchlist requestů, čtyři místo 32 cache flushů při 32 úspěších, jediný datový JSON read při warm DB `ensure_installed()` + výběru souboru místo 55 a čtyřikrát méně write callů při 256 KiB místo 64 KiB. U historie je kanonická varianta při H=1000 rychlejší, ale při H=20/200 je měřeně pomalejší a potřebuje lineární pomocnou alokaci; cold/migrační/tamper DB cesty nemají být vykazovány jako zrychlené. Event benchmarky dokazují pořadí handoff → skutečné dokončení, nikoli latenci zařízení. Podrobné mapování všech PERF-01…PERF-09 na produkční symboly, testové selektory, benchmarky a meze je v `.superpowers/sdd/2026-11-25-performance-remediation/performance-coverage.json`.
+Offline Windows/CPython benchmarky používají syntetická data, testovací HTTP/Kodi/VFS dvojníky a skutečné produkční služby. Časové výsledky uvádějí opakovaný **medián a rozsah minimum–maximum**, nikoli akceptační časový limit. Prokazují například warm watchlist bez account/watchlist requestů, dvě otevření s původně chybějícím account ID za celkem **3 HTTP místo 4**, čtyři místo 32 cache flushů při 32 úspěších, jediný datový JSON read při warm DB `ensure_installed()` + výběru souboru místo 55 a čtyřikrát méně write callů při 256 KiB místo 64 KiB. U historie je kanonická varianta při H=1000 rychlejší, ale při H=20/200 je měřeně pomalejší a potřebuje lineární pomocnou alokaci; cold/migrační/tamper DB cesty nemají být vykazovány jako zrychlené. Event benchmarky dokazují pořadí handoff → skutečné dokončení, nikoli latenci zařízení. Historické mapování původních PERF-01…PERF-09 na produkční symboly, selektory, benchmarky a meze je v `.superpowers/sdd/2026-11-25-performance-remediation/performance-coverage.json`.
 
-Nebyla provedena živá ověření v reálném Kodi ani na ARM, NFS/SMB či vzdáleném VFS, a offline desktopové časy nejsou slibem latence či propustnosti těchto prostředí.
+Novější **333-testová offline regresní sada** doplňuje přesné bounded concurrency, publikaci identity a stale-401 scénáře cold, watched, metadata i background. Dva nezávislé opakované audity finálního runtime commitu byly uzavřené s **0 prokázanými funkčními a 0 výkonovými nálezy**.
+
+Doplňující **live smoke v hlavním profilu Kodi 21.2** ověřil verzi 1.3.15 téhož runtime commitu před čistým povýšením metadata verze: hlavní menu s 6 položkami, 338 výsledků Webshare hledání „Matrix“, 66 filmů TMDB watchlistu včetně warm reopen a skutečné otevření/zrušení klávesnice. Nebyla provedena živá ověření na ARM, NFS/SMB či vzdáleném VFS; offline desktopové časy nejsou slibem latence či propustnosti těchto prostředí.
 
 ## ✅ Ověření pro vývojáře
 
@@ -95,7 +100,7 @@ python .superpowers/sdd/2026-11-25-performance-remediation/task-6-dedup-benchmar
 python .superpowers/sdd/2026-11-25-performance-remediation/task-6-benchmark.py --output .superpowers/sdd/2026-11-25-performance-remediation/task-7-chunks-current.json
 ```
 
-Testy používají syntetická data a testovací dvojníky pro HTTP i Kodi. Běží offline, bez přístupu k síti a bez přihlašovacích údajů. Nebyla provedena živá ověření v reálném Kodi ani testy Webshare/TMDB API; tato kontrola proto nedokazuje kompatibilitu s konkrétní verzí Kodi ani aktuální chování vzdálených služeb.
+Testy používají syntetická data a testovací dvojníky pro HTTP i Kodi. Běží offline, bez přístupu k síti a bez přihlašovacích údajů. Samy o sobě nedokazují aktuální chování vzdálených služeb ani hardware. Nebyla provedena živá ověření na ARM, NFS/SMB či vzdáleném VFS. Oddělený hlavní smoke test na Kodi 21.2 doplňuje ověření Webshare, TMDB a UI bez nové QR reautentizace; skutečné stahování filmu ani přehrávání v něm nebyly součástí testu.
 
 ## 📝 Changelog
 
