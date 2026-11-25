@@ -2,6 +2,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 from tests.support.http_stubs import FakeSession
 from tests.test_runtime import RecordingLogger
@@ -136,6 +137,30 @@ class DownloadJobManagerTests(unittest.TestCase):
         self.assertTrue(manager.submit(media_job_key("Other.mkv"), retry))
         self.assertTrue(retry.succeeded_event.wait(2))
         self.assertEqual(manager.status(media_job_key("Other.mkv")), "succeeded")
+
+    def test_worker_start_failure_rolls_back_reservation_and_retry_succeeds(self):
+        manager = self.manager(max_pending=1)
+        key = media_job_key("retry-after-start-failure")
+        rejected = ControlledOperation([])
+
+        with mock.patch(
+            "yawsp_app.download_jobs.threading.Thread.start",
+            side_effect=RuntimeError("synthetic worker start failure"),
+        ):
+            self.assertFalse(manager.submit(key, rejected))
+
+        self.assertIsNone(manager.status(key))
+        self.assertIsNone(manager.job_status(key))
+        self.assertNotIn(key, manager._active)
+        self.assertFalse(any(job.operation is rejected for job in manager._pending))
+        self.assertEqual(rejected.events, [])
+
+        retry = ControlledOperation([], result="receipt")
+        self.assertTrue(manager.submit(key, retry))
+        self.assertTrue(retry.succeeded_event.wait(2))
+        self.assertEqual(manager.status(key), "succeeded")
+        self.assertEqual(retry.events, ["run", "succeeded"])
+        manager.close(wait=True)
 
     def test_database_duplicate_uses_one_profile_reservation(self):
         manager = self.manager(max_pending=2)

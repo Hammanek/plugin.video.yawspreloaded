@@ -1238,6 +1238,45 @@ class WatchlistBackgroundTests(TMDBServiceTestCase):
                 settings.set("tmdb_account_id", "42")
                 settings.set("tmdb_access_token", "session-token")
 
+    def test_switch_away_and_back_around_http_uses_scope_language_and_save(self):
+        locale = {"value": "cs-CZ"}
+        settings = MemorySettings(
+            tmdb_account_id="42", tmdb_access_token="session-token"
+        )
+
+        class SwitchBackResponse(FakeResponse):
+            def json(inner):
+                locale["value"] = "cs-CZ"
+                return {"total_pages": 1, "results": [self.movie]}
+
+        session = FakeSession([SwitchBackResponse(json_data={})])
+        worker = ManualWorker()
+        background, _ = self.make_watchlist_background(
+            [session], worker, settings=settings, locale=locale
+        )
+        original_identity = background._watchlist_identity
+        identity_calls = []
+
+        def switch_after_request_boundary_identity(*args):
+            valid = original_identity(*args)
+            identity_calls.append(valid)
+            if len(identity_calls) == 3 and valid:
+                locale["value"] = "en-US"
+            return valid
+
+        background._watchlist_identity = switch_after_request_boundary_identity
+        self.assertEqual(background.submit_watchlist(self.scope, force=True), 1)
+
+        worker.run_all()
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(session.calls[0]["kwargs"]["params"]["language"], "cs-CZ")
+        saved = self.snapshots.load(self.scope)
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved.results, [self.movie])
+        self.assertEqual(saved.scope, self.scope)
+        self.assertTrue(session.closed)
+
     def test_identity_change_during_refresh_cannot_overwrite_old_or_new_scope(self):
         original = self.snapshots.save_complete(self.scope, [self.movie], 0.0)
         settings = MemorySettings(

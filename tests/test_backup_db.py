@@ -264,6 +264,79 @@ class BackupDBTests(unittest.TestCase):
         reads = self.data_reads_during(lambda: warm.load("A.txt"))
         self.assertEqual(reads, ["A.txt"])
 
+    def test_is_valid_regenerates_signature_after_mtime_only_drift(self):
+        self.store.ensure_installed(
+            lambda: archive_bytes(
+                {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+            )
+        )
+        target = os.path.join(self.dbdir, "A.txt")
+        original_bytes = VALID_PAYLOAD
+        with open(target, "rb") as source:
+            self.assertEqual(source.read(), original_bytes)
+        modified = os.stat(target).st_mtime_ns + 1000000
+        os.utime(target, ns=(modified, modified))
+
+        first_reads = self.data_reads_during(
+            lambda: self.assertTrue(self.store.is_valid())
+        )
+        second_reads = self.data_reads_during(
+            lambda: self.assertTrue(self.store.is_valid())
+        )
+
+        self.assertEqual(sorted(first_reads), ["A.txt", "B.txt"])
+        self.assertEqual(second_reads, [])
+        with open(self.store.signature_path, "r", encoding="utf-8") as source:
+            signature = json.load(source)
+        self.assertEqual(signature["files"]["A.txt"]["mtime_ns"], modified)
+        with open(target, "rb") as source:
+            self.assertEqual(source.read(), original_bytes)
+
+    def test_is_valid_recreates_corrupt_sidecar_then_uses_warm_metadata(self):
+        self.store.ensure_installed(
+            lambda: archive_bytes(
+                {"A.txt": VALID_PAYLOAD, "B.txt": b'{"data": []}'}
+            )
+        )
+        with open(self.store.signature_path, "w", encoding="utf-8") as marker:
+            marker.write("{not json")
+
+        first_reads = self.data_reads_during(
+            lambda: self.assertTrue(self.store.is_valid())
+        )
+        second_reads = self.data_reads_during(
+            lambda: self.assertTrue(self.store.is_valid())
+        )
+
+        self.assertEqual(sorted(first_reads), ["A.txt", "B.txt"])
+        self.assertEqual(second_reads, [])
+        with open(self.store.signature_path, "r", encoding="utf-8") as source:
+            self.assertEqual(json.load(source)["schema_version"], 1)
+
+    def test_failed_promotion_preserves_previous_validation_marker(self):
+        self.store.ensure_installed(lambda: archive_bytes())
+        with open(self.store.signature_path, "rb") as source:
+            previous_marker = source.read()
+        with open(os.path.join(self.dbdir, "A.txt"), "wb") as damaged:
+            damaged.write(b'{"data": [')
+        real_replace = os.replace
+
+        def fail_promotion(source, destination):
+            if destination == self.dbdir and source.endswith("staged-db"):
+                raise OSError("forced promotion failure")
+            return real_replace(source, destination)
+
+        with mock.patch("yawsp_app.backup_db.os.replace", side_effect=fail_promotion):
+            with self.assertRaises(BackupDBError):
+                self.store.ensure_installed(
+                    lambda: archive_bytes({"B.txt": b'{"data": []}'})
+                )
+
+        with open(self.store.signature_path, "rb") as source:
+            self.assertEqual(source.read(), previous_marker)
+        with open(os.path.join(self.dbdir, "A.txt"), "rb") as source:
+            self.assertEqual(source.read(), b'{"data": [')
+
     def test_valid_legacy_installation_migrates_once_without_changing_data_bytes(self):
         os.mkdir(self.dbdir)
         originals = {

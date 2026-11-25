@@ -1,0 +1,110 @@
+{
+  "shows-1": {
+    "median_fsync": 1,
+    "median_replace": 1,
+    "runs": [
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      }
+    ]
+  },
+  "shows-32": {
+    "median_fsync": 4,
+    "median_replace": 4,
+    "runs": [
+      {
+        "fsync": 4,
+        "replace": 4
+      },
+      {
+        "fsync": 4,
+        "replace": 4
+      },
+      {
+        "fsync": 4,
+        "replace": 4
+      }
+    ]
+  },
+  "shows-8": {
+    "median_fsync": 1,
+    "median_replace": 1,
+    "runs": [
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      }
+    ]
+  },
+  "trailers-1": {
+    "median_fsync": 1,
+    "median_replace": 1,
+    "runs": [
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      }
+    ]
+  },
+  "trailers-32": {
+    "median_fsync": 4,
+    "median_replace": 4,
+    "runs": [
+      {
+        "fsync": 4,
+        "replace": 4
+      },
+      {
+        "fsync": 4,
+        "replace": 4
+      },
+      {
+        "fsync": 4,
+        "replace": 4
+      }
+    ]
+  },
+  "trailers-8": {
+    "median_fsync": 1,
+    "median_replace": 1,
+    "runs": [
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      },
+      {
+        "fsync": 1,
+        "replace": 1
+      }
+    ]
+  }
+}

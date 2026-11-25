@@ -517,6 +517,43 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.background.trailer_missing_known, [True])
         self.assertEqual(self.background.show_missing_known, [True])
 
+    def test_throwing_view_hook_does_not_block_warm_refresh_or_metadata_submission(self):
+        self.runtime.skin_dir = lambda: "skin.estuary"
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        store.save_complete(
+            scope,
+            [{"id": 1, "title": "Film", "release_date": "2026-01-01"}],
+            0.0,
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+        def broken_builtin(command):
+            self.events.append(command)
+            raise RuntimeError("synthetic view failure")
+
+        self.runtime.execute_builtin = broken_builtin
+        result = self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "movies"}
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.background.trailers, [("movie", [1])])
+        self.assertEqual(self.background.watchlists, [(scope, False)])
+        self.assertEqual(self.background.watchlist_missing_accounts, [False])
+        self.assertEqual(
+            self.events,
+            ["add", "end", "Container.SetViewMode(54)", "watchlist", "trailers"],
+        )
+        self.assertTrue(
+            any(
+                call[0][0] == "Unable to set TMDB default view"
+                for call in self.ui_logger.calls
+            )
+        )
+
     def test_watchlist_reuses_single_discovery_read_per_cache_for_submission(self):
         show = {"id": 3, "name": "Seriál", "first_air_date": "2025-01-01"}
         self.client.queue_get(

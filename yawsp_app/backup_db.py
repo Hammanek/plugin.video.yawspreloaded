@@ -309,7 +309,9 @@ class BackupDBStore:
         if self._matches_validation_signature():
             return True
         try:
-            _validate_directory(self.dbdir)
+            # Structurally valid legacy/drifted data becomes warm only after its
+            # refreshed metadata signature is durable; a failed write is not valid.
+            self._validate_and_record()
         except BackupDBError:
             return False
         return True
@@ -343,36 +345,42 @@ class BackupDBStore:
             source_database = _archived_database_root(extracted)
             data_files = _validate_directory(source_database)
             _write_manifest(source_database, _data_file_sizes(data_files))
-            _write_validation_signature(self.signature_path, data_files)
 
             staged_database = os.path.join(temporary_directory, "staged-db")
             os.replace(source_database, staged_database)
             previous_moved = False
+            installed = False
             try:
                 if os.path.lexists(self.dbdir):
                     os.makedirs(self.recovery_dir, exist_ok=True)
                     os.replace(self.dbdir, self.previous_database)
                     previous_moved = True
                 os.replace(staged_database, self.dbdir)
+                installed = True
+                # Commit the new marker only with the promoted bytes. If this
+                # fails, the same rollback restores both previous data and marker.
+                _write_validation_signature(self.signature_path, data_files)
             except Exception as promotion_error:
-                if (
-                    previous_moved
-                    and os.path.lexists(self.previous_database)
-                    and not os.path.lexists(self.dbdir)
-                ):
-                    try:
+                try:
+                    if installed and os.path.lexists(self.dbdir):
+                        shutil.rmtree(self.dbdir)
+                    if (
+                        previous_moved
+                        and os.path.lexists(self.previous_database)
+                        and not os.path.lexists(self.dbdir)
+                    ):
                         os.replace(self.previous_database, self.dbdir)
-                    except OSError as rollback_error:
-                        raise BackupDBError(
-                            "Backup DB promotion failed ({0}); rollback failed ({1}). "
-                            "Original database remains at {2}".format(
-                                promotion_error,
-                                rollback_error,
-                                self.previous_database,
-                            )
-                        ) from rollback_error
-                    previous_moved = False
-                    self._remove_empty_recovery_directory()
+                        previous_moved = False
+                        self._remove_empty_recovery_directory()
+                except OSError as rollback_error:
+                    raise BackupDBError(
+                        "Backup DB promotion failed ({0}); rollback failed ({1}). "
+                        "Original database remains at {2}".format(
+                            promotion_error,
+                            rollback_error,
+                            self.previous_database,
+                        )
+                    ) from rollback_error
                 raise
             if previous_moved:
                 self._discard_previous_database()

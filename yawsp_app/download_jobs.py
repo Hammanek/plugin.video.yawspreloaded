@@ -156,12 +156,23 @@ class DownloadJobManager:
             self._statuses[key] = "queued"
             self._pending.append(job)
             if self._worker is None or not self._worker.is_alive():
+                previous_worker = self._worker
                 self._worker = threading.Thread(
                     target=self._drain,
                     name="yawsp-download-jobs",
                     daemon=True,
                 )
-                self._worker.start()
+                try:
+                    self._worker.start()
+                except Exception:
+                    self._pending.remove(job)
+                    if self._active.get(key) is job:
+                        del self._active[key]
+                    self._statuses.pop(key, None)
+                    self._worker = previous_worker
+                    self._condition.notify_all()
+                    self._logger.exception("Unable to start download job worker")
+                    return False
             self._condition.notify_all()
             return True
 

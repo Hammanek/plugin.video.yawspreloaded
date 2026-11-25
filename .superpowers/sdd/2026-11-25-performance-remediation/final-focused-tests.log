@@ -1,0 +1,15 @@
+test_production_missing_account_second_open_reuses_complete_scoped_snapshot (tests.test_entrypoint.EntrypointTests.test_production_missing_account_second_open_reuses_complete_scoped_snapshot) ... ok
+test_production_worker_session_factories_clone_main_headers_without_sharing (tests.test_entrypoint.EntrypointTests.test_production_worker_session_factories_clone_main_headers_without_sharing) ... ok
+test_switch_away_and_back_around_http_uses_scope_language_and_save (tests.test_tmdb.WatchlistBackgroundTests.test_switch_away_and_back_around_http_uses_scope_language_and_save) ... ok
+test_throwing_view_hook_does_not_block_warm_refresh_or_metadata_submission (tests.test_tmdb_ui.TMDBUITests.test_throwing_view_hook_does_not_block_warm_refresh_or_metadata_submission) ... ok
+test_worker_start_failure_rolls_back_reservation_and_retry_succeeds (tests.test_download_jobs.DownloadJobManagerTests.test_worker_start_failure_rolls_back_reservation_and_retry_succeeds) ... ok
+test_is_valid_regenerates_signature_after_mtime_only_drift (tests.test_backup_db.BackupDBTests.test_is_valid_regenerates_signature_after_mtime_only_drift) ... ok
+test_is_valid_recreates_corrupt_sidecar_then_uses_warm_metadata (tests.test_backup_db.BackupDBTests.test_is_valid_recreates_corrupt_sidecar_then_uses_warm_metadata) ... ok
+test_failed_promotion_preserves_previous_validation_marker (tests.test_backup_db.BackupDBTests.test_failed_promotion_preserves_previous_validation_marker) ... ok
+test_unknown_history_removal_does_not_clear_other_valid_id_or_reload (tests.test_webshare_ui.WebshareUITests.test_unknown_history_removal_does_not_clear_other_valid_id_or_reload) ... ok
+test_installed_notification_error_cannot_suppress_refresh_or_change_job_outcome (tests.test_webshare_ui.WebshareUITests.test_installed_notification_error_cannot_suppress_refresh_or_change_job_outcome) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.204s
+
+OK

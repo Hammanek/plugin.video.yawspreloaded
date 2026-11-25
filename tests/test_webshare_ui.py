@@ -670,6 +670,34 @@ class WebshareUITests(unittest.TestCase):
                 )
                 self.assertTrue(self.find_item("Movie.mkv (?)"))
 
+    def test_unknown_history_removal_does_not_clear_other_valid_id_or_reload(self):
+        self.client.api_responses["history"] = [
+            xml(
+                "<response><status>OK</status>"
+                "<file><name>Keep.mkv</name><ident>keep</ident>"
+                "<download_id>download-1</download_id><started_at>today</started_at>"
+                "<ended_at>today</ended_at></file>"
+                "<file><name>Other.mkv</name><ident>other</ident>"
+                "<download_id>download-2</download_id><started_at>today</started_at>"
+                "<ended_at>today</ended_at></file>"
+                "</response>"
+            )
+        ]
+        self.client.api_responses["clear_history"] = [
+            xml("<response><status>OK</status></response>")
+        ]
+
+        result = self.handlers["history"](
+            {"action": "history", "remove": "unrelated-ident"}
+        )
+
+        self.assertTrue(result.update_listing)
+        self.assertEqual(
+            [call[0] for call in self.client.api_calls], ["history"]
+        )
+        self.assertTrue(self.find_item("Keep.mkv (?)"))
+        self.assertTrue(self.find_item("Other.mkv (?)"))
+
     def test_malformed_queue_and_history_status_fail_through_real_runner(self):
         responses = (
             "<response />",
@@ -1252,12 +1280,21 @@ class WebshareUITests(unittest.TestCase):
         from yawsp_app.backup_db import BackupDBStore
         from yawsp_app.download_jobs import backup_db_job_key
 
-        attempted = threading.Event()
+        notification_logged = threading.Event()
         refreshed = threading.Event()
+        runtime_logger = self.runtime.logger
+
+        class NotificationLogger(type(runtime_logger)):
+            def exception(inner, *args, **kwargs):
+                super().exception(*args, **kwargs)
+                if args and args[0] == "Backup DB installed notification failed":
+                    notification_logged.set()
+
+        logger = NotificationLogger()
+        self.runtime.logger = logger
 
         def broken_notify(message):
             if message == "Backup DB installed":
-                attempted.set()
                 raise RuntimeError("synthetic installed notification failure")
 
         def refresh():
@@ -1280,7 +1317,7 @@ class WebshareUITests(unittest.TestCase):
         accepted = handlers["db"]({"action": "db"})
 
         self.assertTrue(accepted.succeeded)
-        self.assertTrue(attempted.wait(2))
+        self.assertTrue(notification_logged.wait(2))
         self.assertTrue(refreshed.wait(2))
         self.assertEqual(
             self.download_jobs.status(backup_db_job_key(self.profile)),
@@ -1291,7 +1328,7 @@ class WebshareUITests(unittest.TestCase):
         self.assertTrue(
             any(
                 call[0][0] == "Backup DB installed notification failed"
-                for call in self.logger.calls
+                for call in logger.calls
             )
         )
         warm = handlers["db"]({"action": "db", "file": "A.txt"})

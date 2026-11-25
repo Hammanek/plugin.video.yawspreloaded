@@ -178,19 +178,25 @@ class _ProductionOwner:
             )
         )
         self.genre_repository = GenreRepository()
+
+        def worker_session_factory():
+            session = requests.Session()
+            session.headers.update(self.session.headers)
+            return session
+
         self.background = BackgroundPrefetch(
             settings=self.settings,
             trailer_cache=self.trailer_cache,
             show_cache=self.show_cache,
             locale_mapper=self.language,
-            session_factory=requests.Session,
+            session_factory=worker_session_factory,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
             snapshot_store=self.snapshot_store,
             genre_repository=self.genre_repository,
         )
         self.download_jobs = DownloadJobManager(
-            session_factory=requests.Session,
+            session_factory=worker_session_factory,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
         )

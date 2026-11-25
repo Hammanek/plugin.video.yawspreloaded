@@ -812,6 +812,102 @@ class EntrypointTests(unittest.TestCase):
                 [{"id": 2, "title": "Keep"}],
             )
 
+    def test_production_missing_account_second_open_reuses_complete_scoped_snapshot(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_account_id", "")
+            movies = [
+                {"id": 1, "title": "Chata", "release_date": "2026-01-01"},
+                {"id": 2, "title": "Áčko", "release_date": "2025-01-01"},
+            ]
+            session.queue_response(json_response({"id": "account-1"}))
+            session.queue_response(
+                json_response({"total_pages": 1, "results": movies})
+            )
+            session.queue_response(
+                json_response({"genres": [{"id": 12, "name": "Adventure"}]})
+            )
+
+            first = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(first.succeeded)
+            self.assertEqual(len(session.calls), 3)
+            self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account")
+            self.assertIn("/watchlist/movies", session.calls[1]["url"])
+            self.assertIn("/genre/movie/list", session.calls[2]["url"])
+            self.assertEqual(
+                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                ["Áčko", "Chata"],
+            )
+            scope = SnapshotScope("account-1", "movies", "en-US")
+            owner.snapshot_store.save_complete(scope, movies, 0.0)
+            recorder.items.clear()
+            session.queue_response(json_response({"id": "account-1"}))
+
+            second = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(second.succeeded)
+            self.assertEqual(len(session.calls), 4)
+            self.assertEqual(session.calls[3]["url"], "https://api.themoviedb.org/3/account")
+            self.assertEqual(
+                [call for call in session.calls if "/watchlist/movies" in call["url"]],
+                [session.calls[1]],
+            )
+            self.assertEqual(
+                [call for call in session.calls if "/genre/movie/list" in call["url"]],
+                [session.calls[2]],
+            )
+            self.assertEqual(
+                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                ["Áčko", "Chata"],
+            )
+            self.assertEqual(owner.snapshot_store.load(scope).results, movies)
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            watchlist_jobs = [
+                args
+                for function, args in owner.background.worker.jobs
+                if function.__name__ == "_run_watchlist"
+            ]
+            self.assertEqual(len(watchlist_jobs), 1)
+            refresh_args = watchlist_jobs[0]
+            self.assertEqual(refresh_args[1], scope)
+            self.assertIs(refresh_args[-1], True)
+
+    def test_production_worker_session_factories_clone_main_headers_without_sharing(self):
+        with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
+            sys,
+            "argv",
+            ["plugin://plugin.video.yawspreloaded/", "17", ""],
+        ):
+            translate = lambda value: profile
+            sys.modules["xbmc"].translatePath = translate
+            sys.modules["xbmcvfs"].translatePath = translate
+            production_router.close()
+            owner = production_router._get_owner()
+            try:
+                metadata = owner.background.session_factory()
+                download = owner.download_jobs._session_factory()
+                following_download = owner.download_jobs._session_factory()
+                try:
+                    workers = (metadata, download, following_download)
+                    self.assertTrue(all(session is not owner.session for session in workers))
+                    self.assertEqual(len({id(session) for session in workers}), 3)
+                    for session in workers:
+                        self.assertEqual(
+                            session.headers["User-Agent"],
+                            owner.session.headers["User-Agent"],
+                        )
+                        self.assertEqual(
+                            session.headers["Referer"],
+                            owner.session.headers["Referer"],
+                        )
+                        self.assertEqual(session.headers, owner.session.headers)
+                        self.assertIsNot(session.headers, owner.session.headers)
+                finally:
+                    for session in workers:
+                        session.close()
+            finally:
+                production_router.close()
+
     def test_production_initially_missing_account_keeps_refresh_scope_and_session(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             scope = SnapshotScope("account-1", "movies", "en-US")

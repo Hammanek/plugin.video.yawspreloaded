@@ -523,6 +523,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     account_resolution_valid,
                 )
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
+                if snapshot_store is not None:
+                    # Identity resolution may recover a scope whose snapshot was
+                    # saved before this process forgot the optional account ID.
+                    snapshot = snapshot_store.load(scope)
 
             def operation_valid():
                 return (
@@ -721,22 +725,34 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             runtime.set_content("movies" if is_movie else "tvshows")
 
             def post_complete():
-                set_default_view(params)
+                try:
+                    set_default_view(params)
+                except Exception:
+                    runtime.logger.exception("Unable to set TMDB default view")
                 if snapshot is not None:
                     # submit_watchlist applies the five-minute throttle and reserves
                     # the scope. A cold successful save deliberately skips this.
-                    background.submit_watchlist(scope)
+                    try:
+                        background.submit_watchlist(
+                            scope,
+                            allow_missing_account=account_was_missing,
+                        )
+                    except Exception:
+                        runtime.logger.exception("Unable to submit watchlist refresh")
                 # Cache misses were discovered with the row values above. Workers
                 # persist data but never refresh a running container.
                 if missing_trailers or missing_shows:
                     # One combined submission establishes fair family order before
                     # the single worker can start draining either family.
-                    background.submit_metadata(
-                        media,
-                        missing_trailers,
-                        missing_shows,
-                        missing_known=True,
-                    )
+                    try:
+                        background.submit_metadata(
+                            media,
+                            missing_trailers,
+                            missing_shows,
+                            missing_known=True,
+                        )
+                    except Exception:
+                        runtime.logger.exception("Unable to submit TMDB metadata")
 
             return DirectoryResult(post_complete=post_complete)
         except TMDBError as error:

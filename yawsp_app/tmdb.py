@@ -1151,7 +1151,7 @@ class BackgroundPrefetch:
             client = TMDBClient(
                 session,
                 worker_settings,
-                self.locale_mapper,
+                lambda: scope.language,
                 api_url=self.api_url,
                 clock=self.clock,
                 sleeper=self.sleeper,

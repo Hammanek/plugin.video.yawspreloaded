@@ -53,24 +53,19 @@ Two Czech phrase checks were corrected from nominative to the actual grammatical
 
 ## Actual mapped selector execution
 
-Every selector named in `performance-coverage.json` was run. There are **31 mapped entries and 31 unique selectors; 31/31 passed** in two explicit `python -m unittest -v <selectors...>` batches.
+Every selector named in `performance-coverage.json` was run again for the final remediation wave. There are **40 mapped entries and 40 unique selectors; 40/40 passed** in the explicit `python -m unittest -v <selectors...>` batch recorded by `final-proof-selectors.log`. This supersedes the earlier 31-selector execution while retaining all of those original selectors.
 
-| Batch | Evidence | Result |
-|---|---|---:|
-| TMDB snapshot/cache/metadata | `task-7-selectors-tmdb.log` | **12/12 OK**, 0.416 s |
-| DB/media/auth/history/chunks/production owner | `task-7-selectors-io.log` | **19/19 OK**, 0.538 s |
-
-The logs enumerate every method and its `ok`, not merely a module/class name. Coverage assignment is:
+The log enumerates every method and its `ok`, not merely a module/class name. Final coverage assignment is:
 
 | ID | Selectors | Mutation-sensitive behavior actually asserted |
 |---|---:|---|
-| PERF-01 | 4 | warm zero account/watchlist calls + post-end refresh; failed cold page has no partial save; another account is not warm fallback; stale generation cannot overwrite local mutation |
-| PERF-02 | 4 | one cache discovery read; post-complete composition; eight-success checkpoint; delayed merge preserves immediate unrelated data |
-| PERF-03 | 3 | warm ensure zero full reads/target-only load; size/mtime mismatch full revalidation; corrupt/unsafe sidecar revalidation and regeneration |
-| PERF-04 | 5 | media return before blocked release + actual completion; one cold reservation/no partial read/one refresh; failure no refresh/partial listing; real production VFS and worker-session composition |
+| PERF-01 | 6 | original warm/cold/account/generation contracts; two-opening missing-ID warm reuse; switch-around scoped refresh language |
+| PERF-02 | 5 | one cache discovery read; post-complete composition and failure isolation; eight-success checkpoint; delayed merge preserves immediate unrelated data |
+| PERF-03 | 6 | warm ensure zero full reads/target-only load; size/mtime mismatch full revalidation; corrupt/unsafe sidecar recovery; repeated `is_valid` warm reuse; failed-promotion marker preservation |
+| PERF-04 | 7 | original handoff/completion/composition contracts; worker-start rollback/retry; independent exact-header clone factories |
 | PERF-05 | 3 | menu no auth; installed DB root/group/detail no auth; installed-DB remote queue still auth-at-use |
 | PERF-06 | 4 | 100-key drain with <=32 cap; fair family order; bounded retries with no negative cache; on-demand/worker one-request sharing |
-| PERF-07 | 3 | canonical whole-content/first occurrence; no-ID response reuse; valid positive clear then one reload |
+| PERF-07 | 4 | canonical whole-content/first occurrence; no-ID and unrelated-ID response reuse without clearing another valid ID; valid positive clear then one reload |
 | PERF-08 | 2 | mixed compression + >chunk member streamed without `.content`; CRC detected by extraction with `testzip` forbidden |
 | PERF-09 | 3 | default 4x write reduction; exact short writes at all chunk sizes; actual promotion then 100% completion |
 
@@ -90,12 +85,12 @@ Evidence: `task-7-watchlist-benchmark.log`, `task-7-watchlist-counters.json`; ba
 | Every-open legacy account identity resolutions | 1 | warm 0 |
 | Legacy/warm watchlist HTTP requests | 1 | warm 0 |
 | First warm shared-genre request | 1 cold-process baseline | 1 independently, if mapping absent |
-| Second fresh warm account/watchlist/genre requests | N/A | 0 additional |
-| Cold cached-identity two-page watchlist GETs | 2 | 2, still complete and no immediate duplicate refresh |
+| Second fresh warm account/watchlist/genre requests | Unmeasured: no matching baseline artifact cell | 0 additional |
+| Cold cached-identity two-page watchlist GETs | Unmeasured: not captured by `task-2-baseline-counters.json` | 2, still complete and no immediate duplicate refresh |
 | Cold complete empty genres | N/A | 0 |
 | Cold missing identity | N/A | 1 `/3/account` + 1 watchlist + 1 genre |
 
-Fewer warm requests do not imply cross-account or partial behavior: the four PERF-01 regressions above passed, and cold saves still occur only after all pages succeed.
+Fewer warm requests do not imply cross-account or partial behavior: the four PERF-01 regressions above passed, and cold saves still occur only after all pages succeed. The two cells marked unmeasured above were historical-label corrections: neither number was inferred from an absent legacy capture. The approved cold-DB `benchmark-baseline.json` was not changed.
 
 ### PERF-02 — real cache fsync/replace counts
 
@@ -263,4 +258,10 @@ Tracked source/documentation changes:
 - `.superpowers/sdd/2026-11-25-performance-remediation/performance-coverage.json` — machine-readable PERF-01…PERF-09 map, actual selectors, comparisons and limits (explicitly added despite the SDD ignore rule so the committed test has its input).
 - `.superpowers/sdd/2026-11-25-performance-remediation/task-7-report.md` — this report.
 
-Local SDD evidence additionally includes `task-7-baseline-full.log`, RED/GREEN logs, two selector logs, all seven benchmark outputs/raw JSON files named above, `task-7-static-checks.py/.log/.json`, and `task-7-full-precommit.log`. No production file was modified and no release/tag/version change was made.
+Local SDD evidence additionally includes `task-7-baseline-full.log`, RED/GREEN logs, two selector logs, all seven benchmark outputs/raw JSON files named above, `task-7-static-checks.py/.log/.json`, and `task-7-full-precommit.log`. No production file was modified and no release/tag/version change was made during the original Task 7 documentation phase.
+
+## Final evidence-integrity addendum
+
+- `task-7-cache-benchmark.log` was regenerated by rerunning `task-1_operation_benchmark.py`; it is a real 110-line JSON transcript matching the full six-cell `task-7-cache-counters.json`, not an empty mapping reference. All N=1/8/32 medians remain 1/1/4 fsyncs and replacements per family.
+- The broad unrelated-ID removal statement is permanently backed by `tests.test_webshare_ui.WebshareUITests.test_unknown_history_removal_does_not_clear_other_valid_id_or_reload`: one other valid `download_id` remains, `history` is called once, `clear_history` is never called, and both original rows render from the reused response.
+- The final production changes, RED/GREEN evidence, full-suite total and final 40-selector run are itemized in `final-fix-report.md`. Version, release instructions and the confirmed cold-DB `benchmark-baseline.json` remain unchanged.
