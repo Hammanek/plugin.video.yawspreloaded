@@ -114,6 +114,46 @@ class AtomicJsonCacheTests(unittest.TestCase):
             [],
         )
 
+    def test_save_merged_reload_merge_and_save_all_hold_the_cache_lock(self):
+        cache = self.cache()
+        self.assertTrue(cache.save({"current": "on-demand", "shared": "newer"}))
+        real_load = cache.load
+        real_save = cache.save
+        lock_observations = []
+
+        def checked_load():
+            lock_observations.append(("load", cache._lock._is_owned()))
+            return real_load()
+
+        def checked_save(mapping):
+            lock_observations.append(("save", cache._lock._is_owned()))
+            return real_save(mapping)
+
+        def prefer_update(candidate, current):
+            lock_observations.append(("merge", cache._lock._is_owned()))
+            self.assertEqual(candidate, "worker")
+            self.assertEqual(current, "newer")
+            return False
+
+        with mock.patch.object(cache, "load", side_effect=checked_load), mock.patch.object(
+            cache, "save", side_effect=checked_save
+        ):
+            self.assertTrue(
+                cache.save_merged(
+                    {"added": "worker", "shared": "worker"},
+                    prefer_update=prefer_update,
+                )
+            )
+
+        self.assertEqual(
+            cache.load(),
+            {"current": "on-demand", "added": "worker", "shared": "newer"},
+        )
+        self.assertEqual(
+            lock_observations,
+            [("load", True), ("merge", True), ("save", True)],
+        )
+
     def test_returned_mappings_do_not_alias_internal_state(self):
         cache = self.cache()
         loaded = cache.load()

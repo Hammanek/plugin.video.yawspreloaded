@@ -707,6 +707,95 @@ class ShowRepositoryTests(TMDBServiceTestCase):
                 self.assertFalse(os.path.exists(self.show_cache.path))
 
 
+class DeferredPersistenceConcurrencyTests(TMDBServiceTestCase):
+    def show_response(self, season):
+        return json_response(
+            {
+                "next_episode_to_air": {
+                    "season_number": season,
+                    "episode_number": 1,
+                }
+            }
+        )
+
+    def test_checkpoint_merge_preserves_unrelated_immediate_on_demand_entry(self):
+        clock = FakeClock()
+        worker_client, _, _, _ = self.make_client(
+            [self.show_response(season) for season in range(1, 9)], clock=clock
+        )
+        worker = ShowRepository(
+            worker_client, self.show_cache, clock=clock, _defer_save=True
+        )
+        on_demand_client, _, _, _ = self.make_client(
+            [self.show_response(9)], clock=clock
+        )
+        on_demand = ShowRepository(on_demand_client, self.show_cache, clock=clock)
+
+        for show_id in range(1, 8):
+            self.assertEqual(
+                worker.next_episode(show_id),
+                {"season": show_id, "episode": 1, "air_date": ""},
+            )
+        self.assertFalse(os.path.exists(self.show_cache.path))
+        self.assertEqual(
+            on_demand.next_episode(9),
+            {"season": 9, "episode": 1, "air_date": ""},
+        )
+
+        self.assertEqual(
+            worker.next_episode(8),
+            {"season": 8, "episode": 1, "air_date": ""},
+        )
+
+        self.assertEqual(
+            set(self.read_cache(self.show_cache)),
+            {str(show_id) for show_id in range(1, 10)},
+        )
+
+    def test_final_merge_preserves_unrelated_immediate_on_demand_entry(self):
+        clock = FakeClock()
+        worker_client, _, _, _ = self.make_client([self.show_response(1)], clock=clock)
+        worker = ShowRepository(
+            worker_client, self.show_cache, clock=clock, _defer_save=True
+        )
+        on_demand_client, _, _, _ = self.make_client(
+            [self.show_response(2)], clock=clock
+        )
+        on_demand = ShowRepository(on_demand_client, self.show_cache, clock=clock)
+
+        worker.next_episode(1)
+        on_demand.next_episode(2)
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"2"})
+
+        worker._flush()
+
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"1", "2"})
+
+    def test_deferred_value_cannot_replace_newer_timestamped_on_demand_value(self):
+        clock = FakeClock()
+        worker_client, _, _, _ = self.make_client([self.show_response(1)], clock=clock)
+        worker = ShowRepository(
+            worker_client, self.show_cache, clock=clock, _defer_save=True
+        )
+        worker.next_episode(1)
+        worker_timestamp = clock()
+
+        clock.now += 60
+        on_demand_client, _, _, _ = self.make_client(
+            [self.show_response(9)], clock=clock
+        )
+        on_demand = ShowRepository(on_demand_client, self.show_cache, clock=clock)
+        expected = {"season": 9, "episode": 1, "air_date": ""}
+        self.assertEqual(on_demand.next_episode(1), expected)
+
+        worker._flush()
+
+        persisted = self.read_cache(self.show_cache)["1"]
+        self.assertEqual(persisted["next"], expected)
+        self.assertEqual(persisted["ts"], clock())
+        self.assertGreater(persisted["ts"], worker_timestamp)
+
+
 class BackgroundPrefetchTests(TMDBServiceTestCase):
     def make_background(self, sessions, worker, settings=None, abort=None, max_pending=32):
         session_iter = iter(sessions)

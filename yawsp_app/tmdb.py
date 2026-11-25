@@ -207,15 +207,17 @@ class _Repository:
         self._lock = threading.RLock()
         self._defer_save = _defer_save
         self._save_pending = False
+        self._dirty_entries = {}
         self._changes_since_flush = 0
 
     def _load(self):
         if self._entries is None:
             self._entries = self.cache.load()
 
-    def _save_success(self):
+    def _save_success(self, key):
         """Persist immediately on demand, or checkpoint a worker after eight successes."""
         self._save_pending = True
+        self._dirty_entries[key] = self._entries[key]
         if not self._defer_save:
             self._flush()
             return
@@ -223,12 +225,27 @@ class _Repository:
         if self._changes_since_flush >= 8:
             self._flush()
 
+    @staticmethod
+    def _prefer_deferred_entry(candidate, current):
+        if not isinstance(current, dict) or not _Repository._valid_timestamp(
+            current.get("ts")
+        ):
+            return True
+        return candidate["ts"] >= current["ts"]
+
     def _flush(self):
         with self._lock:
             if not self._save_pending:
                 return
-            if self.cache.save(self._entries):
+            if self._defer_save:
+                saved = self.cache.save_merged(
+                    self._dirty_entries, prefer_update=self._prefer_deferred_entry
+                )
+            else:
+                saved = self.cache.save(self._entries)
+            if saved:
                 self._save_pending = False
+                self._dirty_entries.clear()
                 self._changes_since_flush = 0
 
     @staticmethod
@@ -345,7 +362,7 @@ class TrailerRepository(_Repository):
 
             entry = {"ts": self.clock(), "youtube_id": youtube_id}
             self._entries[key] = entry
-            self._save_success()
+            self._save_success(key)
             if youtube_id is None:
                 return TrailerLookup("missing", None)
             return TrailerLookup("hit", youtube_id)
@@ -446,7 +463,7 @@ class ShowRepository(_Repository):
                 return cached["next"] if cached is not None else None
 
             self._entries[key] = {"ts": self.clock(), "next": next_episode}
-            self._save_success()
+            self._save_success(key)
             return next_episode
 
 

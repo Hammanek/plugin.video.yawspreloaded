@@ -85,3 +85,21 @@ class AtomicJsonCache:
 
             self._data = data
             return True
+
+    def save_merged(self, updates, prefer_update=None):
+        """Reload, merge only *updates*, and atomically save under one lock."""
+        with self._lock:
+            if not isinstance(updates, Mapping):
+                self.logger.error("JSON cache value for %s must be a mapping", self.path)
+                return False
+
+            current = self.load()
+            for key, candidate in updates.items():
+                if (
+                    key in current
+                    and prefer_update is not None
+                    and not prefer_update(candidate, current[key])
+                ):
+                    continue
+                current[key] = candidate
+            return self.save(current)
