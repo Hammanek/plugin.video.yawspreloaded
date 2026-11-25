@@ -27,7 +27,7 @@ CATEGORY_LABELS = {
 LABELS = {
     "title": "Objevit",
     "loading": "Načítání…",
-    "empty": "Žádné výsledky",
+    "empty": "No matching files found",
     "error": "Chyba načítání",
     "retry": "Obnovit",
 }
@@ -59,6 +59,22 @@ class Action:
 
     def getId(self):
         return self.action_id
+
+
+def native_action(window, action_id):
+    """Simulate Kodi's built-in navigation before the Python callback."""
+    if window.getFocusId() == DiscoveryWindow.RESULTS_ID:
+        if action_id in (ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT):
+            offset = -1 if action_id == ACTION_MOVE_LEFT else 1
+            native_position = max(
+                0, min(len(window.items) - 1, window.position + offset)
+            )
+            window.setCurrentListPosition(native_position)
+        elif action_id == ACTION_MOVE_UP:
+            window.setFocusId(next(iter(DiscoveryWindow.CATEGORY_IDS)))
+    elif action_id == ACTION_MOVE_DOWN and window.getFocusId() in DiscoveryWindow.CATEGORY_IDS:
+        window.setFocusId(DiscoveryWindow.RESULTS_ID)
+    window.onAction(Action(action_id))
 
 
 class Control:
@@ -96,11 +112,31 @@ class ListItem:
 
 
 class WindowXML:
-    """Only real WindowXML/Window methods used by the production class."""
+    """Lifecycle-faithful subset with controls/views loaded only before onInit."""
 
     def __init__(self, xml_filename, script_path, default_skin, default_res):
         self.init_args = (xml_filename, script_path, default_skin, default_res)
-        self.controls = {}
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "resources",
+            "skins",
+            default_skin,
+            default_res,
+            xml_filename,
+        )
+        root = ET.parse(path).getroot()
+        self._control_ids = {
+            int(control.attrib["id"])
+            for control in root.findall("./controls/control")
+            if "id" in control.attrib
+        }
+        self.views = [
+            int(value.strip())
+            for value in (root.findtext("views") or "").split(",")
+            if value.strip()
+        ]
+        self._controls_ready = False
+        self.controls = {control_id: Control() for control_id in self._control_ids}
         self.items = []
         self.position = -1
         self.focus_id = 0
@@ -109,27 +145,43 @@ class WindowXML:
         self.focus_history = []
 
     def getControl(self, control_id):
-        return self.controls.setdefault(control_id, Control())
+        if not self._controls_ready or control_id not in self._control_ids:
+            raise RuntimeError("Non-Existent Control{0}".format(control_id))
+        return self.controls[control_id]
+
+    def _require_view(self):
+        if not self._controls_ready:
+            raise RuntimeError("Window list used before onInit")
+        if DiscoveryWindow.RESULTS_ID not in self.views:
+            raise RuntimeError("WindowXML built-in view is not registered")
 
     def setFocus(self, control):
+        if not self._controls_ready:
+            raise RuntimeError("Window focus used before onInit")
         focus = [key for key, value in self.controls.items() if value is control]
-        if len(focus) != 1:
+        if len(focus) != 1 or focus[0] not in self._control_ids:
             raise AssertionError("focused control must belong to this window")
         self.setFocusId(focus[0])
 
     def setFocusId(self, control_id):
+        if not self._controls_ready:
+            raise RuntimeError("Window focus used before onInit")
         self.focus_id = control_id
         self.focus_history.append(control_id)
 
     def getFocusId(self):
+        if not self._controls_ready:
+            raise RuntimeError("Window focus read before onInit")
         return self.focus_id
 
     def addItems(self, items):
+        self._require_view()
         self.items.extend(items)
         if self.items and self.position < 0:
             self.position = 0
 
     def addItem(self, item, position=None):
+        self._require_view()
         if position is None:
             self.items.append(item)
         else:
@@ -138,27 +190,34 @@ class WindowXML:
             self.position = 0
 
     def clearList(self):
+        self._require_view()
         self.items = []
         self.position = -1
 
     def getCurrentListPosition(self):
+        self._require_view()
         return self.position
 
     def setCurrentListPosition(self, position):
+        self._require_view()
         self.position = position
 
     def getListSize(self):
+        self._require_view()
         return len(self.items)
 
     def doModal(self):
         self.modal_calls += 1
+        # Omega has loaded XML controls and its m_viewControl before this callback.
+        self._controls_ready = True
+        self.onInit()
 
     def close(self):
         self.close_calls += 1
 
 
 class DiscoveryWindowTests(unittest.TestCase):
-    def make_window(self, responses):
+    def make_window(self, responses, start=True):
         self.remaining = list(responses)
         self.loads = []
         self.loading_observations = []
@@ -188,24 +247,47 @@ class DiscoveryWindowTests(unittest.TestCase):
             window_base=WindowXML,
         )
         holder["window"] = window
+        if start:
+            window.doModal()
         return window
 
-    def test_factory_uses_documented_windowxml_and_injects_all_category_labels(self):
-        window = self.make_window([])
+    def test_factory_uses_documented_windowxml_and_injects_labels_only_on_init(self):
+        window = self.make_window([], start=False)
 
         self.assertIsInstance(window, WindowXML)
         self.assertEqual(
             window.init_args, ("DiscoveryWindow.xml", "C:\\addon", "default", "720p")
         )
+        self.assertEqual(window.modal_calls, 0)
+        self.assertEqual(self.loads, [])
+        window.doModal()
         for control_id, source in DiscoveryWindow.CATEGORY_IDS.items():
             self.assertEqual(window.getControl(control_id).label, CATEGORY_LABELS[source])
         self.assertEqual(window.getControl(DiscoveryWindow.TITLE_ID).label, "Objevit")
-        self.assertEqual(window.modal_calls, 0)
+        self.assertEqual(window.modal_calls, 1)
         self.assertEqual(window.close_calls, 0)
 
-    def test_loading_precedes_data_then_content_is_added_once_without_focus_requests(self):
-        window = self.make_window([[record(1, "One"), record(2, "Two")]])
+    def test_initial_load_is_queued_until_oninit_and_duplicate_init_does_not_refetch(self):
+        window = self.make_window([[record(1, "One")]], start=False)
         window.load("popular_movies")
+        self.assertEqual(self.loads, [])
+
+        window.doModal()
+        self.assertEqual(self.loads, ["popular_movies"])
+        self.assertEqual([item.label for item in window.items], ["One"])
+        label_calls = list(window.getControl(DiscoveryWindow.TITLE_ID).label_calls)
+
+        window.onInit()
+        self.assertEqual(self.loads, ["popular_movies"])
+        self.assertEqual(window.getControl(DiscoveryWindow.TITLE_ID).label_calls, label_calls)
+        self.assertEqual(window.modal_calls, 1)
+
+    def test_loading_precedes_data_then_content_is_added_once_without_focus_requests(self):
+        window = self.make_window(
+            [[record(1, "One"), record(2, "Two")]], start=False
+        )
+        window.load("popular_movies")
+        window.doModal()
 
         self.assertEqual(self.loads, ["popular_movies"])
         self.assertEqual(self.loading_observations, [("loading", "Načítání…")])
@@ -217,17 +299,19 @@ class DiscoveryWindowTests(unittest.TestCase):
 
         window.onFocus(DiscoveryWindow.RESULTS_ID)
         window.setFocus(window.getControl(DiscoveryWindow.RESULTS_ID))
-        window.onAction(Action(ACTION_MOVE_RIGHT))
-        window.onAction(Action(ACTION_MOVE_LEFT))
-        window.onAction(Action(ACTION_MOVE_UP))
-        window.onAction(Action(ACTION_MOVE_DOWN))
+        native_action(window, ACTION_MOVE_RIGHT)
+        native_action(window, ACTION_MOVE_LEFT)
+        native_action(window, ACTION_MOVE_UP)
+        native_action(window, ACTION_MOVE_DOWN)
         self.assertEqual(self.loads, ["popular_movies"])
 
-    def test_navigation_updates_all_hero_fields_and_selection_stays_bounded(self):
-        window = self.make_window([[record(1, "One"), record(2, "Two")]])
+    def test_base_first_navigation_updates_hero_without_double_step_or_focus_io(self):
+        window = self.make_window(
+            [[record(1, "One"), record(2, "Two"), record(3, "Three")]]
+        )
         window.load("popular_movies")
 
-        window.onAction(Action(ACTION_MOVE_RIGHT))
+        native_action(window, ACTION_MOVE_RIGHT)
         self.assertEqual(window.position, 1)
         self.assertEqual(window.getControl(DiscoveryWindow.DETAIL_TITLE_ID).label, "Two")
         self.assertEqual(window.getControl(DiscoveryWindow.YEAR_ID).label, "2022")
@@ -238,10 +322,13 @@ class DiscoveryWindowTests(unittest.TestCase):
             window.getControl(DiscoveryWindow.BACKDROP_ID).image,
             "https://image/backdrop-2.jpg",
         )
-        window.onAction(Action(ACTION_MOVE_RIGHT))
-        self.assertEqual(window.position, 1)
-        window.onAction(Action(ACTION_MOVE_LEFT))
-        window.onAction(Action(ACTION_MOVE_LEFT))
+        native_action(window, ACTION_MOVE_RIGHT)
+        self.assertEqual(window.position, 2)
+        native_action(window, ACTION_MOVE_RIGHT)
+        self.assertEqual(window.position, 2)
+        native_action(window, ACTION_MOVE_LEFT)
+        native_action(window, ACTION_MOVE_LEFT)
+        native_action(window, ACTION_MOVE_LEFT)
         self.assertEqual(window.position, 0)
         self.assertEqual(window.getControl(DiscoveryWindow.DETAIL_TITLE_ID).label, "One")
         self.assertEqual(self.loads, ["popular_movies"])
@@ -264,7 +351,7 @@ class DiscoveryWindowTests(unittest.TestCase):
     def test_enter_close_and_repeated_callbacks_hand_off_once(self):
         window = self.make_window([[record(1, "One"), record(2, "Two")]])
         window.load("popular_movies")
-        window.onAction(Action(ACTION_MOVE_RIGHT))
+        native_action(window, ACTION_MOVE_RIGHT)
 
         window.onAction(Action(ACTION_SELECT_ITEM))
         window.onClick(DiscoveryWindow.RESULTS_ID)
@@ -326,7 +413,7 @@ class DiscoveryWindowTests(unittest.TestCase):
 
         self.assertEqual(window.state, "empty")
         self.assertFalse(window.failed)
-        self.assertEqual(window.getControl(DiscoveryWindow.STATUS_ID).label, "Žádné výsledky")
+        self.assertEqual(window.getControl(DiscoveryWindow.STATUS_ID).label, "No matching files found")
         self.assertFalse(window.getControl(DiscoveryWindow.RETRY_ID).visible)
         self.assertEqual(window.focus_id, next(iter(DiscoveryWindow.CATEGORY_IDS)))
         self.assertEqual(window.items, [])
@@ -371,6 +458,12 @@ class DiscoveryWindowXMLTests(unittest.TestCase):
         value = self.controls[control_id].find(tag)
         self.assertIsNotNone(value, "missing {0} for control {1}".format(tag, control_id))
         return value
+
+    def test_results_container_is_registered_as_the_single_builtin_window_view(self):
+        self.assertEqual(
+            [value.strip() for value in self.root.findtext("views").split(",")],
+            [str(DiscoveryWindow.RESULTS_ID)],
+        )
 
     def test_xml_ids_types_and_focus_layout_match_production_constants(self):
         expected_types = {

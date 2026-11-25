@@ -104,6 +104,7 @@ def install_kodi_stubs():
             30433: "Download queued",
             30437: "Download could not be queued",
             30438: "Refresh",
+            30440: "No matching files found",
             30441: "Objevit",
             30442: "Populární",
             30443: "Nejlépe hodnocené",
@@ -127,6 +128,8 @@ def install_kodi_stubs():
     xbmc.Keyboard = lambda default, heading: CompatibleKeyboard(default, recorder.calls)
     xbmc._language = "en"
     xbmc.getLanguage = lambda: xbmc._language
+    xbmc._system_strings = {1040: "Loading directory"}
+    xbmc.getLocalizedString = lambda string_id: xbmc._system_strings.get(string_id, "")
     xbmc.getCondVisibility = lambda condition: True
     xbmc.getSkinDir = lambda: "skin.estuary"
 

@@ -5,6 +5,7 @@
         <left>0</left>
         <top>0</top>
     </coordinates>
+    <views>1200</views>
     <controls>
         <control type="image" id="900">
             <description>Selected title backdrop</description>

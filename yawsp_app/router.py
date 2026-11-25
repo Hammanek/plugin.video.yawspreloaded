@@ -162,6 +162,7 @@ class _ProductionOwner:
                 xbmc.getCondVisibility("System.HasAddon({0})".format(addon_id))
             ),
             "skin_dir": xbmc.getSkinDir,
+            "system_localizer": xbmc.getLocalizedString,
         }
         # Retain these compatibility attributes for callers that inspect the
         # owner; routing itself always builds fresh per-invocation state below.

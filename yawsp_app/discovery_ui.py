@@ -230,8 +230,8 @@ def build_discovery_handlers(
             labels=MappingProxyType(
                 {
                     "title": runtime.localized(30441),
-                    "loading": "Loading…",
-                    "empty": runtime.localized(30417),
+                    "loading": runtime.system_localized(1040),
+                    "empty": runtime.localized(30440),
                     "error": runtime.localized(30402),
                     "retry": runtime.localized(30438),
                 }
@@ -269,7 +269,7 @@ def build_discovery_handlers(
                 record.search_url, item_factory(record), True
             )
         if not records:
-            item = runtime.list_item(label=runtime.localized(30417))
+            item = runtime.list_item(label=runtime.localized(30440))
             runtime.add_item(
                 url_builder(
                     runtime, action="tmdb_discovery", source=source_name

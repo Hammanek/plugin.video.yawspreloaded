@@ -142,7 +142,7 @@ class Addon:
             30402: "Error loading discovery",
             30408: "Unknown discovery title",
             30414: "Search original title",
-            30417: "No discovery results",
+            30440: "No matching files found",
             30421: "Filmy",
             30422: "Seriály",
             30438: "Obnovit",
@@ -166,6 +166,7 @@ class Runtime:
         self.base_url = "plugin://plugin.video.yawspreloaded/"
         self.handle = 9
         self.setting_calls = []
+        self.system_calls = []
 
     def get_setting(self, key):
         self.setting_calls.append(key)
@@ -173,6 +174,10 @@ class Runtime:
 
     def localized(self, string_id):
         return self.addon.getLocalizedString(string_id)
+
+    def system_localized(self, string_id):
+        self.system_calls.append(string_id)
+        return {1040: "Loading directory"}[string_id]
 
     def addon_info(self, key):
         return self.addon.getAddonInfo(key)
@@ -243,8 +248,13 @@ class Window:
         self.destination = None
         self.failed = False
         self.auto_select = False
+        self.pending_sources = []
 
     def load(self, source):
+        self.pending_sources.append(source)
+
+    def _load_pending(self):
+        source = self.pending_sources.pop(0)
         self.loads.append(source)
         try:
             self.records = list(self.kwargs["load_category"](source))
@@ -255,6 +265,8 @@ class Window:
 
     def doModal(self):
         self.modal_calls += 1
+        if self.pending_sources:
+            self._load_pending()
         if self.auto_select and self.records:
             self.destination = self.records[0].search_url
 
@@ -396,7 +408,7 @@ class DiscoveryUITests(unittest.TestCase):
                     self.assertEqual(self.windows[0].loads, ["popular_movies"])
                     self.assertEqual(self.windows[0].close_calls, 0)
                 else:
-                    self.assertEqual(self.runtime.plugin.items[0]["item"].label, "No discovery results")
+                    self.assertEqual(self.runtime.plugin.items[0]["item"].label, "No matching files found")
 
     def test_custom_selection_hands_off_same_url_after_directory_completion_once(self):
         handler = self.build(response={"results": [result_value("popular_movies")]}, native_wall="", auto_select=True)
@@ -415,6 +427,16 @@ class DiscoveryUITests(unittest.TestCase):
         result.post_complete()
         self.assertEqual(len(self.runtime.plugin.builtins), 1)
 
+    def test_custom_labels_use_core_loading_and_public_no_results_text(self):
+        handler = self.build(response={"results": []}, native_wall="")
+        result = handler({"source": "popular_movies"})
+
+        self.assertTrue(result.succeeded)
+        labels = self.windows[0].kwargs["labels"]
+        self.assertEqual(labels["loading"], "Loading directory")
+        self.assertEqual(labels["empty"], "No matching files found")
+        self.assertEqual(self.runtime.system_calls, [1040])
+
     def test_empty_native_state_has_no_genre_lookup_but_sets_view_after_success(self):
         handler = self.build(response={"results": []})
         result = handler({"source": "popular_movies"})
@@ -423,7 +445,7 @@ class DiscoveryUITests(unittest.TestCase):
         self.assertEqual(self.genres.calls, [])
         self.assertEqual(len(self.runtime.plugin.items), 1)
         empty = self.runtime.plugin.items[0]
-        self.assertEqual(empty["item"].label, "No discovery results")
+        self.assertEqual(empty["item"].label, "No matching files found")
         self.assertEqual(query(empty["url"])["source"], "popular_movies")
         self.assertEqual(self.default_views, [])
         result.post_complete()

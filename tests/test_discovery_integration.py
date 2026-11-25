@@ -18,15 +18,19 @@ class RecordingDiscoveryWindow:
         self.modal_calls = 0
         self.destination = None
         self.failed = False
+        self.pending_sources = []
 
     def load(self, source):
-        self.loaded_sources.append(source)
-        records = self.kwargs["load_category"](source)
-        if records:
-            self.destination = records[0].search_url
+        self.pending_sources.append(source)
 
     def doModal(self):
         self.modal_calls += 1
+        if self.pending_sources:
+            source = self.pending_sources.pop(0)
+            self.loaded_sources.append(source)
+            records = self.kwargs["load_category"](source)
+            if records:
+                self.destination = records[0].search_url
 
 
 class DiscoveryIntegrationTests(unittest.TestCase):
@@ -106,6 +110,13 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(len(windows), 1)
             self.assertEqual(windows[0].loaded_sources, ["popular_movies"])
             self.assertEqual(windows[0].modal_calls, 1)
+            self.assertEqual(
+                windows[0].kwargs["labels"]["loading"], "Loading directory"
+            )
+            self.assertEqual(
+                windows[0].kwargs["labels"]["empty"], "No matching files found"
+            )
+            self.assertNotIn(("getLocalizedString", 1040), addon.calls)
             self.assertEqual(
                 [call["url"] for call in session.calls],
                 [

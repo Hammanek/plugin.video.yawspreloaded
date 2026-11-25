@@ -48,14 +48,19 @@ class DiscoveryWindow:
         self._item_factory = item_factory
         self._categories = dict(self.CATEGORY_IDS)
         self._sources = frozenset(self._categories.values())
-        self._source = next(iter(self._sources))
+        self._source = next(iter(self._categories.values()))
         self._records = ()
         self._closed = False
         self._loading = False
         self.destination = None
         self.failed = False
         self.state = "loading"
+        self._controls_initialized = False
+        self._pending_source = None
 
+    def _initialize_controls(self):
+        if self._controls_initialized:
+            return
         self.getControl(self.TITLE_ID).setLabel(self._labels["title"])
         for control_id, source in self._categories.items():
             self.getControl(control_id).setLabel(self._category_labels[source])
@@ -65,6 +70,16 @@ class DiscoveryWindow:
         self.getControl(self.RETRY_ID).setVisible(False)
         self.getControl(self.RESULTS_ID).setVisible(False)
         self._clear_hero()
+        self._controls_initialized = True
+
+        pending_source = self._pending_source
+        self._pending_source = None
+        if pending_source is not None and not self._closed:
+            self.load(pending_source)
+
+    def onInit(self):
+        # Omega exposes XML controls and the built-in view only at this boundary.
+        self._initialize_controls()
 
     def _clear_hero(self):
         for control_id in (
@@ -98,6 +113,10 @@ class DiscoveryWindow:
         """Synchronously replace the visible page; no background work or cache."""
         if self._closed or self._loading:
             return
+        if not self._controls_initialized:
+            self._pending_source = source
+            return
+        self._pending_source = None
         if source not in self._sources:
             self.failed = True
             self._show_state("error")
@@ -195,13 +214,8 @@ class DiscoveryWindow:
             return
         if self.state != "content" or self.getFocusId() != self.RESULTS_ID:
             return
-        if action_id in (ACTION_MOVE_LEFT, ACTION_MOVE_RIGHT):
-            position = self.getCurrentListPosition()
-            if type(position) is not int:
-                return
-            offset = -1 if action_id == ACTION_MOVE_LEFT else 1
-            position = max(0, min(len(self._records) - 1, position + offset))
-            self.setCurrentListPosition(position)
+        # Kodi's native container has already handled directional movement by
+        # the time this callback runs; only refresh the hero at its new position.
         if action_id in (
             ACTION_MOVE_LEFT,
             ACTION_MOVE_RIGHT,
