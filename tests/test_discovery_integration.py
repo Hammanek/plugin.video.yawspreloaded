@@ -1,5 +1,6 @@
+from pathlib import Path
 import unittest
-from unittest import mock
+import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlsplit
 
 from tests.test_entrypoint import json_response, production_tmdb_invocation
@@ -7,30 +8,11 @@ from yawsp_app import router as production_router
 from yawsp_app import tmdb_ui as production_tmdb_ui
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def query(url):
     return {key: values[-1] for key, values in parse_qs(urlsplit(url).query).items()}
-
-
-class RecordingDiscoveryWindow:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.loaded_sources = []
-        self.modal_calls = 0
-        self.destination = None
-        self.failed = False
-        self.pending_sources = []
-
-    def load(self, source):
-        self.pending_sources.append(source)
-
-    def doModal(self):
-        self.modal_calls += 1
-        if self.pending_sources:
-            source = self.pending_sources.pop(0)
-            self.loaded_sources.append(source)
-            records = self.kwargs["load_category"](source)
-            if records:
-                self.destination = records[0].search_url
 
 
 class DiscoveryIntegrationTests(unittest.TestCase):
@@ -70,7 +52,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
 
-    def test_default_custom_loads_one_category_and_hands_off_after_completion(self):
+    def test_popular_movies_render_one_native_row_then_default_view_after_completion(self):
         responses = [
             json_response(
                 {
@@ -92,31 +74,51 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             json_response({"genres": [{"id": 18, "name": "Drama"}]}),
         ]
         with production_tmdb_invocation(responses) as (owner, session, addon, recorder):
-            windows = []
-            with mock.patch.object(
-                production_tmdb_ui,
-                "create_discovery_window",
-                side_effect=lambda **kwargs: windows.append(
-                    RecordingDiscoveryWindow(**kwargs)
-                )
-                or windows[-1],
-                create=True,
-            ):
-                result = production_router.router(
-                    "action=tmdb_discovery&source=popular_movies"
-                )
+            result = production_router.router(
+                "action=tmdb_discovery&source=popular_movies"
+            )
 
             self.assertTrue(result.succeeded)
-            self.assertEqual(len(windows), 1)
-            self.assertEqual(windows[0].loaded_sources, ["popular_movies"])
-            self.assertEqual(windows[0].modal_calls, 1)
+            self.assertEqual(len(recorder.items), 1)
+            row = recorder.items[0]
+            item = row["listitem"]
+            self.assertTrue(row["isFolder"])
+            self.assertEqual(item.label, "Discovery title (2026)")
             self.assertEqual(
-                windows[0].kwargs["labels"]["loading"], "Loading directory"
+                query(row["url"]),
+                {"action": "search", "what": "Discovery title", "sort": "largest"},
             )
             self.assertEqual(
-                windows[0].kwargs["labels"]["empty"], "No matching files found"
+                item.info,
+                [
+                    (
+                        "video",
+                        {
+                            "title": "Discovery title (2026)",
+                            "mediatype": "movie",
+                            "plot": "Synthetic discovery plot",
+                            "year": 2026,
+                            "genre": "Drama",
+                            "rating": 7.25,
+                        },
+                    )
+                ],
             )
+            self.assertEqual(
+                item.art,
+                {
+                    "poster": "https://image.tmdb.org/t/p/w500/poster.jpg",
+                    "thumb": "https://image.tmdb.org/t/p/w500/poster.jpg",
+                    "fanart": "https://image.tmdb.org/t/p/w780/backdrop.jpg",
+                },
+            )
+            content_calls = [
+                call for call in recorder.calls if call["method"] == "setContent"
+            ]
+            self.assertEqual(len(content_calls), 1)
+            self.assertEqual(content_calls[0]["args"], (17, "movies"))
             self.assertNotIn(("getLocalizedString", 1040), addon.calls)
+            self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
             self.assertEqual(
                 [call["url"] for call in session.calls],
                 [
@@ -134,19 +136,13 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertTrue(recorder.end_of_directory_calls[-1]["succeeded"])
-            self.assertEqual(len(recorder.builtin_commands), 1)
-            command = recorder.builtin_commands[0]
-            self.assertTrue(command.startswith("Container.Update("))
-            self.assertEqual(
-                query(command[len("Container.Update(") : -1]),
-                {"action": "search", "what": "Discovery title", "sort": "largest"},
-            )
+            self.assertEqual(recorder.builtin_commands, ["Container.SetViewMode(54)"])
             self.assertEqual(
                 [call["method"] for call in recorder.calls[-2:]],
                 ["endOfDirectory", "executeBuiltin"],
             )
 
-    def test_native_wall_setting_reuses_directory_without_custom_factory(self):
+    def test_top_rated_shows_use_the_same_native_public_data_path(self):
         responses = [
             json_response(
                 {
@@ -166,16 +162,11 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             json_response({"genres": [{"id": 18, "name": "Drama"}]}),
         ]
         with production_tmdb_invocation(responses) as (owner, session, addon, recorder):
-            addon.setSetting("discovery_native_wall", "true")
-            with mock.patch.object(
-                production_tmdb_ui, "create_discovery_window", create=True
-            ) as window_factory:
-                result = production_router.router(
-                    "action=tmdb_discovery&source=top_rated_shows"
-                )
+            result = production_router.router(
+                "action=tmdb_discovery&source=top_rated_shows"
+            )
 
             self.assertTrue(result.succeeded)
-            window_factory.assert_not_called()
             self.assertEqual(len(recorder.items), 1)
             self.assertEqual(recorder.items[0]["listitem"].label, "Top show (2025)")
             self.assertEqual(
@@ -189,6 +180,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                     "https://api.themoviedb.org/3/genre/tv/list",
                 ],
             )
+            self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertEqual(recorder.builtin_commands, ["Container.SetViewMode(54)"])
@@ -206,7 +198,6 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             addon,
             recorder,
         ):
-            addon.setSetting("discovery_native_wall", "true")
             original_identity = (
                 addon.getSetting("tmdb_access_token"),
                 addon.getSetting("tmdb_account_id"),
@@ -240,19 +231,16 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                 self.assertNotIn(secret, public_log)
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
+            self.assertEqual(recorder.builtin_commands, [])
 
     def test_valid_source_without_api_key_fails_before_settings_or_http(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_api_key", "")
-            with mock.patch.object(
-                production_tmdb_ui, "create_discovery_window", create=True
-            ) as window_factory:
-                result = production_router.router(
-                    "action=tmdb_discovery&source=popular_movies"
-                )
+            result = production_router.router(
+                "action=tmdb_discovery&source=popular_movies"
+            )
 
             self.assertFalse(result.succeeded)
-            window_factory.assert_not_called()
             self.assertEqual(session.calls, [])
             self.assertEqual(addon.open_settings_calls, 1)
             self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
@@ -261,24 +249,39 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
 
-    def test_unknown_source_is_local_failure_without_calls_or_window(self):
+    def test_unknown_source_is_local_failure_without_calls_or_settings(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_api_key", "")
-            with mock.patch.object(
-                production_tmdb_ui, "create_discovery_window", create=True
-            ) as window_factory:
-                result = production_router.router(
-                    "action=tmdb_discovery&source=not_a_catalog"
-                )
+            result = production_router.router(
+                "action=tmdb_discovery&source=not_a_catalog"
+            )
 
             self.assertFalse(result.succeeded)
-            window_factory.assert_not_called()
             self.assertEqual(session.calls, [])
             self.assertEqual(addon.open_settings_calls, 0)
+            self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(recorder.items, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
+
+    def test_custom_presentation_factory_resources_and_setting_are_absent(self):
+        for relative in (
+            "yawsp_app/discovery_window.py",
+            "resources/skins/default/720p/DiscoveryWindow.xml",
+        ):
+            with self.subTest(retired_resource=relative):
+                self.assertFalse(ROOT.joinpath(*relative.split("/")).exists())
+        self.assertFalse((ROOT / "yawsp_app/discovery_script.py").exists())
+
+        settings = ET.parse(str(ROOT / "resources/settings.xml")).getroot()
+        setting_ids = {
+            element.get("id")
+            for element in settings.iter("setting")
+            if element.get("id")
+        }
+        self.assertNotIn("discovery_native_wall", setting_ids)
+        self.assertFalse(hasattr(production_tmdb_ui, "create_discovery_window"))
 
 
 if __name__ == "__main__":

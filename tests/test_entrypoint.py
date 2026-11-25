@@ -128,8 +128,6 @@ def install_kodi_stubs():
     xbmc.Keyboard = lambda default, heading: CompatibleKeyboard(default, recorder.calls)
     xbmc._language = "en"
     xbmc.getLanguage = lambda: xbmc._language
-    xbmc._system_strings = {1040: "Loading directory"}
-    xbmc.getLocalizedString = lambda string_id: xbmc._system_strings.get(string_id, "")
     xbmc.getCondVisibility = lambda condition: True
     xbmc.getSkinDir = lambda: "skin.estuary"
 
@@ -347,6 +345,7 @@ class EntrypointTests(unittest.TestCase):
             owner = production_router._get_owner()
 
             self.assertIs(owner, production_router._get_owner())
+            self.assertNotIn("system_localizer", owner._runtime_options)
             production_router.router("action=settings")
             recorder = sys.modules["xbmcplugin"]._recorder
             self.assertEqual(len(recorder.resolved_url_calls), 1)

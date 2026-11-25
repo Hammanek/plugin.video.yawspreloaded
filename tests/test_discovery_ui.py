@@ -159,14 +159,13 @@ class Addon:
 
 
 class Runtime:
-    def __init__(self, native_wall=""):
-        self.addon = Addon({"discovery_native_wall": native_wall})
+    def __init__(self):
+        self.addon = Addon({})
         self.plugin = Plugin()
         self.logger = Logger()
         self.base_url = "plugin://plugin.video.yawspreloaded/"
         self.handle = 9
         self.setting_calls = []
-        self.system_calls = []
 
     def get_setting(self, key):
         self.setting_calls.append(key)
@@ -174,10 +173,6 @@ class Runtime:
 
     def localized(self, string_id):
         return self.addon.getLocalizedString(string_id)
-
-    def system_localized(self, string_id):
-        self.system_calls.append(string_id)
-        return {1040: "Loading directory"}[string_id]
 
     def addon_info(self, key):
         return self.addon.getAddonInfo(key)
@@ -238,70 +233,24 @@ class Genres:
         return dict(self.values[media])
 
 
-class Window:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-        self.loads = []
-        self.modal_calls = 0
-        self.close_calls = 0
-        self.records = []
-        self.destination = None
-        self.failed = False
-        self.auto_select = False
-        self.pending_sources = []
-
-    def load(self, source):
-        self.pending_sources.append(source)
-
-    def _load_pending(self):
-        source = self.pending_sources.pop(0)
-        self.loads.append(source)
-        try:
-            self.records = list(self.kwargs["load_category"](source))
-        except TMDBError:
-            self.failed = True
-        else:
-            self.failed = False
-
-    def doModal(self):
-        self.modal_calls += 1
-        if self.pending_sources:
-            self._load_pending()
-        if self.auto_select and self.records:
-            self.destination = self.records[0].search_url
-
-    def close(self):
-        self.close_calls += 1
-
-
 class DiscoveryUITests(unittest.TestCase):
-    def build(
-        self,
-        source="popular_movies",
-        response=None,
-        native_wall="true",
-        auto_select=False,
-    ):
-        self.runtime = Runtime(native_wall=native_wall)
+    def build(self, source="popular_movies", response=None):
+        self.runtime = Runtime()
         endpoint = {name: path for name, path, _, _ in SOURCES}[source]
         self.client = Client({endpoint: response})
         self.genres = Genres()
-        self.windows = []
         self.default_views = []
 
-        def window_factory(**kwargs):
-            window = Window(**kwargs)
-            window.auto_select = auto_select
-            self.windows.append(window)
-            return window
+        def set_default_view(params):
+            self.default_views.append(params)
+            self.runtime.plugin.events.append("view")
 
         self.handlers = build_discovery_handlers(
             self.runtime,
             self.client,
             url_builder,
             self.genres,
-            self.default_views.append,
-            window_factory,
+            set_default_view,
         )
         return self.handlers["tmdb_discovery"]
 
@@ -316,7 +265,7 @@ class DiscoveryUITests(unittest.TestCase):
     def test_all_four_sources_have_one_list_call_and_exact_native_metadata(self):
         for source, path, media, content in SOURCES:
             with self.subTest(source=source):
-                handler = self.build(source, {"results": [result_value(source)]}, "true")
+                handler = self.build(source, {"results": [result_value(source)]})
                 result = handler({"source": source})
 
                 self.assertTrue(result.succeeded)
@@ -324,10 +273,9 @@ class DiscoveryUITests(unittest.TestCase):
                 expected_genre_media = "movie" if media == "movie" else "tv"
                 self.assertEqual(self.genres.calls, [(expected_genre_media, "cs-CZ")])
                 self.assertEqual(self.client.language_calls, 1)
-                self.assertEqual(self.windows, [])
                 self.assertEqual(self.default_views, [])
                 self.assertEqual(self.runtime.plugin.content, [content])
-                self.assertEqual(self.runtime.setting_calls, ["discovery_native_wall"])
+                self.assertEqual(self.runtime.setting_calls, [])
 
                 row = self.runtime.plugin.items[0]
                 item = row["item"]
@@ -384,58 +332,32 @@ class DiscoveryUITests(unittest.TestCase):
         )
         self.assertEqual(self.runtime.plugin.builtins, [])
 
-    def test_unknown_and_missing_source_fail_without_request_or_custom_window(self):
+    def test_unknown_and_missing_source_fail_without_request_or_settings(self):
         for source in (None, "", "../account", "popular_movie", ["popular_movies"], {"source": "popular_movies"}):
             with self.subTest(source=source):
-                handler = self.build(response={"results": []}, native_wall="")
+                handler = self.build(response={"results": []})
                 params = {} if source is None else {"source": source}
                 result = handler(params)
                 self.assertFalse(result.succeeded)
                 self.assertEqual(self.client.calls, [])
                 self.assertEqual(self.genres.calls, [])
-                self.assertEqual(self.windows, [])
                 self.assertEqual(self.runtime.setting_calls, [])
 
-    def test_setting_is_strict_and_re_evaluated_only_for_next_valid_opening(self):
-        for setting, expected_windows in (("true", 0), ("", 1), ("false", 1), ("True", 1), ("1", 1)):
-            with self.subTest(setting=setting):
-                handler = self.build(response={"results": []}, native_wall=setting)
-                result = handler({"source": "popular_movies"})
-                self.assertTrue(result.succeeded)
-                self.assertEqual(len(self.windows), expected_windows)
-                self.assertEqual([window.modal_calls for window in self.windows], [1] * expected_windows)
-                if expected_windows:
-                    self.assertEqual(self.windows[0].loads, ["popular_movies"])
-                    self.assertEqual(self.windows[0].close_calls, 0)
-                else:
-                    self.assertEqual(self.runtime.plugin.items[0]["item"].label, "No matching files found")
-
-    def test_custom_selection_hands_off_same_url_after_directory_completion_once(self):
-        handler = self.build(response={"results": [result_value("popular_movies")]}, native_wall="", auto_select=True)
+    def test_native_directory_completes_before_one_default_view_without_handoff(self):
+        handler = self.build(response={"results": [result_value("popular_movies")]})
         runner = ActionRunner(self.runtime.plugin, 9, ListItem, logger=self.runtime.logger)
 
         result = runner.run_directory(lambda: handler({"source": "popular_movies"}))
 
-        expected_url = url_builder(
-            self.runtime, action="search", what="Localized film", sort="largest"
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.runtime.plugin.events, ["add", "end", "view"])
+        self.assertEqual(self.default_views, [{"category": "movies"}])
+        self.assertEqual(self.runtime.plugin.builtins, [])
+        self.assertEqual(len(self.runtime.plugin.items), 1)
+        self.assertEqual(
+            query(self.runtime.plugin.items[0]["url"]),
+            {"action": "search", "what": "Localized film", "sort": "largest"},
         )
-        self.assertTrue(result.succeeded)
-        self.assertEqual(self.runtime.plugin.events, ["end", "Container.Update(" + expected_url + ")"])
-        self.assertEqual(self.runtime.plugin.builtins, ["Container.Update(" + expected_url + ")"])
-        self.assertNotIn("PlayMedia", self.runtime.plugin.builtins[0])
-        self.assertEqual(self.windows[0].close_calls, 0)
-        result.post_complete()
-        self.assertEqual(len(self.runtime.plugin.builtins), 1)
-
-    def test_custom_labels_use_core_loading_and_public_no_results_text(self):
-        handler = self.build(response={"results": []}, native_wall="")
-        result = handler({"source": "popular_movies"})
-
-        self.assertTrue(result.succeeded)
-        labels = self.windows[0].kwargs["labels"]
-        self.assertEqual(labels["loading"], "Loading directory")
-        self.assertEqual(labels["empty"], "No matching files found")
-        self.assertEqual(self.runtime.system_calls, [1040])
 
     def test_empty_native_state_has_no_genre_lookup_but_sets_view_after_success(self):
         handler = self.build(response={"results": []})
@@ -462,19 +384,7 @@ class DiscoveryUITests(unittest.TestCase):
         self.assertEqual(len(self.runtime.logger.exceptions), 1)
         self.assertEqual(self.default_views, [])
 
-    def test_custom_error_stays_in_window_and_does_not_close_from_handler(self):
-        handler = self.build(response=TMDBError("synthetic failure"), native_wall="")
-        result = handler({"source": "popular_movies"})
-
-        self.assertFalse(result.succeeded)
-        self.assertIsNone(result.post_complete)
-        self.assertTrue(self.windows[0].failed)
-        self.assertEqual(self.windows[0].modal_calls, 1)
-        self.assertEqual(self.windows[0].close_calls, 0)
-        self.assertEqual(self.runtime.plugin.notifications, [])
-        self.assertEqual(len(self.runtime.logger.exceptions), 1)
-
-    def test_malformed_entries_are_bounded_and_valid_entries_have_detached_metadata(self):
+    def test_malformed_entries_are_bounded_and_valid_entries_have_normalized_native_metadata(self):
         response = {
             "results": [
                 None,
@@ -493,23 +403,28 @@ class DiscoveryUITests(unittest.TestCase):
                 {"id": None, "title": "Missing id"},
             ]
         }
-        handler = self.build(response=response, native_wall="")
+        handler = self.build(response=response)
         result = handler({"source": "popular_movies"})
-        records = self.windows[0].records
+        rows = self.runtime.plugin.items
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(len(records), 2)
-        self.assertEqual(records[0].rating, 7.25)
-        self.assertEqual(records[1].title, "Unknown discovery title")
-        self.assertEqual(records[1].year, 0)
-        self.assertEqual(records[1].genres, ())
-        self.assertTrue(math.isfinite(records[1].rating))
-        self.assertEqual(records[1].rating, 0.0)
-        self.assertEqual(dict(records[1].art), {})
-        with self.assertRaises(TypeError):
-            records[0].art["poster"] = "mutation"
-        with self.assertRaises((AttributeError, TypeError)):
-            records[0].genres += ("Mutation",)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["item"].label, "Localized film valid (2024)")
+        self.assertEqual(rows[0]["item"].video_tag.calls[-1], ("setRating", 7.25))
+        fallback = rows[1]["item"]
+        self.assertEqual(fallback.label, "Unknown discovery title")
+        self.assertEqual(fallback.video_tag.calls, [
+            ("setTitle", "Unknown discovery title"),
+            ("setMediaType", "movie"),
+            ("setPlot", ""),
+            ("setYear", 0),
+            ("setGenres", [""]),
+            ("setRating", 0.0),
+        ])
+        rating = fallback.video_tag.calls[-1][1]
+        self.assertTrue(math.isfinite(rating))
+        self.assertEqual(fallback.art, {})
+        self.assertEqual(self.runtime.setting_calls, [])
 
 
 if __name__ == "__main__":

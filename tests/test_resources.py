@@ -99,12 +99,6 @@ DISCOVERY_STRINGS = (
     (30441, "Discover", "Objevit", "Objaviť"),
     (30442, "Popular", "Populární", "Populárne"),
     (30443, "Top rated", "Nejlépe hodnocené", "Najlepšie hodnotené"),
-    (
-        30444,
-        "Use native wall in Objevit",
-        "Použít nativní stěnu v Objevit",
-        "Použiť natívnu stenu v Objaviť",
-    ),
 )
 DISCOVERY_IDS = {entry[0] for entry in DISCOVERY_STRINGS}
 
@@ -253,10 +247,11 @@ class ResourceContractTests(unittest.TestCase):
                         self.assertEqual(entries[string_id]["msgstr"], expected)
 
     def test_discovery_ids_have_exact_native_wording(self):
-        self.assertEqual(DISCOVERY_IDS, {30441, 30442, 30443, 30444})
+        self.assertEqual(DISCOVERY_IDS, {30441, 30442, 30443})
         for language, translation_index in (("cs_CZ", 2), ("sk_SK", 3), ("en_GB", None)):
             with self.subTest(language=language):
                 _, entries = load_catalog(language)
+                self.assertNotIn(30444, entries)
                 for string_id, msgid, czech, slovak in DISCOVERY_STRINGS:
                     with self.subTest(language=language, string_id=string_id):
                         self.assertEqual(entries[string_id]["msgid"], msgid)
@@ -278,7 +273,7 @@ class ResourceContractTests(unittest.TestCase):
                 values = lvalues.split("|")
                 self.assertTrue(all(value.isdigit() for value in values), lvalues)
                 references.update(int(value) for value in values)
-        self.assertEqual(new_tmdb_labels, set(range(30426, 30433)) | {30444})
+        self.assertEqual(new_tmdb_labels, set(range(30426, 30433)))
         for language in CATALOGS:
             with self.subTest(language=language):
                 _, entries = load_catalog(language)

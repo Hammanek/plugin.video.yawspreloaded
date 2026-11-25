@@ -400,7 +400,3 @@ msgstr "Populární"
 msgctxt "#30443"
 msgid "Top rated"
 msgstr "Nejlépe hodnocené"
-
-msgctxt "#30444"
-msgid "Use native wall in Objevit"
-msgstr "Použít nativní stěnu v Objevit"

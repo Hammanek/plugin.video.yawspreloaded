@@ -234,7 +234,6 @@ class KodiRuntime:
         addon_available=None,
         skin_dir=None,
         qr_generator=None,
-        system_localizer=None,
     ):
         self.plugin = plugin
         self.addon = addon
@@ -258,7 +257,6 @@ class KodiRuntime:
         self.addon_available = addon_available or (lambda addon_id: False)
         self.skin_dir = skin_dir or (lambda: "")
         self.qr_generator = qr_generator
-        self.system_localizer = system_localizer
 
     def get_setting(self, key):
         return self.addon.getSetting(key)
@@ -274,11 +272,6 @@ class KodiRuntime:
         return self.vfs_file_ops
 
     def localized(self, string_id):
-        return self.addon.getLocalizedString(string_id)
-
-    def system_localized(self, string_id):
-        if self.system_localizer is not None:
-            return self.system_localizer(string_id)
         return self.addon.getLocalizedString(string_id)
 
     def addon_info(self, key):

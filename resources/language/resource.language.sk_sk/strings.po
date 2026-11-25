@@ -401,7 +401,3 @@ msgctxt "#30443"
 msgid "Top rated"
 msgstr "Najlepšie hodnotené"
 
-msgctxt "#30444"
-msgid "Use native wall in Objevit"
-msgstr "Použiť natívnu stenu v Objaviť"
-

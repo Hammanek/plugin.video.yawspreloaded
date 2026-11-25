@@ -13,7 +13,6 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
 from yawsp_app.discovery_ui import build_discovery_handlers
-from yawsp_app.discovery_window import create_discovery_window
 from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
@@ -276,7 +275,6 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         _url,
         public_genres,
         set_default_view,
-        create_discovery_window,
         valid_configuration,
     )
 

@@ -18,7 +18,6 @@
 		<setting label="30044" id="dnevery" type="select" values="1%|5%|10%|20%|25%|50%" default="10%" visible="eq(-1,true)" />
     </category>
     <category label="30426">
-        <setting id="discovery_native_wall" type="bool" label="30444" default="false"/>
         <setting id="tmdb_api_key" type="text" label="30427" default=""/>
         <setting id="tmdb_connect" type="action" label="30428" action="RunPlugin(plugin://plugin.video.yawspreloaded/?action=tmdb_auth)" option="close"/>
         <setting id="tmdb_sort" type="select" label="30429" lvalues="30054|30055|30056|30057" default="0"/>

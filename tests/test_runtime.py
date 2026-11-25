@@ -247,21 +247,15 @@ class RuntimeLocalizationTests(unittest.TestCase):
             **kwargs
         )
 
-    def test_system_localizer_uses_core_strings_with_legacy_addon_fallback(self):
+    def test_runtime_retains_addon_localization_without_obsolete_core_localizer(self):
         addon = AddonRecorder(strings={1040: "Legacy compatible loading"})
-        core_calls = []
+        runtime = self.make_runtime(addon)
 
-        def system_localizer(string_id):
-            core_calls.append(string_id)
-            return "Loading directory"
-
-        runtime = self.make_runtime(addon, system_localizer=system_localizer)
-        self.assertEqual(runtime.system_localized(1040), "Loading directory")
-        self.assertEqual(core_calls, [1040])
-        self.assertNotIn(("getLocalizedString", 1040), addon.calls)
-
-        legacy_runtime = self.make_runtime(addon)
-        self.assertEqual(legacy_runtime.system_localized(1040), "Legacy compatible loading")
+        self.assertEqual(runtime.localized(1040), "Legacy compatible loading")
+        self.assertEqual(addon.calls, [("getLocalizedString", 1040)])
+        self.assertFalse(hasattr(runtime, "system_localized"))
+        with self.assertRaises(TypeError):
+            self.make_runtime(addon, system_localizer=lambda string_id: "Core string")
 
 
 if __name__ == "__main__":

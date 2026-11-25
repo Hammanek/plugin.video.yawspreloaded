@@ -1,4 +1,4 @@
-"""One-page public TMDB discovery data and reversible presentation."""
+"""One-page public TMDB discovery data and native directory presentation."""
 
 from dataclasses import dataclass
 import math
@@ -33,7 +33,7 @@ CATALOG_SOURCES = MappingProxyType(
 
 @dataclass(frozen=True)
 class DiscoveryRecord:
-    """Detached display/search values shared by InfoWall and the custom window."""
+    """Detached display/search values shared by native discovery rows."""
 
     media: str
     media_id: int
@@ -172,7 +172,6 @@ def build_discovery_handlers(
     url_builder,
     genres,
     set_default_view,
-    window_factory,
     valid_configuration=None,
 ):
     """Wire one explicit discovery route without personal or background work."""
@@ -229,39 +228,6 @@ def build_discovery_handlers(
     def item_factory(record):
         return discovery_list_item(runtime, record)
 
-    def custom(source_name, source):
-        window = window_factory(
-            addon_path=runtime.addon_info("path"),
-            category_labels=category_labels(),
-            labels=MappingProxyType(
-                {
-                    "title": runtime.localized(30441),
-                    "loading": runtime.system_localized(1040),
-                    "empty": runtime.localized(30440),
-                    "error": runtime.localized(30402),
-                    "retry": runtime.localized(30438),
-                }
-            ),
-            load_category=load_category,
-            item_factory=item_factory,
-        )
-        window.load(source_name)
-        window.doModal()
-        destination = window.destination
-        handed_off = False
-
-        def post_complete():
-            nonlocal handed_off
-            if handed_off or not destination:
-                return
-            handed_off = True
-            runtime.execute_builtin("Container.Update({0})".format(destination))
-
-        return DirectoryResult(
-            succeeded=not window.failed,
-            post_complete=post_complete if destination else None,
-        )
-
     def native(source_name, source, params):
         try:
             records = load_category(source_name)
@@ -301,11 +267,6 @@ def build_discovery_handlers(
             return DirectoryResult(succeeded=False)
         if valid_configuration is not None and not valid_configuration():
             return DirectoryResult(succeeded=False)
-        native_wall = (
-            str(runtime.get_setting("discovery_native_wall")).strip() == "true"
-        )
-        if native_wall:
-            return native(source_name, source, params)
-        return custom(source_name, source)
+        return native(source_name, source, params)
 
     return {"tmdb_discovery": discovery}
