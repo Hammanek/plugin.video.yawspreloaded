@@ -419,6 +419,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         try:
             session_id = runtime.get_setting("tmdb_access_token").strip()
             operation_language = language()
+            account_was_missing = not runtime.get_setting("tmdb_account_id").strip()
 
             def account_resolution_valid(resolved_account):
                 return (
@@ -438,7 +439,13 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             def operation_valid():
                 return (
                     runtime.get_setting("tmdb_access_token").strip() == session_id
-                    and runtime.get_setting("tmdb_account_id").strip() == account_id
+                    and (
+                        runtime.get_setting("tmdb_account_id").strip() == account_id
+                        or (
+                            account_was_missing
+                            and not runtime.get_setting("tmdb_account_id").strip()
+                        )
+                    )
                     and language() == operation_language
                 )
 
@@ -485,6 +492,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             operation_session = runtime.get_setting("tmdb_access_token").strip()
             operation_language = language()
             account_id = runtime.get_setting("tmdb_account_id").strip()
+            account_was_missing = not account_id
             if snapshot_store is not None and account_id:
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
                 snapshot = snapshot_store.load(scope)
@@ -512,7 +520,13 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 return (
                     runtime.get_setting("tmdb_access_token").strip()
                     == operation_session
-                    and runtime.get_setting("tmdb_account_id").strip() == account_id
+                    and (
+                        runtime.get_setting("tmdb_account_id").strip() == account_id
+                        or (
+                            account_was_missing
+                            and not runtime.get_setting("tmdb_account_id").strip()
+                        )
+                    )
                     and language() == operation_language
                 )
 

@@ -608,15 +608,13 @@ class _WatchlistResolutionSettings:
             self.settings.set(key, value)
 
     def commit(self, account_id):
+        """Validate a staged ID for this operation, never publish it globally."""
         current_account = str(self.settings.get("tmdb_account_id") or "").strip()
-        if (
-            self.staged_account_id != account_id
-            or current_account not in ("", account_id)
-            or not self.identity_valid(account_id)
-        ):
-            return False
-        self.settings.set("tmdb_account_id", account_id)
-        return self.identity_valid(account_id)
+        return (
+            self.staged_account_id == account_id
+            and current_account in ("", account_id)
+            and self.identity_valid(account_id)
+        )
 
 
 def resolve_watchlist_account(client, session_id, language, identity_valid):
@@ -797,13 +795,16 @@ class BackgroundPrefetch:
             keys.append((key, cache_key, normalized_id))
         return self._enqueue(keys, self._run_shows)
 
-    def _watchlist_identity(self, scope, session_id):
+    def _watchlist_identity(self, scope, session_id, allow_missing_account=False):
         account_id = str(self.settings.get("tmdb_account_id") or "").strip()
         current_session = str(self.settings.get("tmdb_access_token") or "").strip()
         return (
             bool(current_session)
             and current_session == session_id
-            and account_id == scope.account_id
+            and (
+                account_id == scope.account_id
+                or (allow_missing_account and not account_id)
+            )
             and self.locale_mapper() == scope.language
         )
 
@@ -812,7 +813,12 @@ class BackgroundPrefetch:
         if self.snapshot_store is None:
             return 0
         session_id = str(self.settings.get("tmdb_access_token") or "").strip()
-        if not self._watchlist_identity(scope, session_id):
+        allow_missing_account = not str(
+            self.settings.get("tmdb_account_id") or ""
+        ).strip()
+        if not self._watchlist_identity(
+            scope, session_id, allow_missing_account
+        ):
             return 0
         if not force and not self.snapshot_store.refresh_due(scope, self.clock()):
             return 0
@@ -831,7 +837,12 @@ class BackgroundPrefetch:
             return 0
         try:
             self.worker.submit(
-                self._run_watchlist, accepted, scope, session_id, generation
+                self._run_watchlist,
+                accepted,
+                scope,
+                session_id,
+                generation,
+                allow_missing_account,
             )
         except Exception:
             self._release(accepted)
@@ -839,11 +850,13 @@ class BackgroundPrefetch:
             return 0
         return 1
 
-    def _run_watchlist(self, keys, scope, session_id, generation):
+    def _run_watchlist(
+        self, keys, scope, session_id, generation, allow_missing_account=False
+    ):
         session = None
         try:
             if self._abort_requested() or not self._watchlist_identity(
-                scope, session_id
+                scope, session_id, allow_missing_account
             ):
                 return
             session = self.session_factory()
@@ -863,11 +876,11 @@ class BackgroundPrefetch:
             results = fetch_complete_watchlist(
                 client,
                 scope,
-                operation_valid=lambda: self._watchlist_identity(scope, session_id),
+                operation_valid=lambda: self._watchlist_identity(scope, session_id, allow_missing_account),
             )
             # The account, session and language are all rechecked after the last
             # response. A switched identity cannot write either old or new scope.
-            if not self._watchlist_identity(scope, session_id):
+            if not self._watchlist_identity(scope, session_id, allow_missing_account):
                 return
             self.snapshot_store.save_complete(
                 scope,
@@ -888,7 +901,7 @@ class BackgroundPrefetch:
             if not (
                 current_session
                 and current_account
-                and not self._watchlist_identity(scope, session_id)
+                and not self._watchlist_identity(scope, session_id, allow_missing_account)
             ):
                 self.logger.exception("TMDB watchlist refresh failed")
         finally:

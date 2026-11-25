@@ -744,6 +744,45 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
 
+    def test_production_account_resolution_never_publishes_speculative_identity(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_account_id", "")
+            original_set = addon.setSetting
+            publication_attempts = []
+
+            def switch_at_speculative_publication(key, value):
+                if key == "tmdb_account_id" and value == "account-1":
+                    publication_attempts.append(value)
+                    original_set("tmdb_account_id", "account-2")
+                    original_set("tmdb_access_token", "session-2")
+                original_set(key, value)
+
+            addon.setSetting = switch_at_speculative_publication
+            session.queue_response(json_response({"id": "account-1"}))
+            session.queue_response(
+                json_response({"total_pages": 1, "results": [{"id": 1, "title": "Staged"}]})
+            )
+            session.queue_response(json_response({"genres": []}))
+
+            result = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(publication_attempts, [])
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
+            self.assertEqual(
+                session.calls[1]["url"],
+                "https://api.themoviedb.org/3/account/account-1/watchlist/movies",
+            )
+            self.assertEqual(session.calls[1]["kwargs"]["params"]["session_id"], "session-1")
+            self.assertEqual(
+                owner.snapshot_store.load(
+                    SnapshotScope("account-1", "movies", "en-US")
+                ).results,
+                [{"id": 1, "title": "Staged"}],
+            )
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Staged")
+
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []
 
