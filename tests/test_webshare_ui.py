@@ -308,10 +308,15 @@ class WebshareUITests(unittest.TestCase):
             self.runtime.notify(message)
             if message.startswith(("Downloaded", "Download failed", "Backup DB installation failed")):
                 self.job_event.set()
+            if (
+                message.startswith("Backup DB installed")
+                and "Container.Refresh" in self.plugin.builtin_commands
+            ):
+                self.job_event.set()
 
         def background_refresh():
             self.plugin.executeBuiltin("Container.Refresh")
-            if self.job_messages and self.job_messages[-1].startswith("Backup DB installed"):
+            if any(message.startswith("Backup DB installed") for message in self.job_messages):
                 self.job_event.set()
 
         self.handlers = build_webshare_handlers(
@@ -1122,6 +1127,111 @@ class WebshareUITests(unittest.TestCase):
             1,
         )
         self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
+
+    def test_installed_notification_error_cannot_suppress_refresh_or_change_job_outcome(self):
+        from yawsp_app.backup_db import BackupDBStore
+        from yawsp_app.download_jobs import backup_db_job_key
+
+        attempted = threading.Event()
+        refreshed = threading.Event()
+
+        def broken_notify(message):
+            if message == "Backup DB installed":
+                attempted.set()
+                raise RuntimeError("synthetic installed notification failure")
+
+        def refresh():
+            self.plugin.executeBuiltin("Container.Refresh")
+            refreshed.set()
+
+        handlers = build_webshare_handlers(
+            self.runtime,
+            lambda: self.client,
+            download_jobs=self.download_jobs,
+            worker_client_factory=lambda session: self.client,
+            notify=broken_notify,
+            refresh=refresh,
+        )
+        self.client.link_results = ["https://cdn.invalid/db.zip"]
+        self.worker_session.queue_response(
+            FakeResponse(content=archive_bytes(), forbid_content=True)
+        )
+
+        accepted = handlers["db"]({"action": "db"})
+
+        self.assertTrue(accepted.succeeded)
+        self.assertTrue(attempted.wait(2))
+        self.assertTrue(refreshed.wait(2))
+        self.assertEqual(
+            self.download_jobs.status(backup_db_job_key(self.profile)),
+            "succeeded",
+        )
+        self.assertTrue(BackupDBStore(self.profile).is_valid())
+        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
+        self.assertTrue(
+            any(
+                call[0][0] == "Backup DB installed notification failed"
+                for call in self.logger.calls
+            )
+        )
+        warm = handlers["db"]({"action": "db", "file": "A.txt"})
+        self.assertTrue(warm.succeeded)
+        self.assertTrue(self.find_item("Film"))
+        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
+
+    def test_cold_queue_notification_error_cannot_change_install_outcome_or_refresh(self):
+        from yawsp_app.backup_db import BackupDBStore
+        from yawsp_app.download_jobs import backup_db_job_key
+
+        attempted = threading.Event()
+        installed = threading.Event()
+        refreshed = threading.Event()
+
+        def broken_notify(message):
+            if message == "Queued":
+                attempted.set()
+                raise RuntimeError("synthetic queue notification failure")
+            if message == "Backup DB installed":
+                installed.set()
+
+        def refresh():
+            self.plugin.executeBuiltin("Container.Refresh")
+            refreshed.set()
+
+        handlers = build_webshare_handlers(
+            self.runtime,
+            lambda: self.client,
+            download_jobs=self.download_jobs,
+            worker_client_factory=lambda session: self.client,
+            notify=broken_notify,
+            refresh=refresh,
+        )
+        self.client.link_results = ["https://cdn.invalid/db.zip"]
+        self.client.api_responses["queue_file"] = [
+            xml("<response><status>OK</status></response>")
+        ]
+        self.worker_session.queue_response(
+            FakeResponse(content=archive_bytes(), forbid_content=True)
+        )
+
+        accepted = handlers["db"]({"action": "db", "toqueue": "stream-1"})
+
+        self.assertTrue(accepted.succeeded)
+        self.assertTrue(attempted.wait(2))
+        self.assertTrue(refreshed.wait(2))
+        self.assertTrue(installed.wait(2))
+        self.assertEqual(
+            self.download_jobs.status(backup_db_job_key(self.profile)),
+            "succeeded",
+        )
+        self.assertTrue(BackupDBStore(self.profile).is_valid())
+        self.assertEqual(self.plugin.builtin_commands, ["Container.Refresh"])
+        self.assertTrue(
+            any(
+                call[0][0] == "Backup DB queue notification failed"
+                for call in self.logger.calls
+            )
+        )
 
     def test_database_rechecks_succeeded_reservation_before_starting_another_install(self):
         from yawsp_app.backup_db import BackupDBStore

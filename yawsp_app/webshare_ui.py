@@ -441,13 +441,22 @@ class _BackupDatabaseOperation(DownloadOperation):
                 self.logger.error("Backup DB queue action failed: %s", error)
                 queue_message = self.queue_failed_label
             context.raise_if_cancelled()
-            self.notify(queue_message)
+            try:
+                self.notify(queue_message)
+            except Exception:
+                self.logger.exception("Backup DB queue notification failed")
         context.raise_if_cancelled()
         return True
 
     def succeeded(self, installed):
-        self.notify(self.installed_label)
-        self.refresh()
+        try:
+            self.refresh()
+        except Exception:
+            self.logger.exception("Backup DB completion refresh failed")
+        try:
+            self.notify(self.installed_label)
+        except Exception:
+            self.logger.exception("Backup DB installed notification failed")
 
     def failed(self, error):
         self.logger.error("Backup DB installation failed: %s", error)
