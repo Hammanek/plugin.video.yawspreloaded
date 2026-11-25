@@ -938,6 +938,7 @@ class ServiceJobWorker:
         self._metadata_jobs = {}
         self._watchlist_jobs = {}
         self._draining = False
+        self._reap_lock = threading.Lock()
         self.background = None
 
     @property
@@ -975,13 +976,14 @@ class ServiceJobWorker:
             raise TypeError("metadata batch is outside the service schema") from error
 
     def _track_metadata(self, job_id, items):
-        tracked = self._metadata_jobs.setdefault(job_id, [])
-        known = {(item["family"], item["media"], item["media_id"]) for item in tracked}
-        for item in items:
-            identity = (item["family"], item["media"], item["media_id"])
-            if identity not in known:
-                tracked.append(item)
-                known.add(identity)
+        with self._reap_lock:
+            tracked = self._metadata_jobs.setdefault(job_id, [])
+            known = {(item["family"], item["media"], item["media_id"]) for item in tracked}
+            for item in items:
+                identity = (item["family"], item["media"], item["media_id"])
+                if identity not in known:
+                    tracked.append(item)
+                    known.add(identity)
 
     def _submit_metadata(self, args):
         document = self._metadata_submission(args)
@@ -1046,9 +1048,14 @@ class ServiceJobWorker:
         job_id = self.queue.find_nonterminal(document["dedup_keys"][0])
         if job_id is None:
             job_id = self.queue.publish(document)
-        self._watchlist_jobs[job_id] = scope
+        with self._reap_lock:
+            self._watchlist_jobs[job_id] = scope
 
     def reap(self):
+        with self._reap_lock:
+            self._reap_locked()
+
+    def _reap_locked(self):
         """Apply durable terminal outcomes on a later parent invocation."""
         background = self.background
         if background is None:

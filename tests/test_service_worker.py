@@ -195,6 +195,34 @@ class ServiceJobWorkerTests(unittest.TestCase):
         self.assertEqual(background._pending, {})
         self.assertEqual(len(self.pending_documents()), 0)
 
+    def test_concurrent_reaping_applies_and_deletes_each_job_once(self):
+        background = BackgroundPrefetch(
+            MemorySettings(),
+            AtomicJsonCache(os.path.join(self.temporary.name, "reap-race-trailers.json")),
+            AtomicJsonCache(os.path.join(self.temporary.name, "reap-race-shows.json")),
+            lambda: "en-US",
+            worker=self.worker,
+        )
+        self.worker.bind_background(background)
+        background.submit_trailers("movie", [42], missing_known=True)
+        claim = self.queue.claim_one()
+        self.queue.complete(claim, trailer_result())
+        errors = []
+
+        def reap():
+            try:
+                self.worker.reap()
+            except Exception as error:
+                errors.append(error)
+
+        callers = [threading.Thread(target=reap) for _ in range(2)]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join(2)
+        self.assertEqual(errors, [])
+        self.assertEqual(self.worker._metadata_jobs, {})
+
     def test_watchlist_serializes_scope_digest_generation_not_raw_session(self):
         background = BackgroundPrefetch(
             MemorySettings(tmdb_access_token="very-private-session"),
