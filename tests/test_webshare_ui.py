@@ -491,6 +491,126 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(self.client.api_calls[0][1], {"ident": "abc", "wst": "token"})
         self.assertEqual(self.plugin.end_of_directory_calls, [])
 
+    def test_main_menu_renders_static_routes_without_authentication(self):
+        self.client.token = None
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["menu"]({"action": "menu"})
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.client.revalidate_calls, 0)
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["Search", "Queue", "History", "Backup DB", "Settings"],
+        )
+        self.assertEqual(
+            [url_params(item["url"])["action"] for item in self.plugin.items],
+            ["search", "queue", "history", "db", "settings"],
+        )
+        self.assertEqual(self.plugin.notifications, [])
+        self.assertEqual(len(self.plugin.end_of_directory_calls), 1)
+
+    def test_installed_database_root_group_and_detail_do_not_authenticate(self):
+        from yawsp_app.backup_db import BackupDBStore
+
+        BackupDBStore(self.profile).ensure_installed(lambda: archive_bytes())
+        self.client.token = None
+
+        for params, expected_label in (
+            ({"action": "db"}, "A"),
+            ({"action": "db", "file": "A.txt"}, "Film"),
+            (
+                {"action": "db", "file": "A.txt", "key": "movie-1"},
+                "HD - CZ (1 MB)",
+            ),
+        ):
+            with self.subTest(params=params):
+                self.plugin.items.clear()
+                result = self.handlers["db"](params)
+                self.assertTrue(result.succeeded)
+                self.assertTrue(self.find_item(expected_label))
+
+        self.assertEqual(self.client.revalidate_calls, 0)
+        self.assertEqual(self.client.api_calls, [])
+        self.assertEqual(self.session.calls, [])
+        self.assertEqual(self.worker_session.calls, [])
+        self.assertEqual(self.plugin.notifications, [])
+
+    def test_installed_database_queue_still_authenticates_at_use(self):
+        from yawsp_app.backup_db import BackupDBStore
+
+        BackupDBStore(self.profile).ensure_installed(lambda: archive_bytes())
+        self.client.api_responses["queue_file"] = [
+            xml("<response><status>OK</status></response>")
+        ]
+
+        result = self.handlers["db"]({"action": "db", "toqueue": "stream-1"})
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(result.update_listing)
+        self.assertEqual(self.client.revalidate_calls, 1)
+        self.assertEqual(
+            self.client.api_calls,
+            [("queue_file", {"ident": "stream-1", "wst": "token"})],
+        )
+
+    def test_history_dedup_uses_canonical_whole_content_and_first_occurrence(self):
+        from yawsp_app import webshare_ui
+
+        source = [
+            {
+                "ident": "abc",
+                "name": "Movie",
+                "size": 1,
+                "pairs": [{"language": "CZ", "quality": "HD"}],
+                "streams": {"video": ["one", "two"]},
+            },
+            {
+                "streams": {"video": ["one", "two"]},
+                "pairs": [{"quality": "HD", "language": "CZ"}],
+                "size": True,
+                "name": "Movie",
+                "ident": "abc",
+            },
+            {
+                "ident": "abc",
+                "name": "Movie",
+                "size": 2,
+                "pairs": [{"language": "CZ", "quality": "HD"}],
+                "streams": {"video": ["one", "two"]},
+            },
+            {
+                "ident": "abc",
+                "name": "Movie",
+                "size": 1,
+                "pairs": [{"language": "CZ", "quality": "HD"}],
+                "streams": {"video": ["two", "one"]},
+            },
+            {
+                "ident": "abc",
+                "name": "Movie",
+                "size": 1,
+                "pairs": [{"language": "CZ", "quality": "HD"}],
+                "streams": {"video": ["one", "two"]},
+            },
+        ]
+        deduplicate = getattr(webshare_ui, "_deduplicate_history", None)
+
+        self.assertTrue(
+            callable(deduplicate),
+            "history deduplication needs a reusable canonical whole-content helper",
+        )
+        result = deduplicate(source)
+
+        self.assertEqual(result, [source[0], source[2], source[3]])
+        self.assertEqual(
+            [id(item) for item in result],
+            [id(source[0]), id(source[2]), id(source[3])],
+        )
+
     def test_history_removal_clears_download_ids_then_reloads(self):
         self.client.api_responses["history"] = [
             xml(
@@ -514,7 +634,7 @@ class WebshareUITests(unittest.TestCase):
         )
         self.assertEqual(self.client.api_calls[1][1]["ids[]"], ["download-1"])
 
-    def test_history_removal_never_clears_missing_or_blank_download_ids(self):
+    def test_history_removal_without_valid_ids_reuses_fetched_response(self):
         download_id_elements = (
             "<download_id />",
             "",
@@ -534,7 +654,6 @@ class WebshareUITests(unittest.TestCase):
                             + history_item
                             + "</response>"
                         ),
-                        xml("<response><status>OK</status></response>"),
                     ],
                     # Keep the assertion focused on the forbidden request, not a
                     # fake-session error if the production guard regresses.
@@ -547,8 +666,9 @@ class WebshareUITests(unittest.TestCase):
                 self.assertTrue(result.update_listing)
                 self.assertEqual(
                     [call[0] for call in self.client.api_calls],
-                    ["history", "history"],
+                    ["history"],
                 )
+                self.assertTrue(self.find_item("Movie.mkv (?)"))
 
     def test_malformed_queue_and_history_status_fail_through_real_runner(self):
         responses = (

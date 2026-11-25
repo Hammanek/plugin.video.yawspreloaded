@@ -61,6 +61,42 @@ def _to_dict(xml, skip=()):
     return result
 
 
+_HISTORY_LIST = object()
+_HISTORY_TUPLE = object()
+_HISTORY_SET = object()
+_HISTORY_FROZENSET = object()
+
+
+def _history_content_key(value):
+    """Recursively hash normal dictionary content without lossy field shortcuts."""
+    if isinstance(value, dict):
+        return frozenset(
+            (_history_content_key(key), _history_content_key(item))
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return (_HISTORY_LIST, tuple(map(_history_content_key, value)))
+    if isinstance(value, tuple):
+        return (_HISTORY_TUPLE, tuple(map(_history_content_key, value)))
+    if isinstance(value, set):
+        return (_HISTORY_SET, frozenset(map(_history_content_key, value)))
+    if isinstance(value, frozenset):
+        return (_HISTORY_FROZENSET, frozenset(map(_history_content_key, value)))
+    return value
+
+
+def _deduplicate_history(files):
+    """Return first occurrences using the former whole-dictionary equality."""
+    files_by_content = set()
+    unique = []
+    for file_data in files:
+        key = _history_content_key(file_data)
+        if key not in files_by_content:
+            files_by_content.add(key)
+            unique.append(file_data)
+    return unique
+
+
 def _sizelize(value, units=None):
     units = units or ("B", "KB", "MB", "GB")
     if not value:
@@ -686,6 +722,7 @@ def build_webshare_handlers(
         if not token:
             return DirectoryResult(succeeded=False)
         update_listing = False
+        xml = None
         if "remove" in params:
             xml = client._post("history", {"wst": token})
             ids = []
@@ -699,18 +736,24 @@ def build_webshare_handlers(
                     client._post("clear_history", {"ids[]": ids, "wst": token}),
                     runtime.localized(30104),
                 )
+                xml = None
             update_listing = True
         if "toqueue" in params:
             to_queue(params["toqueue"], token)
             update_listing = True
 
-        xml = client._post("history", {"wst": token})
+        if xml is None:
+            xml = client._post("history", {"wst": token})
         if notify_api_result(xml, None):
-            files = []
-            for element in xml.iter("file"):
-                file_data = _to_dict(element, ("ended_at", "download_id", "started_at"))
-                if _valid_file_data(runtime, file_data) and file_data not in files:
-                    files.append(file_data)
+            files = (
+                _to_dict(element, ("ended_at", "download_id", "started_at"))
+                for element in xml.iter("file")
+            )
+            files = _deduplicate_history(
+                file_data
+                for file_data in files
+                if _valid_file_data(runtime, file_data)
+            )
             for file_data in files:
                 commands = [
                     (
@@ -947,9 +990,6 @@ def build_webshare_handlers(
         )
 
     def menu(params):
-        token = token_or_notify()
-        if not token:
-            return DirectoryResult(succeeded=False)
         runtime.set_category(runtime.addon_info("name"))
         entries = (
             (runtime.localized(30201), "search", "DefaultAddonsSearch.png"),

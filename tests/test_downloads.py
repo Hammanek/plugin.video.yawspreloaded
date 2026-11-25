@@ -55,6 +55,45 @@ class LimitedWriteFileOps(LocalFileOps):
         return LimitedWriteFile(open(path, "wb"), self.limit)
 
 
+class RecordingWriteFile:
+    def __init__(self, raw, limit=None):
+        self.raw = raw
+        self.limit = limit
+        self.calls = []
+
+    def write(self, data):
+        accepted = data if self.limit is None else data[: self.limit]
+        self.calls.append(len(accepted))
+        return self.raw.write(accepted)
+
+    def close(self):
+        self.raw.close()
+
+
+class RecordingWriteFileOps(LocalFileOps):
+    def __init__(self, limit=None):
+        super().__init__()
+        self.limit = limit
+        self.outputs = []
+
+    def open_write(self, path):
+        self.write_paths.append(path)
+        output = RecordingWriteFile(open(path, "wb"), self.limit)
+        self.outputs.append(output)
+        return output
+
+
+class ChunkedResponse(FakeResponse):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requested_chunk_sizes = []
+
+    def iter_content(self, chunk_size=1, decode_unicode=False):
+        self.requested_chunk_sizes.append(chunk_size)
+        for offset in range(0, len(self._content), chunk_size):
+            yield self._content[offset : offset + chunk_size]
+
+
 class FailingReplaceFileOps(LocalFileOps):
     def replace(self, source, destination):
         raise OSError("forced replacement failure")
@@ -82,6 +121,30 @@ class DownloadTests(unittest.TestCase):
     def response(self, **kwargs):
         kwargs.setdefault("forbid_content", True)
         return FakeResponse(**kwargs)
+
+    def download_payload(self, payload, chunk_size=None, write_limit=None):
+        response = ChunkedResponse(
+            content=payload,
+            headers={"Content-Length": str(len(payload))},
+            forbid_content=True,
+        )
+        self.file_ops = RecordingWriteFileOps(limit=write_limit)
+        kwargs = {} if chunk_size is None else {"chunk_size": chunk_size}
+
+        receipt = stream_download(
+            response,
+            self.destination,
+            "Movie",
+            self.file_ops,
+            **kwargs,
+        )
+
+        with open(self.destination, "rb") as downloaded:
+            content = downloaded.read()
+        self.assertEqual(receipt.bytes_written, len(payload))
+        self.assertEqual(content, payload)
+        self.assertTrue(response.closed)
+        return response, self.file_ops.outputs[0].calls
 
     def test_http_error_creates_no_destination_or_temporary_file(self):
         response = self.response(status_code=403, chunks=[b"forbidden"])
@@ -165,6 +228,40 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(progress.calls[-1], (100, "Replacement"))
         percentages = [percent for percent, _ in progress.calls]
         self.assertEqual(len(percentages), len(set(percentages)))
+
+    def test_custom_chunk_sizes_control_exact_writes_without_changing_data(self):
+        payload = bytes(range(256)) * (4 * 1024)
+
+        _, writes_64k = self.download_payload(payload, chunk_size=64 * 1024)
+        _, writes_256k = self.download_payload(payload, chunk_size=256 * 1024)
+        _, writes_1024k = self.download_payload(payload, chunk_size=1024 * 1024)
+
+        self.assertEqual(writes_64k, [64 * 1024] * 16)
+        self.assertEqual(writes_256k, [256 * 1024] * 4)
+        self.assertEqual(writes_1024k, [1024 * 1024])
+
+    def test_default_chunk_size_reduces_writes_fourfold_over_64k(self):
+        payload = bytes(range(256)) * (4 * 1024)
+
+        response, default_writes = self.download_payload(payload)
+        _, writes_64k = self.download_payload(payload, chunk_size=64 * 1024)
+
+        self.assertEqual(len(default_writes), 4)
+        self.assertEqual(len(writes_64k), 16)
+        self.assertEqual(default_writes, [256 * 1024] * 4)
+        self.assertEqual(response.requested_chunk_sizes, [256 * 1024])
+
+    def test_custom_chunks_preserve_exact_short_write_semantics(self):
+        payload = bytes(range(256)) * (4 * 1024)
+
+        for chunk_size in (64 * 1024, 256 * 1024, 1024 * 1024):
+            with self.subTest(chunk_size=chunk_size):
+                _, writes = self.download_payload(
+                    payload,
+                    chunk_size=chunk_size,
+                    write_limit=32 * 1024,
+                )
+                self.assertEqual(writes, [32 * 1024] * 32)
 
     def test_short_response_for_declared_length_is_not_promoted(self):
         response = self.response(

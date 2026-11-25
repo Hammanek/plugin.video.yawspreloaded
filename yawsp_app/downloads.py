@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import uuid
 
 
-_CHUNK_SIZE = 64 * 1024
+_CHUNK_SIZE = 256 * 1024
 _DEFAULT_PROGRESS_INTERVAL = 10
 
 
@@ -72,10 +72,18 @@ def _write_all(output, chunk, display_name):
     return offset
 
 
-def stream_download(response, destination, display_name, file_ops, progress=None):
+def stream_download(
+    response,
+    destination,
+    display_name,
+    file_ops,
+    progress=None,
+    chunk_size=_CHUNK_SIZE,
+):
     """Stream a valid response to a unique sibling file, then atomically promote it.
 
     ``progress`` is an optional callable receiving ``(percent, display_name)``.
+    ``chunk_size`` is forwarded to ``iter_content`` and defaults to 256 KiB.
     Its optional integer ``interval`` attribute controls percentage intervals and
     is clamped to at least one. A 100-percent update is emitted only after
     successful validation and atomic replacement; no Kodi notification is sent.
@@ -92,7 +100,7 @@ def stream_download(response, destination, display_name, file_ops, progress=None
 
         output = file_ops.open_write(partial_path)
         try:
-            for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+            for chunk in response.iter_content(chunk_size=chunk_size):
                 if not chunk:
                     continue
                 bytes_written += _write_all(output, chunk, display_name)
