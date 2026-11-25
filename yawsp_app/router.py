@@ -106,16 +106,6 @@ class _PluginAdapter:
         return dialog.notification(heading, message, icon, time, sound=bool(sound))
 
 
-class _KodiInvocationWorker:
-    """Complete queued operations before Kodi tears down the invocation interpreter."""
-
-    def submit(self, function, *args):
-        return function(*args)
-
-    def shutdown(self, wait=False):
-        pass
-
-
 class _ProductionOwner:
     """Own the default executor/session for the add-on process, not one route."""
 
@@ -204,7 +194,6 @@ class _ProductionOwner:
             logger=_LOGGER,
             snapshot_store=self.snapshot_store,
             genre_repository=self.genre_repository,
-            worker=_KodiInvocationWorker(),
         )
         self.download_jobs = DownloadJobManager(
             session_factory=worker_session_factory,
