@@ -41,6 +41,14 @@ class TMDBAbortError(TMDBError):
     """The caller's abort predicate interrupted TMDB work."""
 
 
+def _sanitize_requests_error(error):
+    """Retain the direct cause type while keeping nested request details out of logs."""
+    error.args = ()
+    error.__context__ = None
+    error.__cause__ = None
+    error.__suppress_context__ = True
+
+
 @dataclass(frozen=True)
 class TrailerLookup:
     status: Literal["hit", "missing", "error"]
@@ -172,7 +180,7 @@ class TMDBClient:
                     timeout=_TIMEOUT,
                 )
             except requests.RequestException as error:
-                error.args = ()
+                _sanitize_requests_error(error)
                 raise TMDBError("TMDB {0} request failed".format(path)) from error
 
             if response.status_code == 429 and attempt + 1 < _MAX_ATTEMPTS:
@@ -187,7 +195,7 @@ class TMDBClient:
             except requests.RequestException as error:
                 if response.status_code == 401 and invalidate_on_unauthorized:
                     self._invalidate_request_session(session_id)
-                error.args = ()
+                _sanitize_requests_error(error)
                 raise TMDBError(
                     "TMDB {0} returned HTTP {1}".format(path, response.status_code)
                 ) from error

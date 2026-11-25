@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
 import yawsp_app.tmdb as tmdb_service
 from tests.support.http_stubs import FakeResponse, FakeSession
@@ -268,6 +269,77 @@ class ClientTests(TMDBServiceTestCase):
         self.assertIs(cause, failure)
         self.assertIs(type(cause), requests.Timeout)
         self.assertIs(cause.request, prepared)
+        self.assertEqual(str(error), "TMDB /3/example request failed")
+
+    def test_nested_adapter_transport_context_excludes_request_credentials(self):
+        api_key = "synthetic-adapter-api-key"
+        session_id = "synthetic-adapter-session-id"
+        client_name = "synthetic-max-retry-client"
+
+        class SyntheticMaxRetryAdapter(requests.adapters.HTTPAdapter):
+            def __init__(self):
+                super().__init__()
+                self.max_retry_error = None
+                self.original_error = None
+                self.original_context = None
+
+            def get_connection_with_tls_context(self, request, verify, **kwargs):
+                return self
+
+            def urlopen(self, method, url, **kwargs):
+                self.max_retry_error = MaxRetryError(
+                    client_name, url, reason=ConnectTimeoutError()
+                )
+                raise self.max_retry_error
+
+            def send(self, request, **kwargs):
+                try:
+                    return super().send(request, **kwargs)
+                except requests.ConnectTimeout as error:
+                    self.original_error = error
+                    self.original_context = error.__context__
+                    raise
+
+        adapter = SyntheticMaxRetryAdapter()
+        session = requests.Session()
+        session.trust_env = False
+        session.mount("http://", adapter)
+        self.addCleanup(session.close)
+        settings = MemorySettings(tmdb_api_key=api_key, tmdb_access_token=session_id)
+        client = TMDBClient(
+            session,
+            settings,
+            locale_mapper=lambda: "cs-CZ",
+            api_url="http://api.themoviedb.org",
+        )
+
+        with self.assertRaises(TMDBError) as caught:
+            client.get("/3/example")
+
+        error = caught.exception
+        cause = error.__cause__
+        self.assertIs(cause, adapter.original_error)
+        self.assertIs(type(cause), requests.ConnectTimeout)
+        self.assertIs(adapter.original_context, adapter.max_retry_error)
+        self.assertIs(type(adapter.original_context), MaxRetryError)
+        self.assertNotIn(cause.request.url, (None, ""))
+        for secret in (api_key, session_id, client_name):
+            self.assertIn(secret, str(adapter.original_context))
+
+        rendered = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with self.assertLogs(client.logger, level="ERROR") as logged:
+            client.logger.exception("Synthetic TMDB public log", exc_info=error)
+        public_log = "\n".join(logged.output)
+        for secret in (api_key, session_id, client_name):
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn(secret, public_log)
+            self.assertIn(secret, str(adapter.original_context))
+        self.assertIsNone(cause.__context__)
+        self.assertIsNone(cause.__cause__)
+        self.assertTrue(cause.__suppress_context__)
+        self.assertEqual(cause.args, ())
         self.assertEqual(str(error), "TMDB /3/example request failed")
 
     def test_error_responses_close_but_success_remains_open_for_parsing(self):
