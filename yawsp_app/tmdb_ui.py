@@ -149,6 +149,7 @@ def _pending_session_id(client, request_token):
             "POST",
             "/3/authentication/session/new",
             json_data={"request_token": request_token},
+            invalidate_on_unauthorized=False,
         )
     except TMDBError as error:
         cause = error.__cause__
@@ -579,9 +580,12 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def watchlist(params):
         runtime.set_category("TMDB Watchlist")
+        watched_action = bool(params.get("watched"))
         if not valid_configuration():
+            if watched_action:
+                return ActionResult(handled=False)
             return DirectoryResult(succeeded=False)
-        if params.get("watched"):
+        if watched_action:
             return watched(params)
         if not runtime.get_setting("tmdb_access_token").strip():
             if "category" not in params:

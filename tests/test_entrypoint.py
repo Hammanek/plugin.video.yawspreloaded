@@ -265,6 +265,28 @@ class EntrypointTests(unittest.TestCase):
             production_router.close()
             background.close.assert_called_once_with(wait=False)
 
+    def test_production_watched_without_api_key_is_one_clean_action_completion(self):
+        with install_kodi_stubs(), mock.patch.object(
+            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=tmdb_watchlist"]
+        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+            production_router.close()
+            owner = production_router._get_owner()
+            logger = RecordingLogger()
+            owner.runner.logger = logger
+            recorder = sys.modules["xbmcplugin"]._recorder
+            addon = sys.modules["xbmcaddon"].Addon()
+
+            production_router.router(
+                "action=tmdb_watchlist&category=movies&watched=42"
+            )
+
+            self.assertEqual(len(recorder.resolved_url_calls), 1)
+            self.assertFalse(recorder.resolved_url_calls[0]["succeeded"])
+            self.assertEqual(recorder.end_of_directory_calls, [])
+            self.assertEqual(len(recorder.notifications), 1)
+            self.assertEqual(addon.open_settings_calls, 1)
+            self.assertEqual(logger.calls, [])
+
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []
 

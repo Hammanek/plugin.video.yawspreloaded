@@ -127,7 +127,9 @@ class TMDBClient:
             self.sleeper(interval)
             remaining -= interval
 
-    def request(self, method, path, params=None, json_data=None):
+    def request(
+        self, method, path, params=None, json_data=None, invalidate_on_unauthorized=True
+    ):
         query = {"language": self.locale_mapper()}
         if params:
             query.update(params)
@@ -165,7 +167,7 @@ class TMDBClient:
             try:
                 response.raise_for_status()
             except requests.RequestException as error:
-                if response.status_code == 401:
+                if response.status_code == 401 and invalidate_on_unauthorized:
                     self.invalidate_session()
                 raise TMDBError(
                     "TMDB {0} returned HTTP {1}".format(path, response.status_code)

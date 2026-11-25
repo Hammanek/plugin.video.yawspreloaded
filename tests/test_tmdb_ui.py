@@ -8,11 +8,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import requests
 
+from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
-from yawsp_app.tmdb import ShowRepository, TMDBError, TrailerRepository
+from yawsp_app.tmdb import ShowRepository, TMDBClient, TMDBError, TrailerRepository
 from yawsp_app.tmdb_ui import build_tmdb_handlers
 
 
@@ -110,7 +111,9 @@ class Client:
     def get_account_id(self):
         return self.account_id
 
-    def request(self, method, path, params=None, json_data=None):
+    def request(
+        self, method, path, params=None, json_data=None, invalidate_on_unauthorized=True
+    ):
         self.calls.append((method, path, params, json_data))
         if not self.post_results:
             raise AssertionError("unexpected TMDB request " + path)
@@ -124,6 +127,17 @@ class Client:
 
     def invalidate_identity(self):
         self.settings.setSetting("tmdb_account_id", "")
+
+
+class ServiceSettings:
+    def __init__(self, addon):
+        self.addon = addon
+
+    def get(self, key):
+        return self.addon.getSetting(key)
+
+    def set(self, key, value):
+        self.addon.setSetting(key, value)
 
 
 class Background:
@@ -516,6 +530,22 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(info["duration"], 3000)
         self.assertEqual(info["aired"], "2026-11-20")
 
+    def authenticate_with_real_client(self, *responses):
+        token_response = FakeResponse(json_data={"request_token": "request-token"})
+        self.http_session = FakeSession([token_response] + list(responses))
+        self.client = TMDBClient(
+            self.http_session,
+            ServiceSettings(self.addon),
+            locale_mapper=lambda: "en-US",
+            clock=self.clock,
+            sleeper=lambda seconds: None,
+            logger=self.ui_logger,
+        )
+        self.handlers = self.build_handlers()
+        return self.runner.run_action(
+            lambda: self.handlers["tmdb_auth"]({"action": "tmdb_auth"})
+        )
+
     def authenticate(self, **params):
         self.client.queue_get(
             "/3/authentication/token/new", {"request_token": "request-token"}
@@ -575,6 +605,53 @@ class TMDBUITests(unittest.TestCase):
         self.assertNotIn("Action(Back)", [event for event in self.events])
         self.assertEqual(len(self.plugin.notifications), 1)
         self.assertEqual(self.ui_logger.calls, [])
+
+    def test_real_client_pending_401_then_abort_preserves_existing_identity(self):
+        pending = FakeResponse(json_data={"success": False}, status_code=401)
+        self.monitor.abort = True
+
+        result = self.authenticate_with_real_client(pending)
+
+        self.assertFalse(result.handled)
+        self.assertTrue(pending.closed)
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertEqual(self.addon.getSetting("tmdb_account_id"), "account-1")
+
+    def test_real_client_pending_401_then_user_close_preserves_existing_identity(self):
+        pending = FakeResponse(json_data={"success": False}, status_code=401)
+        window_calls = []
+
+        def window():
+            window_calls.append(1)
+            return 12007 if len(window_calls) == 1 else 10000
+
+        self.runtime.current_window_id = window
+        result = self.authenticate_with_real_client(pending)
+
+        self.assertFalse(result.handled)
+        self.assertTrue(pending.closed)
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertEqual(self.addon.getSetting("tmdb_account_id"), "account-1")
+
+    def test_real_client_pending_401_then_success_replaces_identity_only_on_success(self):
+        pending = FakeResponse(json_data={"success": False}, status_code=401)
+        success = FakeResponse(json_data={"session_id": "new-session"})
+
+        result = self.authenticate_with_real_client(pending, success)
+
+        self.assertTrue(result.handled)
+        self.assertTrue(pending.closed)
+        self.assertTrue(success.closed)
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "new-session")
+        self.assertEqual(self.addon.getSetting("tmdb_account_id"), "")
+        setting_writes = [call for call in self.addon.calls if call[0] == "setSetting"]
+        self.assertEqual(
+            setting_writes,
+            [
+                ("setSetting", "tmdb_account_id", ""),
+                ("setSetting", "tmdb_access_token", "new-session"),
+            ],
+        )
 
     def test_qr_polling_exception_is_handled_and_still_closes_active_viewer(self):
         self.client.post_results = [RuntimeError("poll failed")]
