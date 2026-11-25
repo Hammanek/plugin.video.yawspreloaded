@@ -16,7 +16,6 @@
         <assets>
             <icon>resources/icon.png</icon>
         </assets>
-        <news>
-        </news>
+        <news>Verze 2.0.0 přináší modulární architekturu s jednotným routerem, TMDB watchlist s QR připojením a frontu i historii stahování. Rezervace metadat jsou omezené na 32 úloh na pozadí plus jednu interaktivní. Životní cyklus doplňku byl ověřen v reálném Kodi a zaznamenán v poznámkách k vydání.</news>
     </extension>
 </addon>

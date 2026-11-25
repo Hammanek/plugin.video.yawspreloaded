@@ -48,6 +48,9 @@ class DocumentationContractTests(unittest.TestCase):
             "yawsp_app/search.py",
             "yawsp_app/downloads.py",
             "yawsp_app/json_cache.py",
+            "yawsp_app/metadata.py",
+            "yawsp_app/discovery_ui.py",
+            "yawsp_app/discovery_window.py",
             "yawsp_app/tmdb.py",
             "yawsp_app/webshare_ui.py",
             "yawsp_app/tmdb_ui.py",
@@ -130,6 +133,125 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             with self.subTest(benchmark=benchmark):
                 self.assertIn(benchmark, self.readme)
+
+    def test_addon_news_is_concise_xml_for_the_existing_2_0_0_release(self):
+        addon = ET.parse(str(ROOT / "addon.xml")).getroot()
+        news = addon.findtext("./extension[@point='xbmc.addon.metadata']/news")
+        self.assertIsNotNone(news)
+        normalized = " ".join(news.split())
+        self.assertTrue(normalized)
+        self.assertLessEqual(len(normalized), 1000)
+        self.assertIn("2.0.0", normalized)
+        for phrase in ("jednotným routerem", "32", "watchlist", "QR", "front", "histori", "Kodi"):
+            with self.subTest(phrase=phrase):
+                self.assertRegex(normalized, "(?i)" + re.escape(phrase))
+        for unreleased in (
+            "Objevit",
+            "discovery_native_wall",
+            "Backup DB",
+            "InfoTag",
+            "nativní služb",
+            "transport",
+            "CI",
+            "2.0.1",
+            "2.1",
+        ):
+            with self.subTest(unreleased=unreleased):
+                self.assertNotRegex(normalized, "(?i)" + re.escape(unreleased))
+
+    def test_readme_documents_native_metadata_and_manual_watchlist_refresh(self):
+        for phrase in (
+            "InfoTagVideo",
+            "getVideoInfoTag()",
+            "setFirstAired",
+            'setInfo("video", info)',
+            "Kodi 19",
+            "celý vstup",
+            "refresh=1",
+            "Obnovit",
+            "Místní mezipaměť",
+            "poslední platný snapshot",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.readme)
+        self.assertRegex(self.readme, r"(?i)chyb\w*.{0,180}snapshot|snapshot.{0,180}chyb\w*")
+        self.assertRegex(self.readme, r"(?i)ručn\w*.{0,250}duplicitn\w*.{0,100}(?:požadav|refresh)|duplicitn\w*.{0,150}(?:watchlist|pozadí)")
+        self.assertIn("Žádné výsledky", self.readme)
+        self.assertIn("raw_count", self.readme)
+        self.assertRegex(self.readme, r"(?i)stránkov\w*.{0,160}raw_count|raw_count.{0,160}stránkov\w*")
+
+    def test_readme_documents_complete_discovery_navigation_and_presentation(self):
+        self.assertIn(
+            "**Objevit → Vyhledávání → Chci si stáhnout → Historie stahování → Nastavení → TMDB Watchlist**",
+            self.readme,
+        )
+        for phrase in (
+            "popular_movies",
+            "popular_shows",
+            "top_rated_movies",
+            "top_rated_shows",
+            "nejvýše jednu stránku",
+            "nejvýše jeden sdílený požadavek na žánry",
+            "API klíč",
+            "sort=largest",
+            "WindowXML",
+            "Netflix",
+            "Back",
+            "discovery_native_wall=true",
+            "příštím otevření",
+            "InfoWall",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.readme)
+        self.assertRegex(self.readme, r"(?i)nepotřebuje.{0,140}(?:osobní.{0,30})?(?:účet|session)|bez.{0,80}(?:osobního )?(?:účtu|session)")
+        self.assertRegex(self.readme, r"(?i)dálkov\w*.{0,120}kláves|kláves.{0,120}dálkov\w*")
+        self.assertRegex(self.readme, r"(?i)načítání.{0,120}prázdn\w*.{0,120}chyb\w*|prázdn\w*.{0,120}chyb\w*.{0,120}Obnovit")
+        self.assertRegex(self.readme, r"(?i)bez autoplay|automatick\w* přehrávání")
+        self.assertRegex(self.readme, r"(?i)watched.{0,100}(?:prefetch|pozadí)|prefetch.{0,100}watched")
+        self.assertRegex(self.readme, r"(?i)watchlist.{0,160}(?:pohled|styl).{0,80}neměn|(?:pohled|styl).{0,80}watchlist\w*.{0,80}neměn")
+
+    def test_readme_documents_ci_verifier_without_persistent_archive(self):
+        for phrase in (
+            ".github/workflows/tests.yml",
+            "contents: read",
+            "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c",
+            "3.8/3.12",
+            "python -B -m unittest discover -s tests -v",
+            "python -B scripts/verify_release.py",
+            "HEAD",
+            "runtime_files=",
+            "sha256=",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.readme)
+        self.assertRegex(self.readme, r"(?i)dynami\w*.{0,100}(?:počet|soubor)|(?:počet|soubor).{0,100}dynami\w*")
+        self.assertRegex(self.readme, r"(?i)dočasn\w*.{0,160}(?:archiv|ZIP)|(?:archiv|ZIP).{0,160}dočasn\w*")
+        self.assertRegex(self.readme, r"(?i)neukládá.{0,80}(?:trvalý|release)|žádný.{0,60}trvalý.{0,40}(?:archiv|artefakt)")
+        self.assertRegex(self.readme, r"(?i)lokáln\w* offline.{0,180}(?:hosted|GitHub Actions)|(?:hosted|GitHub Actions).{0,180}lokáln\w* offline")
+
+    def test_readme_documents_durable_backups_without_exposing_archive_data(self):
+        self.assertIn("Kodi/userdata/backup/plugin.video.yawspreloaded", self.readme)
+        for filename in (
+            "yawsp-main-profile-pre35b4e4a.zip",
+            "yawsp-main-profile-pre2.0.0-manifest.zip",
+        ):
+            with self.subTest(filename=filename):
+                self.assertIn(filename, self.readme)
+        self.assertIn("SHA-256", self.readme)
+        self.assertRegex(self.readme, r"(?i)Temp.{0,180}originál|originál.{0,180}Temp")
+        self.assertRegex(self.readme, r"(?i)ne(?:vypis|zobraz)\w*.{0,80}(?:obsah|taj|přihlaš)|bez.{0,50}výpis\w*.{0,50}(?:obsah|archiv)")
+
+    def test_readme_limits_live_environment_claims_and_marks_task9_pending(self):
+        self.assertIn("Kodi 21.2 (Omega), Windows Store x64", self.readme)
+        for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS", "Task 9"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.readme)
+        self.assertRegex(self.readme, r"(?i)Python 3\.8.{0,100}(?:AST|statick).{0,200}(?:ne|není).{0,120}Kodi 19|Kodi 19.{0,150}Python 3\.8")
+        self.assertRegex(self.readme, r"(?i)nebyl\w*.{0,100}skutečn\w* přehrávání|skutečn\w* přehrávání.{0,100}nebyl\w*")
+        self.assertRegex(self.readme, r"(?i)této větve.{0,140}Objevit|Objevit.{0,140}této větve")
+        self.assertRegex(self.readme, r"(?i)Task 9.{0,220}před sloučením|před sloučením.{0,220}Task 9")
+        self.assertRegex(self.readme, r"(?i)nativn\w*.{0,30}služb\w*.{0,100}nebyl\w* vydán|nebyl\w* vydán.{0,100}nativn\w*.{0,30}služb\w*")
 
     def test_performance_coverage_resolves_real_symbols_and_test_methods(self):
         coverage = json.loads(COVERAGE_PATH.read_text(encoding="utf-8"))

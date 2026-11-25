@@ -8,7 +8,11 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 ## ✨ Klíčové funkce
 
 - 🧩 **Modulární architektura 2.0.0** – Webshare, TMDB, download a Kodi UI jsou oddělené komponenty, s jednotným routerem a zachovanými akcemi pro média, frontu, historii i watchlist.
-- 🗑️ **Odstraněná Backup DB** – Zastaralá JSON/textová Backup DB už nemá položku menu, instalaci ani akce `db` a `searchdb`. Staré záložky s těmito akcemi otevřou obyčejné hlavní menu bez autentizace, sítě či čtení databázových souborů. Existující uživatelské soubory `database*.json`, `database*.txt`, adresář `db` a trvalé zálohy se nemažou ani nemigrují.
+- 🧭 **Objevit** – Veřejné katalogy populárních a nejlépe hodnocených filmů a seriálů TMDB v nativním okně nebo v pohledu InfoWall; výběr pokračuje do hledání Webshare.
+- 🏷️ **Nativní metadata Kodi** – Adaptér `yawsp_app/metadata.py` používá `InfoTagVideo` z `getVideoInfoTag()` a dedikované settery včetně `setFirstAired`. Kodi 19 nemá všechny dedikované settery z Kodi 20, proto adaptér v takovém případě jednou předá celý vstup přes `setInfo("video", info)`. Nešlo o živé ověření běhu na Kodi 19.
+- 🔄 **Ruční obnovení watchlistu** – Viditelný řádek **Obnovit** používá explicitní `refresh=1`; kategorie s hodnotou **Místní mezipaměť** označuje data vykreslená z lokálního snapshotu. Po chybě ručního načtení se použije poslední platný snapshot, pokud existuje a stále odpovídá aktuální identitě; po ručním pokusu nevzniká duplicitní okamžitý background watchlist požadavek.
+- 🔎 **Srozumitelné prázdné hledání** – Pokud po kontrole platnosti a porovnání názvů nezůstane žádný zobrazitelný soubor, Webshare ukáže řádek **Žádné výsledky**. Ovládání stránkování se stále odvozuje od nefiltrovaného `raw_count` serveru, takže tato zpráva nepotvrzuje prázdnou celkovou odpověď ani nemaže další stránky.
+- 🗑️ **Odstraněná Backup DB** – Zastaralá JSON/textová Backup DB už nemá položku menu, instalaci ani akce `db` a `searchdb`. Staré záložky s těmito akcemi otevřou obyčejné hlavní menu bez autentizace, sítě či čtení databázových souborů. Existující uživatelské soubory `database*.json`, `database*.txt`, adresář `db` a trvalé zálohy se nemažou ani nemigrují. Skutečné stahování médií a jeho historie zůstávají zachované; `DownloadJobKey` přijímá pouze rodinu `media`.
 - 📺 **Integrace TMDB** – Watchlist filmů a seriálů z TheMovieDB (náhrada za zpoplatněný Trakt), české názvy, popisy a žánry přímo z TMDB.
 - 🔍 **Pokročilé vyhledávání** – Rychlé a přesné vyhledávání přímo v databázi Webshare.
 - 🎬 **Trailer systém** – Možnost přehrát trailery před samotným spuštěním filmu.
@@ -32,11 +36,23 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 3. Vyhledejte stažený soubor a potvrďte instalaci.
 4. V nastavení doplňku vyplňte přihlašovací údaje k Webshare.
 
+### Trvalé zálohy profilu
+
+Dva schválené archivy `yawsp-main-profile-pre35b4e4a.zip` a `yawsp-main-profile-pre2.0.0-manifest.zip` jsou zachované ve Windows Store profilu v trvalém úložišti `Kodi/userdata/backup/plugin.video.yawspreloaded`. Přesné názvy a hodnoty **SHA-256** cílů odpovídají originálům; originály v **Temp** zůstávají odděleně a beze změny. Nevypisuje se obsah archivů, přihlašovací údaje ani jiné tajné hodnoty.
+
 ## ⚙️ Nastavení TMDB
 
 1. Na [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) si zdarma **vyžádejte API klíč** (okamžité schválení).
 2. Zkopírujte **API Key** (32 znaků) do nastavení doplňku, sekce **TMDB**.
 3. Klikněte **Připojit k TMDB...** a naskenujte telefonem zobrazený **QR kód** – po schválení je vše nastavené (jednorázově).
+
+## 🧭 Objevit a pohledy
+
+Hlavní menu má v této větvi přesné pořadí **Objevit → Vyhledávání → Chci si stáhnout → Historie stahování → Nastavení → TMDB Watchlist**. Objevit nabízí čtyři veřejné jednostránkové katalogy: populární filmy (`popular_movies`, `/movie/popular`), populární seriály (`popular_shows`, `/tv/popular`), nejlépe hodnocené filmy (`top_rated_movies`, `/movie/top_rated`) a nejlépe hodnocené seriály (`top_rated_shows`, `/tv/top_rated`). Jeden výběr načte nejvýše jednu stránku a při neprázdném seznamu nejvýše jeden sdílený požadavek na žánry; nepokračuje automaticky dalšími stránkami.
+
+Objevit nepotřebuje osobní TMDB účet, session ani watchlist snapshot; nadále však potřebuje TMDB API klíč. Karty obsahují artwork, lokalizovaný název a metadata, rok, žánry, hodnocení a popis. Výsledek otevře existující hledání Webshare s `sort=largest`, tedy seřazené od největších souborů, bez autoplay, watched změn a background prefetch. Menu původního názvu používá stávající Webshare trasu.
+
+Výchozí vlastní prezentace je nativní okno `WindowXML` inspirované Netflixem se čtyřmi tlačítky kategorií, viditelným fokusem plakátu a detailem vybrané položky. Ovládání respektuje dálkový ovladač i klávesnici a akce **Back**; okno rozlišuje načítání, prázdný výsledek i chybu a v chybovém stavu zaměří tlačítko **Obnovit**. Nastavení `discovery_native_wall=true` přepne až příštím otevření Objevit na běžný nativní pohled **InfoWall**; nevyžaduje reinstalaci a pohled ani styl watchlistu se nemění. Oba způsoby používají stejná data i Webshare handoff.
 
 ## 🧩 Architektura
 
@@ -50,7 +66,10 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 | `yawsp_app/downloads.py` | Kontrolované streamování a bezpečný přechod přes dočasný soubor. |
 | `yawsp_app/json_cache.py` | Defenzivní načítání, TTL záznamy a atomické ukládání cache. |
 | `yawsp_app/watchlist_snapshot.py` | Kompletní snapshoty watchlistu oddělené účtem, médiem a jazykem. |
-| `yawsp_app/download_jobs.py` | Omezená fronta stahování médií se skutečnými stavy úloh a typovanými rezervacemi. |
+| `yawsp_app/download_jobs.py` | Omezená fronta stahování médií se skutečnými stavy úloh a typovanými rezervacemi; `DownloadJobKey` je pouze pro `media`. |
+| `yawsp_app/metadata.py` | Jednotný adaptér `InfoTagVideo`, validace klíčů a celovstupový `setInfo` fallback pro starší Kodi. |
+| `yawsp_app/discovery_ui.py` | Veřejné TMDB katalogy, společný datový model, InfoWall a Webshare handoff Objevit. |
+| `yawsp_app/discovery_window.py` | Nativní `WindowXML` Objevit, fokus, navigace, zpět a opakování načtení. |
 | `yawsp_app/tmdb.py` | TMDB HTTP, cache metadata, sdílené lety a férová fronta prefetch. |
 | `yawsp_app/webshare_ui.py` | Prezentace vyhledávání, deduplikované historie, fronty a handoff stahování médií. |
 | `yawsp_app/tmdb_ui.py` | Prezentace TMDB autorizace, QR, watchlistu, epizod a trailerů. |
@@ -63,6 +82,7 @@ Služby neimportují Kodi moduly; runtime/UI vrstvy jim vkládají potřebné ad
 Verze **2.0.0** dokončuje přechod z původního monolitu na modulární architekturu. Měření níže rozlišuje počty requestů, I/O a souběžných rezervací od tvrzení o latenci.
 
 - **TMDB watchlist:** kompletní snapshot je klíčovaný podle **účtu TMDB, typu média, jazyka a verze schématu**, bez tokenů či přihlašovacích údajů. Warm kompatibilní snapshot se vykreslí lokálně s **nulovými account/watchlist HTTP požadavky**; filtrování a globální řazení stále pracují nad celým seznamem. Data mohou být **dočasně zastaralá**, protože obnova na pozadí se projeví až při **pozdějším otevření** (stale-while-revalidate). Při chybějícím, nekompatibilním nebo poškozeném snapshotu cold cesta znovu načte všechny stránky. Uloží se až po úspěchu a validaci **všech stránek**; při chybě vznikne **žádný částečný snapshot** a předchozí kompletní data zůstanou zachována. Změna identity, autentizace a pravidla watched akcí invalidují pouze příslušný rozsah.
+- **Ruční refresh a lokální cache:** řádek **Obnovit** je viditelný i u prázdného watchlistu a otevírá stejnou kategorii s explicitním `refresh=1`. Manuální cesta načte a validuje všechny stránky před uložením. Kategorie **TMDB Watchlist / Místní mezipaměť** vysvětluje, že se právě ukazuje lokální snapshot; po chybě se opět použije poslední platný snapshot, pokud existuje a odpovídá aktuální identitě, a ohlásí se chyba načtení, nikoli částečná nová data. Dokončení manuální cesty nezařazuje duplicitní okamžitý watchlist refresh na pozadí. Běžné teplé otevření si ponechává dříve popsané stale-while-revalidate chování.
 - **TMDB metadata:** listování použije jeden průchod cache trailerů a epizod a odesílání se skládá do `post_complete` až po `endOfDirectory`. Worker ukládá atomicky po nejvýše osmi validovaných změnách (32 změn = nejvýše čtyři flush operace), zatímco on-demand akce ukládají okamžitě. Férový prefetch střídá trailery a seriály, sdílí aktivní request stejného klíče s on-demand akcí a drží nejvýše **32 background rezervací**. Jedna interaktivní položka může projít před nezahájenou frontou bez čekání na kapacitu; další souběžné interaktivní klíče čekají v jediném prioritním slotu, takže strop je 32 background + 1 interaktivní rezervace. Dokončení, chyba i retry vrací vlastnictví správné claim/frontě. Každé otevření předá metadata prvních 50 viditelných řádků, nikoli neomezenou historii.
 - **Historie odstraněné Backup DB:** dřívější implementace používala atomický **sidecar** mimo datový adresář s relativním jménem, velikostí a `mtime_ns` každého souboru. Shodná teplá instalace prováděla pouze **O(F)** kontrol metadat a `load()` parsoval **pouze vybraný soubor**. Tyto výsledky popisují odstraněný historický kód, ne současnou funkci; produkce už neobsahuje `BackupDBStore`, `backup_db.py` ani `backup_db_job_key`.
 - **Stahování médií:** **přijetí úlohy do fronty není dokončení vzdálené operace ani vzdálený úspěch.** Skutečné získání odkazu, metadat a uspořádání souboru proběhne až ve workeru; duplicitní cíl se odmítne před druhou vzdálenou operací. Původní DB `Container.Refresh` a cold-install event evidence zůstávají pouze historickým měřením odstraněné funkce, nikoli současným chováním médií.
@@ -76,9 +96,13 @@ Verze **2.0.0** dokončuje přechod z původního monolitu na modulární archit
 
 Offline Windows/CPython benchmarky používaly synthetická data, testovací HTTP/Kodi/VFS dvojníky a tehdejší produkční služby. Časové výsledky uvádějí opakovaný **medián a rozsah minimum–maximum**, nikoli akceptační časový limit. Zachovaná media evidence prokazuje například warm watchlist bez account/watchlist requestů, dvě otevření s původně chybějícím account ID za celkem **3 HTTP místo 4**, čtyři místo 32 cache flushů při 32 úspěších a čtyřikrát méně write callů při 256 KiB místo 64 KiB. Jediný datový JSON read při warm DB `ensure_installed()` + výběru souboru místo 55 a cold/migrační/tamper DB cesty jsou výslovně pouze historická evidence odstraněné Backup DB, nikoli reprodukovatelné tvrzení o aktuálním zdroji. U historie je kanonická varianta při H=1000 rychlejší, ale při H=20/200 je měřeně pomalejší a potřebuje lineární pomocnou alokaci. Media event benchmarky dokazují pořadí handoff → skutečné dokončení, nikoli latenci zařízení. Historické mapování původních PERF-01…PERF-09, včetně stavu `removed` pro DB požadavky, je v `.superpowers/sdd/2026-11-25-performance-remediation/performance-coverage.json`.
 
-Novější **333-testová offline regresní sada** doplňuje přesné bounded concurrency, publikaci identity a stale-401 scénáře cold, watched, metadata i background. Dva nezávislé opakované audity finálního runtime commitu byly uzavřené s **0 prokázanými funkčními a 0 výkonovými nálezy**.
+Offline regresní sada doplňuje přesné bounded concurrency, publikaci identity a stale-401 scénáře cold, watched, metadata i background. Dva nezávislé opakované audity finálního runtime commitu byly uzavřené s **0 prokázanými funkčními a 0 výkonovými nálezy**.
 
-Doplňující **live smoke v hlavním profilu Kodi 21.2** ověřil verzi 1.3.15 téhož runtime commitu před čistým povýšením metadata verze: hlavní menu s 6 položkami, 338 výsledků Webshare hledání „Matrix“, 66 filmů TMDB watchlistu včetně warm reopen a skutečné otevření/zrušení klávesnice. Nebyla provedena živá ověření na ARM, NFS/SMB či vzdáleném VFS; offline desktopové časy nejsou slibem latence či propustnosti těchto prostředí.
+Doplňující **live smoke v hlavním profilu Kodi 21.2** ověřil verzi 1.3.15 téhož runtime commitu před čistým povýšením metadata verze pro vydané 2.0.0: hlavní menu s 6 položkami, 338 výsledků Webshare hledání „Matrix“, 66 filmů TMDB watchlistu včetně warm reopen a skutečné otevření/zrušení klávesnice. Jediné zaznamenané živé prostředí je **Kodi 21.2 (Omega), Windows Store x64**. Pro vydané 2.0.0 jde o dříve zaznamenané trasy a běžné kontroly hlavního profilu; tato evidence neověřuje nové Objevit ani nativní okno této větve. Nebyla provedena živá ověření na ARM, NFS/SMB či vzdáleném VFS; offline desktopové časy nejsou slibem latence či propustnosti těchto prostředí.
+
+Kompatibilita **Python 3.8** je kontrolovaná pouze staticky pomocí **AST**/syntaxe a lokální testy běží také na **Python 3.12**; ani jedno nedokazuje spuštění na **Kodi 19**. Nebylo provedeno skutečné přehrávání na Kodi 19, ARM ani SMB/NFS a žádné z těchto prostředí se neprezentuje jako úspěšně otestované. Nativní TMDB služba nebyla vydána; tato větev stále používá stávající vlastníka úloh a dokumentace netvrdí, že veškerá práce TMDB běží ve službě nebo že je doplněk zcela bez čekání či zablokování.
+
+Před sloučením nebo vydáním této větve je stále potřeba dokončit izolovaný **Task 9**: živě ověřit vlastní okno Objevit a jeho fokus, přepnutí na nativní InfoWall, ruční refresh a chybové zachování snapshotu, Webshare handoff i srovnatelný průběh shutdown. Statické a offline výsledky tyto body nenahrazují.
 
 ## ✅ Ověření pro vývojáře
 
@@ -87,6 +111,15 @@ Spusťte z kořene repozitáře:
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+Workflow `.github/workflows/tests.yml` spouští při `push` a `pull_request` pouze čtení repozitáře (`contents: read`) a matici Python **3.8/3.12**. Akce jsou připnuté na `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683` a `actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c`; nepoužívají tajné údaje ani release/write/upload operace. CI příkazy jsou:
+
+```sh
+python -B -m unittest discover -s tests -v
+python -B scripts/verify_release.py
+```
+
+Verifier lze spustit také lokálně. Dynamicky vybírá runtime soubory sledované v git **HEAD**, takže nepoužívá zastaralý pevně zapsaný počet souborů. Ověřuje verzi a instalační odkazy README, přesný seznam a kořen ZIP, CRC i shodu každého bajtu se zdrojem. Výstup CLI obsahuje pouze `version=`, `runtime_files=` a `sha256=`. Bez explicitního testovacího výstupního adresáře vytvoří dočasný archiv a po kontrole jej odstraní; **neukládá trvalý release archiv ani artefakt**. Výsledky v této dokumentaci pocházejí z lokálních offline příkazů, nikoli z důkazu úspěšného běhu hosted GitHub Actions.
 
 Reprodukovatelné offline benchmarky jsou v `.superpowers/sdd/2026-11-25-performance-remediation/`. Z kořene repozitáře lze spustit (výstupy se ukládají do stejného SDD adresáře):
 
