@@ -19,6 +19,7 @@ from yawsp_app.tmdb import (
     TMDBError,
     TrailerRepository,
     fetch_complete_watchlist,
+    resolve_watchlist_account,
     watchlist_operation_client,
 )
 from yawsp_app.watchlist_snapshot import (
@@ -418,7 +419,21 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         try:
             session_id = runtime.get_setting("tmdb_access_token").strip()
             operation_language = language()
-            account_id = client.get_account_id()
+
+            def account_resolution_valid(resolved_account):
+                return (
+                    runtime.get_setting("tmdb_access_token").strip() == session_id
+                    and runtime.get_setting("tmdb_account_id").strip()
+                    in ("", resolved_account)
+                    and language() == operation_language
+                )
+
+            account_id = resolve_watchlist_account(
+                client,
+                session_id,
+                operation_language,
+                account_resolution_valid,
+            )
 
             def operation_valid():
                 return (
@@ -476,7 +491,21 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             if snapshot is None:
                 # A missing/incompatible identity always follows the current cold
                 # account path; another account's sole cache entry is not a key hint.
-                account_id = client.get_account_id()
+                def account_resolution_valid(resolved_account):
+                    return (
+                        runtime.get_setting("tmdb_access_token").strip()
+                        == operation_session
+                        and runtime.get_setting("tmdb_account_id").strip()
+                        in ("", resolved_account)
+                        and language() == operation_language
+                    )
+
+                account_id = resolve_watchlist_account(
+                    client,
+                    operation_session,
+                    operation_language,
+                    account_resolution_valid,
+                )
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
 
             def operation_valid():

@@ -582,6 +582,70 @@ class _WatchlistWorkerSettings:
             self.settings.set(key, value)
 
 
+class _WatchlistResolutionSettings:
+    """Stage a resolved account ID until its captured identity is still current."""
+
+    def __init__(self, settings, session_id, identity_valid):
+        self.settings = settings
+        self.session_id = session_id
+        self.identity_valid = identity_valid
+        self.staged_account_id = ""
+
+    def get(self, key):
+        if key == "tmdb_access_token":
+            return self.session_id
+        if key == "tmdb_account_id":
+            return self.staged_account_id
+        return self.settings.get(key)
+
+    def set(self, key, value):
+        if key == "tmdb_account_id":
+            self.staged_account_id = str(value).strip()
+            return
+        # Preserve normal 401 invalidation only while this lookup's session is
+        # current; a newer session must never be changed by an obsolete response.
+        if str(self.settings.get("tmdb_access_token") or "").strip() == self.session_id:
+            self.settings.set(key, value)
+
+    def commit(self, account_id):
+        current_account = str(self.settings.get("tmdb_account_id") or "").strip()
+        if (
+            self.staged_account_id != account_id
+            or current_account not in ("", account_id)
+            or not self.identity_valid(account_id)
+        ):
+            return False
+        self.settings.set("tmdb_account_id", account_id)
+        return self.identity_valid(account_id)
+
+
+def resolve_watchlist_account(client, session_id, language, identity_valid):
+    """Resolve without letting an obsolete /account response overwrite new settings."""
+    if not isinstance(client, TMDBClient):
+        return client.get_account_id()
+    cached_account = client._setting("tmdb_account_id")
+    if cached_account:
+        return cached_account
+
+    settings = _WatchlistResolutionSettings(
+        client.settings, session_id, identity_valid
+    )
+    resolver = TMDBClient(
+        client.session,
+        settings,
+        lambda: language,
+        api_url=client.api_url,
+        clock=client.clock,
+        sleeper=client.sleeper,
+        abort=client.abort,
+        logger=client.logger,
+    )
+    account_id = resolver.get_account_id()
+    if not settings.commit(account_id):
+        raise TMDBError("TMDB identity changed during account resolution")
+    return account_id
+
+
 def watchlist_operation_client(client, scope, session_id):
     """Freeze real client credentials/locale while retaining lightweight test clients."""
     if not isinstance(client, TMDBClient):

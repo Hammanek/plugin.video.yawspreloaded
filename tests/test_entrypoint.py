@@ -637,6 +637,113 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
             self.assertEqual(recorder.builtin_commands, [])
 
+    def test_production_cold_account_lookup_switch_preserves_new_identity_and_recovers(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_account_id", "")
+
+            def select_new_account():
+                addon.setSetting("tmdb_account_id", "account-2")
+                addon.setSetting("tmdb_access_token", "session-2")
+
+            session.queue_response(
+                switch_json_response({"id": "account-1"}, select_new_account)
+            )
+
+            with self.assertLogs("yawsp_app.router", level="ERROR"):
+                result = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account")
+            self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
+            )
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-2", "movies", "en-US"))
+            )
+
+            session.queue_response(
+                json_response({"total_pages": 1, "results": [{"id": 9, "title": "Current"}]})
+            )
+            session.queue_response(json_response({"genres": []}))
+            recovered = production_router.router("action=tmdb_watchlist&category=movies")
+
+            self.assertTrue(recovered.succeeded)
+            self.assertEqual(
+                session.calls[1]["url"],
+                "https://api.themoviedb.org/3/account/account-2/watchlist/movies",
+            )
+            self.assertEqual(session.calls[1]["kwargs"]["params"]["session_id"], "session-2")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertIsNone(
+                owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
+            )
+            self.assertEqual(
+                owner.snapshot_store.load(
+                    SnapshotScope("account-2", "movies", "en-US")
+                ).results,
+                [{"id": 9, "title": "Current"}],
+            )
+
+    def test_production_watched_account_lookup_switch_preserves_new_identity_and_recovers(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_account_id", "")
+
+            def select_new_account():
+                addon.setSetting("tmdb_account_id", "account-2")
+                addon.setSetting("tmdb_access_token", "session-2")
+
+            session.queue_response(
+                switch_json_response({"id": "account-1"}, select_new_account)
+            )
+
+            with self.assertLogs("yawsp_app.router", level="ERROR"):
+                result = production_router.router(
+                    "action=tmdb_watchlist&category=movies&watched=42"
+                )
+
+            self.assertFalse(result.handled)
+            self.assertEqual(len(session.calls), 1)
+            self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account")
+            self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(recorder.builtin_commands, [])
+
+            first_scope = SnapshotScope("account-1", "movies", "en-US")
+            second_scope = SnapshotScope("account-2", "movies", "en-US")
+            first = owner.snapshot_store.save_complete(
+                first_scope, [{"id": 42, "title": "First"}], 100.0
+            )
+            owner.snapshot_store.save_complete(
+                second_scope,
+                [{"id": 42, "title": "Remove current"}, {"id": 2, "title": "Keep"}],
+                100.0,
+            )
+            session.queue_response(json_response({"success": True}))
+
+            recovered = production_router.router(
+                "action=tmdb_watchlist&category=movies&watched=42"
+            )
+
+            self.assertTrue(recovered.handled)
+            self.assertEqual(
+                session.calls[1]["url"],
+                "https://api.themoviedb.org/3/account/account-2/watchlist",
+            )
+            self.assertEqual(session.calls[1]["kwargs"]["params"]["session_id"], "session-2")
+            self.assertEqual(owner.snapshot_store.load(first_scope), first)
+            self.assertEqual(
+                owner.snapshot_store.load(second_scope).results,
+                [{"id": 2, "title": "Keep"}],
+            )
+            self.assertEqual(len(owner.background.worker.jobs), 1)
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
+
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []
 
