@@ -259,6 +259,17 @@ def build_discovery_handlers(
 
     def discovery(params):
         params = params or {}
+        if "source" not in params:
+            for source_name, label in category_labels().items():
+                item = runtime.list_item(label=label)
+                runtime.add_item(
+                    url_builder(
+                        runtime, action="tmdb_discovery", source=source_name
+                    ),
+                    item,
+                    True,
+                )
+            return DirectoryResult()
         source_name = params.get("source")
         if not isinstance(source_name, str):
             return DirectoryResult(succeeded=False)

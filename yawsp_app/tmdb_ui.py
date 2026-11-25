@@ -946,7 +946,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         item = runtime.list_item(label=runtime.localized(30441))
         item.setArt({"icon": "DefaultMovies.png"})
         runtime.add_item(
-            _url(runtime, action="tmdb_discovery", source="popular_movies"),
+            _url(runtime, action="tmdb_discovery"),
             item,
             True,
         )

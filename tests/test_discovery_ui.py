@@ -332,15 +332,23 @@ class DiscoveryUITests(unittest.TestCase):
         )
         self.assertEqual(self.runtime.plugin.builtins, [])
 
-    def test_unknown_and_missing_source_fail_without_request_or_settings(self):
-        for source in (None, "", "../account", "popular_movie", ["popular_movies"], {"source": "popular_movies"}):
+    def test_explicit_invalid_sources_fail_without_request_or_settings(self):
+        for source in (
+            None,
+            "",
+            "../account",
+            "popular_movie",
+            "no_such_source",
+            ["popular_movies"],
+            {"source": "popular_movies"},
+        ):
             with self.subTest(source=source):
                 handler = self.build(response={"results": []})
-                params = {} if source is None else {"source": source}
-                result = handler(params)
+                result = handler({"source": source})
                 self.assertFalse(result.succeeded)
                 self.assertEqual(self.client.calls, [])
                 self.assertEqual(self.genres.calls, [])
+                self.assertEqual(self.runtime.plugin.items, [])
                 self.assertEqual(self.runtime.setting_calls, [])
 
     def test_native_directory_completes_before_one_default_view_without_handoff(self):

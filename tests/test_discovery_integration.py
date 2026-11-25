@@ -46,11 +46,56 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 query(recorder.items[0]["url"]),
-                {"action": "tmdb_discovery", "source": "popular_movies"},
+                {"action": "tmdb_discovery"},
             )
             self.assertEqual(session.calls, [])
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
+
+    def test_missing_source_selects_four_categories_without_http(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.strings.update({30421: "Filmy", 30422: "Seriály"})
+
+            result = production_router.router("action=tmdb_discovery")
+
+            self.assertTrue(result.succeeded)
+            self.assertIsNone(result.post_complete)
+            self.assertEqual(
+                [row["listitem"].label for row in recorder.items],
+                [
+                    "Populární Filmy",
+                    "Populární Seriály",
+                    "Nejlépe hodnocené Filmy",
+                    "Nejlépe hodnocené Seriály",
+                ],
+            )
+            self.assertEqual(
+                [query(row["url"]) for row in recorder.items],
+                [
+                    {"action": "tmdb_discovery", "source": "popular_movies"},
+                    {"action": "tmdb_discovery", "source": "popular_shows"},
+                    {"action": "tmdb_discovery", "source": "top_rated_movies"},
+                    {"action": "tmdb_discovery", "source": "top_rated_shows"},
+                ],
+            )
+            self.assertTrue(all(row["isFolder"] for row in recorder.items))
+            self.assertEqual(session.calls, [])
+            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(
+                recorder.end_of_directory_calls,
+                [
+                    {
+                        "handle": 17,
+                        "succeeded": True,
+                        "updateListing": False,
+                        "cacheToDisc": True,
+                    }
+                ],
+            )
+            self.assertEqual(recorder.builtin_commands, [])
+            self.assertNotIn(("getSetting", "tmdb_api_key"), addon.calls)
+            self.assertNotIn(("getSetting", "tmdb_view_defaulted"), addon.calls)
+            self.assertEqual(addon.open_settings_calls, 0)
 
     def test_popular_movies_render_one_native_row_then_default_view_after_completion(self):
         responses = [
@@ -249,11 +294,11 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
 
-    def test_unknown_source_is_local_failure_without_calls_or_settings(self):
+    def test_explicit_unknown_source_is_local_failure_without_calls_or_settings(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             addon.setSetting("tmdb_api_key", "")
             result = production_router.router(
-                "action=tmdb_discovery&source=not_a_catalog"
+                "action=tmdb_discovery&source=no_such_source"
             )
 
             self.assertFalse(result.succeeded)
