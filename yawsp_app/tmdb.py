@@ -590,10 +590,11 @@ class GenreRepository:
 class _WatchlistWorkerSettings:
     """Keep one refresh on its captured session without persisting that secret."""
 
-    def __init__(self, settings, scope, session_id):
+    def __init__(self, settings, scope, session_id, identity_lock=None):
         self.settings = settings
         self.scope = scope
         self.session_id = session_id
+        self.identity_lock = identity_lock
 
     def get(self, key):
         if key == "tmdb_access_token":
@@ -605,8 +606,12 @@ class _WatchlistWorkerSettings:
     def set(self, key, value):
         # A delayed 401 from an obsolete job must not invalidate a newly chosen
         # identity. Otherwise preserve TMDBClient's normal invalidation behavior.
-        if str(self.settings.get("tmdb_access_token") or "").strip() == self.session_id:
-            self.settings.set(key, value)
+        with self.identity_lock or nullcontext():
+            if (
+                str(self.settings.get("tmdb_access_token") or "").strip()
+                == self.session_id
+            ):
+                self.settings.set(key, value)
 
 
 class _WatchlistResolutionSettings:
@@ -632,8 +637,12 @@ class _WatchlistResolutionSettings:
             return
         # Preserve normal 401 invalidation only while this lookup's session is
         # current; a newer session must never be changed by an obsolete response.
-        if str(self.settings.get("tmdb_access_token") or "").strip() == self.session_id:
-            self.settings.set(key, value)
+        with self.identity_lock or nullcontext():
+            if (
+                str(self.settings.get("tmdb_access_token") or "").strip()
+                == self.session_id
+            ):
+                self.settings.set(key, value)
 
     def commit(self, account_id):
         """Publish a staged ID only while its captured identity is still current."""
@@ -678,13 +687,15 @@ def resolve_watchlist_account(
     return account_id
 
 
-def watchlist_operation_client(client, scope, session_id):
+def watchlist_operation_client(client, scope, session_id, identity_lock=None):
     """Freeze real client credentials/locale while retaining lightweight test clients."""
     if not isinstance(client, TMDBClient):
         return client
     return TMDBClient(
         client.session,
-        _WatchlistWorkerSettings(client.settings, scope, session_id),
+        _WatchlistWorkerSettings(
+            client.settings, scope, session_id, identity_lock=identity_lock
+        ),
         lambda: scope.language,
         api_url=client.api_url,
         clock=client.clock,
@@ -1170,7 +1181,7 @@ class BackgroundPrefetch:
                 return
             session = self.session_factory()
             worker_settings = _WatchlistWorkerSettings(
-                self.settings, scope, session_id
+                self.settings, scope, session_id, identity_lock=self._lock
             )
             client = TMDBClient(
                 session,

@@ -465,7 +465,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             )
             if not operation_valid():
                 raise TMDBError("TMDB identity changed before watched operation")
-            operation_client = watchlist_operation_client(client, scope, session_id)
+            operation_client = watchlist_operation_client(
+                client, scope, session_id, identity_lock=identity_lock
+            )
             if not _set_watchlist(
                 operation_client, media, params["watched"], account_id=account_id
             ):
@@ -565,7 +567,10 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     else None
                 )
                 operation_client = watchlist_operation_client(
-                    client, scope, operation_session
+                    client,
+                    scope,
+                    operation_session,
+                    identity_lock=identity_lock,
                 )
                 results = fetch_complete_watchlist(
                     operation_client, scope, operation_valid
