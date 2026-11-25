@@ -24,6 +24,7 @@ from yawsp_app.tmdb import (
     TrailerRepository,
     WATCHLIST_PREFETCH_LIMIT,
     fetch_complete_watchlist,
+    public_tmdb_client,
     resolve_watchlist_account,
     watchlist_operation_client,
 )
@@ -215,6 +216,7 @@ def _set_watchlist(client, media, media_id, account_id=None):
 def build_tmdb_handlers(runtime, client_factory, repositories, background):
     """Build all TMDB actions without performing per-item synchronous lookups."""
     client = client_factory()
+    public_client = public_tmdb_client(client)
     trailer_repository = repositories["trailers"]
     show_repository = repositories["shows"]
     attach_repositories = getattr(background, "attach_repositories", None)
@@ -226,6 +228,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def genres(media, language):
         return genre_repository.get(client, media, language)
+
+    def public_genres(media, language):
+        return genre_repository.get(public_client, media, language)
 
     def language():
         mapper = getattr(client, "locale_mapper", None)
@@ -259,19 +264,20 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
     class DiscoveryClient:
         """Adapt the fixed catalog paths to TMDBClient's versioned endpoints."""
 
-        locale_mapper = staticmethod(getattr(client, "locale_mapper", None))
+        locale_mapper = staticmethod(getattr(public_client, "locale_mapper", None))
 
         @staticmethod
         def get(path):
-            return client.get("/3" + path)
+            return public_client.get("/3" + path)
 
     discovery_handlers = build_discovery_handlers(
         runtime,
         DiscoveryClient(),
         _url,
-        genres,
+        public_genres,
         set_default_view,
         create_discovery_window,
+        valid_configuration,
     )
 
     def authenticate(params=None):

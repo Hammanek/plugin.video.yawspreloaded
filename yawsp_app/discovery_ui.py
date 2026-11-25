@@ -167,7 +167,13 @@ def discovery_list_item(runtime, record):
 
 
 def build_discovery_handlers(
-    runtime, client, url_builder, genres, set_default_view, window_factory
+    runtime,
+    client,
+    url_builder,
+    genres,
+    set_default_view,
+    window_factory,
+    valid_configuration=None,
 ):
     """Wire one explicit discovery route without personal or background work."""
 
@@ -292,6 +298,8 @@ def build_discovery_handlers(
             return DirectoryResult(succeeded=False)
         source = CATALOG_SOURCES.get(source_name)
         if source is None:
+            return DirectoryResult(succeeded=False)
+        if valid_configuration is not None and not valid_configuration():
             return DirectoryResult(succeeded=False)
         native_wall = (
             str(runtime.get_setting("discovery_native_wall")).strip() == "true"

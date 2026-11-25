@@ -223,6 +223,35 @@ class TMDBClient:
             response.close()
 
 
+class _PublicTMDBClient(TMDBClient):
+    """Use the shared transport without exposing or invalidating account identity."""
+
+    def _setting(self, key):
+        if key == "tmdb_access_token":
+            return ""
+        return super()._setting(key)
+
+    def _invalidate_request_session(self, session_id):
+        """Public responses carry no authority over the personal TMDB session."""
+
+
+def public_tmdb_client(client):
+    """Return a public-only real client while retaining lightweight test doubles."""
+    if not isinstance(client, TMDBClient):
+        return client
+    return _PublicTMDBClient(
+        client.session,
+        client.settings,
+        client.locale_mapper,
+        api_url=client.api_url,
+        clock=client.clock,
+        sleeper=client.sleeper,
+        abort=client.abort,
+        logger=client.logger,
+        identity_lock=client.identity_lock,
+    )
+
+
 def fetch_complete_watchlist(client, scope, operation_valid=None):
     """Fetch and validate a new full list; never append to an older snapshot."""
     watchlist_path = "/3/account/{0}/watchlist/{1}".format(

@@ -125,6 +125,12 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                 ],
             )
             self.assertFalse(any("/account" in call["url"] for call in session.calls))
+            for call in session.calls:
+                self.assertEqual(
+                    call["kwargs"]["params"],
+                    {"language": "en-US", "api_key": "offline-api-key"},
+                )
+                self.assertNotIn("session_id", call["kwargs"]["params"])
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertTrue(recorder.end_of_directory_calls[-1]["succeeded"])
@@ -188,8 +194,76 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(recorder.builtin_commands, ["Container.SetViewMode(54)"])
             self.assertEqual(addon.getSetting("tmdb_view_defaulted"), "true")
 
+    def test_native_public_unauthorized_preserves_personal_identity_and_sanitizes_log(self):
+        unauthorized = json_response({}, status_code=401)
+        unauthorized.url = (
+            "https://api.themoviedb.org/3/movie/popular"
+            "?api_key=offline-api-key&session_id=session-1"
+        )
+        with production_tmdb_invocation([unauthorized]) as (
+            owner,
+            session,
+            addon,
+            recorder,
+        ):
+            addon.setSetting("discovery_native_wall", "true")
+            original_identity = (
+                addon.getSetting("tmdb_access_token"),
+                addon.getSetting("tmdb_account_id"),
+            )
+            with self.assertLogs(level="ERROR") as logged:
+                result = production_router.router(
+                    "action=tmdb_discovery&source=popular_movies"
+                )
+
+            self.assertFalse(result.succeeded)
+            self.assertEqual(len(session.calls), 1)
+            request = session.calls[0]
+            self.assertEqual(request["url"], "https://api.themoviedb.org/3/movie/popular")
+            self.assertEqual(
+                request["kwargs"]["params"],
+                {"language": "en-US", "api_key": "offline-api-key"},
+            )
+            self.assertNotIn("session_id", request["kwargs"]["params"])
+            self.assertEqual(
+                (
+                    addon.getSetting("tmdb_access_token"),
+                    addon.getSetting("tmdb_account_id"),
+                ),
+                original_identity,
+            )
+            self.assertEqual(original_identity, ("session-1", "account-1"))
+            self.assertFalse(any("/account" in call["url"] for call in session.calls))
+            self.assertEqual(owner.background.worker.jobs, [])
+            public_log = "\n".join(logged.output)
+            for secret in ("offline-api-key", "session-1", "account-1"):
+                self.assertNotIn(secret, public_log)
+            self.assertEqual(len(recorder.end_of_directory_calls), 1)
+            self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
+
+    def test_valid_source_without_api_key_fails_before_settings_or_http(self):
+        with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_api_key", "")
+            with mock.patch.object(
+                production_tmdb_ui, "create_discovery_window", create=True
+            ) as window_factory:
+                result = production_router.router(
+                    "action=tmdb_discovery&source=popular_movies"
+                )
+
+            self.assertFalse(result.succeeded)
+            window_factory.assert_not_called()
+            self.assertEqual(session.calls, [])
+            self.assertEqual(addon.open_settings_calls, 1)
+            self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
+            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(recorder.items, [])
+            self.assertEqual(len(recorder.end_of_directory_calls), 1)
+            self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
+
     def test_unknown_source_is_local_failure_without_calls_or_window(self):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
+            addon.setSetting("tmdb_api_key", "")
             with mock.patch.object(
                 production_tmdb_ui, "create_discovery_window", create=True
             ) as window_factory:
@@ -200,6 +274,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertFalse(result.succeeded)
             window_factory.assert_not_called()
             self.assertEqual(session.calls, [])
+            self.assertEqual(addon.open_settings_calls, 0)
             self.assertEqual(owner.background.worker.jobs, [])
             self.assertEqual(recorder.items, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
