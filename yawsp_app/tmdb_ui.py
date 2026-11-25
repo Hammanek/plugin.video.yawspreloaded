@@ -71,7 +71,7 @@ def _cached_shows(repository, show_ids):
 
 
 def _next_episode_suffix(next_episode):
-    if not next_episode:
+    if not isinstance(next_episode, dict) or not next_episode:
         return ""
     try:
         season = int(next_episode.get("season") or 0)
@@ -80,7 +80,7 @@ def _next_episode_suffix(next_episode):
         return ""
     suffix = " [COLOR gray]→ S{0:02d}E{1:02d}".format(season, episode)
     air_date = next_episode.get("air_date")
-    if air_date:
+    if isinstance(air_date, str) and air_date:
         try:
             year, month, day = (int(part) for part in air_date.split("-"))
             suffix += " ({2}. {1}. {0})".format(year, month, day)
@@ -501,20 +501,14 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                         ),
                     )
                 ]
-                youtube_id = cached_trailers.get(media_id)
-                if youtube_id:
-                    trailer_command = "PlayMedia(plugin://plugin.video.youtube/play/?video_id={0})".format(
-                        youtube_id
+                trailer_command = "RunPlugin({0})".format(
+                    _url(
+                        runtime,
+                        action="tmdb_trailer",
+                        media=media,
+                        id=media_id,
                     )
-                else:
-                    trailer_command = "RunPlugin({0})".format(
-                        _url(
-                            runtime,
-                            action="tmdb_trailer",
-                            media=media,
-                            id=media_id,
-                        )
-                    )
+                )
                 commands.append((runtime.localized(30415), trailer_command))
                 commands.append(
                     (

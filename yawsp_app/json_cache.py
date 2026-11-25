@@ -50,12 +50,12 @@ class AtomicJsonCache:
                 self.logger.error("JSON cache value for %s must be a mapping", self.path)
                 return False
 
-            data = copy.deepcopy(dict(mapping))
             directory = os.path.dirname(self.path)
             basename = os.path.basename(self.path)
             descriptor = None
             temporary_path = None
             try:
+                data = copy.deepcopy(dict(mapping))
                 os.makedirs(directory, exist_ok=True)
                 descriptor, temporary_path = tempfile.mkstemp(
                     prefix="." + basename + ".", suffix=".tmp", dir=directory

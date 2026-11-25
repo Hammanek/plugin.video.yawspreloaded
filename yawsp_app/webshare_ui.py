@@ -2,6 +2,7 @@
 
 import io
 import json
+import ntpath
 import os
 import re
 
@@ -14,7 +15,7 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
 
 from yawsp_app.backup_db import BackupDBStore
 from yawsp_app.downloads import stream_download
-from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult
+from yawsp_app.runtime import ActionResult, DirectoryResult, PlaybackResult, is_vfs_path
 from yawsp_app.search import matches_filename, page_offsets, parse_query
 from yawsp_app.webshare import WebshareError
 
@@ -99,6 +100,17 @@ def _add_item(runtime, url, list_item, is_folder=False):
     runtime.add_item(url, list_item, is_folder)
 
 
+def _valid_file_data(runtime, file_data):
+    for field in ("name", "ident"):
+        value = file_data.get(field)
+        if not isinstance(value, str) or not value.strip():
+            runtime.logger.error(
+                "Skipping Webshare file row with missing or blank %s", field
+            )
+            return False
+    return True
+
+
 def _add_file(runtime, file_data, extra_commands=()):
     label = _label(file_data)
     item = runtime.list_item(label=label)
@@ -173,7 +185,45 @@ def _info_text(data):
 
 
 def _join(folder, filename):
-    return folder + filename if folder.endswith(("/", "//")) else os.path.join(folder, filename)
+    if is_vfs_path(folder):
+        return folder + filename if folder.endswith("/") else folder + "/" + filename
+    return os.path.join(folder, filename)
+
+
+def _safe_filename(value):
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value not in (".", "..")
+        and "\x00" not in value
+        and "/" not in value
+        and "\\" not in value
+        and not ntpath.splitdrive(value)[0]
+        and not ntpath.isabs(value)
+    )
+
+
+def _download_name(candidates, normalize):
+    for candidate in candidates:
+        if normalize and isinstance(candidate, str):
+            candidate = unidecode(candidate)
+        if _safe_filename(candidate):
+            return candidate
+    return "download"
+
+
+def _destination(folder, filename):
+    destination = _join(folder, filename)
+    if not is_vfs_path(folder):
+        base = os.path.realpath(folder)
+        target = os.path.realpath(destination)
+        try:
+            contained = os.path.commonpath((base, target)) == base
+        except ValueError:
+            contained = False
+        if not contained:
+            raise ValueError("Download destination escapes its configured folder")
+    return destination
 
 
 def build_webshare_handlers(runtime, client_factory):
@@ -370,6 +420,8 @@ def build_webshare_handlers(runtime, client_factory):
         if notify_api_result(xml, None):
             for element in xml.iter("file"):
                 file_data = _to_dict(element)
+                if not _valid_file_data(runtime, file_data):
+                    continue
                 commands = [
                     (
                         runtime.localized(30215),
@@ -410,7 +462,7 @@ def build_webshare_handlers(runtime, client_factory):
             files = []
             for element in xml.iter("file"):
                 file_data = _to_dict(element, ("ended_at", "download_id", "started_at"))
-                if file_data not in files:
+                if _valid_file_data(runtime, file_data) and file_data not in files:
                     files.append(file_data)
             for file_data in files:
                 commands = [
@@ -461,7 +513,8 @@ def build_webshare_handlers(runtime, client_factory):
         if not token:
             return ActionResult(handled=False)
         where = runtime.get_setting("dfolder")
-        if not where or not runtime.file_ops.exists(where):
+        file_ops = runtime.file_ops_for(where) if where else runtime.file_ops
+        if not where or not file_ops.exists(where):
             runtime.notify("Set download folder!")
             runtime.open_settings()
             return ActionResult(handled=False)
@@ -472,17 +525,20 @@ def build_webshare_handlers(runtime, client_factory):
             interval = int(re.sub(r"[^\d]+", "", runtime.get_setting("dnevery") or "10"))
         except ValueError:
             interval = 10
-        display_name = params.get("name") or params.get("ident") or "download"
+        display_name = _download_name(
+            (params.get("name"), params.get("ident")), normalize
+        )
         try:
             link = client.get_link(params["ident"], token, "file_download")
             if not link:
                 return ActionResult(handled=False)
             xml = client.get_info(params["ident"], token)
             metadata = _to_dict(xml)
-            display_name = metadata.get("name") or display_name
-            if normalize:
-                display_name = unidecode(display_name)
-            destination = _join(where, display_name)
+            display_name = _download_name(
+                (metadata.get("name"), params.get("name"), params.get("ident")),
+                normalize,
+            )
+            destination = _destination(where, display_name)
             if notify:
                 runtime.notify("{0} {1}".format(runtime.localized(30302), display_name))
 
@@ -495,7 +551,7 @@ def build_webshare_handlers(runtime, client_factory):
                 response,
                 destination,
                 display_name,
-                runtime.file_ops,
+                file_ops,
                 progress if notify else None,
             )
             runtime.notify("{0} {1}".format(runtime.localized(30303), display_name))

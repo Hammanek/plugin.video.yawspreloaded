@@ -136,27 +136,28 @@ class _ProductionOwner:
         self.profile = os.path.normpath(profile)
         self.monitor = xbmc.Monitor()
         self.language = lambda: kodi_language(xbmc.getLanguage())
-        self.runtime = KodiRuntime(
-            plugin=self.plugin,
-            addon=self.addon,
-            session=self.session,
-            profile=self.profile,
-            base_url=sys.argv[0],
-            handle=int(sys.argv[1]),
-            listitem_factory=xbmcgui.ListItem,
-            keyboard_factory=xbmcgui.Keyboard,
-            textviewer=xbmcgui.Dialog().textviewer,
-            logger=_LOGGER,
-            label_sort_method=xbmcplugin.SORT_METHOD_LABEL,
-            episode_sort_method=xbmcplugin.SORT_METHOD_EPISODE,
-            clock=time.time,
-            monitor_factory=xbmc.Monitor,
-            current_window_id=xbmcgui.getCurrentWindowId,
-            addon_available=lambda addon_id: bool(
+        self._runtime_options = {
+            "plugin": self.plugin,
+            "addon": self.addon,
+            "session": self.session,
+            "profile": self.profile,
+            "listitem_factory": xbmcgui.ListItem,
+            "keyboard_factory": xbmcgui.Keyboard,
+            "textviewer": xbmcgui.Dialog().textviewer,
+            "logger": _LOGGER,
+            "label_sort_method": xbmcplugin.SORT_METHOD_LABEL,
+            "episode_sort_method": xbmcplugin.SORT_METHOD_EPISODE,
+            "clock": time.time,
+            "monitor_factory": xbmc.Monitor,
+            "current_window_id": xbmcgui.getCurrentWindowId,
+            "addon_available": lambda addon_id: bool(
                 xbmc.getCondVisibility("System.HasAddon({0})".format(addon_id))
             ),
-            skin_dir=xbmc.getSkinDir,
-        )
+            "skin_dir": xbmc.getSkinDir,
+        }
+        # Retain these compatibility attributes for callers that inspect the
+        # owner; routing itself always builds fresh per-invocation state below.
+        self.runtime = self._new_runtime()
         self.trailer_cache = AtomicJsonCache(
             os.path.join(self.profile, "tmdb_trailers.json"), logger=_LOGGER
         )
@@ -181,12 +182,32 @@ class _ProductionOwner:
         )
         self._closed = False
 
-    def _handler_error(self, error):
-        message = self.addon.getLocalizedString(30102) or "Request failed"
-        self.runtime.notify(message)
+    def _new_runtime(self):
+        return KodiRuntime(
+            base_url=sys.argv[0],
+            handle=int(sys.argv[1]),
+            **self._runtime_options
+        )
 
-    def handlers(self):
+    def invocation(self):
+        """Build isolated URL/handle state while retaining process-wide services."""
+        runtime = self._new_runtime()
+        runner = ActionRunner(
+            self.plugin,
+            runtime.handle,
+            self._runtime_options["listitem_factory"],
+            logger=_LOGGER,
+            error_handler=lambda error: self._handler_error(error, runtime),
+        )
+        return self.handlers(runtime), runner
+
+    def _handler_error(self, error, runtime=None):
+        message = self.addon.getLocalizedString(30102) or "Request failed"
+        (runtime or self.runtime).notify(message)
+
+    def handlers(self, runtime=None):
         """Create per-open repositories so persisted worker data is re-read."""
+        runtime = runtime or self.runtime
         webshare_client = WebshareClient(self.session, self.settings)
         tmdb_client = TMDBClient(
             self.session,
@@ -195,9 +216,9 @@ class _ProductionOwner:
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
         )
-        webshare = build_webshare_handlers(self.runtime, lambda: webshare_client)
+        webshare = build_webshare_handlers(runtime, lambda: webshare_client)
         tmdb = build_tmdb_handlers(
-            self.runtime,
+            runtime,
             lambda: tmdb_client,
             {
                 "trailers": TrailerRepository(tmdb_client, self.trailer_cache, logger=_LOGGER),
@@ -257,6 +278,10 @@ def close():
 def router(paramstring):
     """Route one invocation through the unified handlers and completion runner."""
     owner = _get_owner()
+    invocation = getattr(owner, "invocation", None)
+    if invocation is not None:
+        handlers, runner = invocation()
+        return dispatch(paramstring, handlers, runner)
     return dispatch(paramstring, owner.handlers(), owner.runner)
 
 

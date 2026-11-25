@@ -28,6 +28,9 @@ class RecordingLogger:
     def exception(self, *args, **kwargs):
         self.calls.append((args, kwargs))
 
+    def error(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
 
 class OrderingRecorder(KodiRecorder):
     def __init__(self, events):

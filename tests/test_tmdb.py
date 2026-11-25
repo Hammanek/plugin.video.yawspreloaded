@@ -144,6 +144,25 @@ class ClientTests(TMDBServiceTestCase):
                     client.get("/3/example")
                 self.assertIsInstance(caught.exception.__cause__, requests.RequestException)
 
+    def test_error_responses_close_but_success_remains_open_for_parsing(self):
+        for status_code, count in ((500, 1), (401, 1), (429, 3)):
+            with self.subTest(status_code=status_code):
+                responses = [json_response({}, status_code=status_code) for _ in range(count)]
+                client, _, _, _ = self.make_client(responses)
+
+                with self.assertRaises(TMDBError):
+                    client.request("GET", "/3/example")
+
+                self.assertTrue(all(response.closed for response in responses))
+
+        success = json_response({"ok": True})
+        client, _, _, _ = self.make_client([success])
+        response = client.request("GET", "/3/example")
+        self.assertIs(response, success)
+        self.assertFalse(response.closed)
+        self.assertEqual(response.json(), {"ok": True})
+        response.close()
+
     def test_malformed_success_json_is_a_chained_domain_error(self):
         client, _, _, _ = self.make_client([FakeResponse(content="not-json")])
 
@@ -521,6 +540,98 @@ class ShowRepositoryTests(TMDBServiceTestCase):
                     self.read_cache(cache)[str(show_id)]["next"],
                     {"season": 2, "episode": 3, "air_date": "2026-03-01"},
                 )
+
+    def test_malformed_air_date_preserves_stale_fallback_and_remains_retryable(self):
+        for index, malformed_date in enumerate((20261201, {"year": 2026})):
+            with self.subTest(air_date=malformed_date):
+                clock = FakeClock()
+                show_id = 70 + index
+                stale = {"season": 1, "episode": 2, "air_date": "2026-01-01"}
+                old_timestamp = clock() - 24 * 60 * 60 - 1
+                cache = AtomicJsonCache(
+                    os.path.join(
+                        self.temporary_directory.name, "invalid-date-{0}.json".format(index)
+                    )
+                )
+                cache.save({str(show_id): {"ts": old_timestamp, "next": stale}})
+                refreshed = {"season": 2, "episode": 3, "air_date": "2026-03-01"}
+                client, session, _, _ = self.make_client(
+                    [
+                        json_response(
+                            {
+                                "next_episode_to_air": {
+                                    "season_number": 2,
+                                    "episode_number": 3,
+                                    "air_date": malformed_date,
+                                }
+                            }
+                        ),
+                        json_response(
+                            {
+                                "next_episode_to_air": {
+                                    "season_number": 2,
+                                    "episode_number": 3,
+                                    "air_date": "2026-03-01",
+                                }
+                            }
+                        ),
+                    ],
+                    clock=clock,
+                )
+                repository = ShowRepository(client, cache, clock=clock)
+
+                with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+                    self.assertEqual(repository.next_episode(show_id), stale)
+                self.assertEqual(
+                    self.read_cache(cache)[str(show_id)],
+                    {"ts": old_timestamp, "next": stale},
+                )
+                self.assertEqual(repository.next_episode(show_id), refreshed)
+                self.assertEqual(len(session.calls), 2)
+
+    def test_poisoned_persisted_air_date_is_invalidated_and_retried(self):
+        for index, poisoned_date in enumerate((20261201, {"year": 2026})):
+            with self.subTest(air_date=poisoned_date):
+                clock = FakeClock()
+                show_id = 80 + index
+                cache = AtomicJsonCache(
+                    os.path.join(
+                        self.temporary_directory.name, "poisoned-date-{0}.json".format(index)
+                    )
+                )
+                cache.save(
+                    {
+                        str(show_id): {
+                            "ts": clock(),
+                            "next": {
+                                "season": 1,
+                                "episode": 2,
+                                "air_date": poisoned_date,
+                            },
+                        }
+                    }
+                )
+                client, session, _, _ = self.make_client(
+                    [
+                        json_response(
+                            {
+                                "next_episode_to_air": {
+                                    "season_number": 3,
+                                    "episode_number": 4,
+                                    "air_date": None,
+                                }
+                            }
+                        )
+                    ],
+                    clock=clock,
+                )
+                repository = ShowRepository(client, cache, clock=clock)
+
+                self.assertEqual(
+                    repository.next_episode(show_id),
+                    {"season": 3, "episode": 4, "air_date": ""},
+                )
+                self.assertEqual(len(session.calls), 1)
 
     def test_malformed_show_payload_preserves_stale_fallback_and_original_timestamp(self):
         clock = FakeClock()

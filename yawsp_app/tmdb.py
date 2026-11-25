@@ -164,6 +164,7 @@ class TMDBClient:
                 self._wait(delay)
                 continue
 
+            succeeded = False
             try:
                 response.raise_for_status()
             except requests.RequestException as error:
@@ -172,7 +173,12 @@ class TMDBClient:
                 raise TMDBError(
                     "TMDB {0} returned HTTP {1}".format(path, response.status_code)
                 ) from error
-            return response
+            else:
+                succeeded = True
+                return response
+            finally:
+                if not succeeded:
+                    response.close()
 
         raise TMDBError("TMDB retry handling exhausted without a response")
 
@@ -341,7 +347,26 @@ class ShowRepository(_Repository):
         if "next" not in raw or not (raw["next"] is None or isinstance(raw["next"], dict)):
             self._entries.pop(key, None)
             return None
-        return {"ts": raw["ts"], "next": raw["next"]}
+        next_episode = raw["next"]
+        if next_episode is not None:
+            season = next_episode.get("season")
+            episode = next_episode.get("episode")
+            air_date = next_episode.get("air_date")
+            if (
+                type(season) is not int
+                or season < 0
+                or type(episode) is not int
+                or episode < 1
+                or (air_date is not None and not isinstance(air_date, str))
+            ):
+                self._entries.pop(key, None)
+                return None
+            next_episode = {
+                "season": season,
+                "episode": episode,
+                "air_date": air_date or "",
+            }
+        return {"ts": raw["ts"], "next": next_episode}
 
     def _fresh(self, entry):
         return entry is not None and self.clock() - entry["ts"] < SHOW_TTL
@@ -373,10 +398,13 @@ class ShowRepository(_Repository):
             or episode_number < 1
         ):
             raise TMDBError("TMDB next episode has invalid season or episode numbers")
+        air_date = episode.get("air_date")
+        if air_date is not None and not isinstance(air_date, str):
+            raise TMDBError("TMDB next episode air_date must be a string or null")
         return {
             "season": season,
             "episode": episode_number,
-            "air_date": episode.get("air_date") or "",
+            "air_date": air_date or "",
         }
 
     def next_episode(self, show_id):

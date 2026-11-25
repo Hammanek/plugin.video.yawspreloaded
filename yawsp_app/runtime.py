@@ -159,6 +159,55 @@ class LocalFileOps:
         return os.path.exists(path)
 
 
+def is_vfs_path(path):
+    """Identify Kodi VFS URLs without mistaking Windows drive paths for URLs."""
+    path = os.fspath(path)
+    return "://" in path and not (len(path) >= 2 and path[1] == ":")
+
+
+class _VFSOutput:
+    """Adapt Kodi's boolean File.write result to checked byte-progress writes."""
+
+    def __init__(self, output):
+        self.output = output
+
+    def write(self, data):
+        result = self.output.write(data)
+        if result is True:
+            return len(data)
+        if result is False:
+            return 0
+        return result
+
+    def close(self):
+        return self.output.close()
+
+
+class KodiVfsFileOps:
+    """Kodi VFS implementation; false writes/renames are never false success."""
+
+    def __init__(self, vfs=None):
+        if vfs is None:
+            import xbmcvfs
+
+            vfs = xbmcvfs
+        self.vfs = vfs
+
+    def open_write(self, path):
+        return _VFSOutput(self.vfs.File(path, "w"))
+
+    def replace(self, source, destination):
+        if not self.vfs.rename(source, destination):
+            raise OSError("Kodi VFS could not rename download into place")
+
+    def remove(self, path):
+        if not self.vfs.delete(path):
+            raise OSError("Kodi VFS could not remove partial download")
+
+    def exists(self, path):
+        return self.vfs.exists(path)
+
+
 class KodiRuntime:
     """Small injected facade over Kodi, settings, HTTP and filesystem services."""
 
@@ -174,6 +223,7 @@ class KodiRuntime:
         keyboard_factory,
         textviewer,
         file_ops=None,
+        vfs_file_ops=None,
         logger=None,
         label_sort_method=1,
         episode_sort_method=23,
@@ -194,7 +244,9 @@ class KodiRuntime:
         self.listitem_factory = listitem_factory
         self.keyboard_factory = keyboard_factory
         self.textviewer = textviewer
+        self._injected_file_ops = file_ops
         self.file_ops = file_ops or LocalFileOps()
+        self.vfs_file_ops = vfs_file_ops
         self.logger = logger or _LOGGER
         self.label_sort_method = label_sort_method
         self.episode_sort_method = episode_sort_method
@@ -211,6 +263,13 @@ class KodiRuntime:
 
     def set_setting(self, key, value):
         self.addon.setSetting(key, value)
+
+    def file_ops_for(self, path):
+        if self._injected_file_ops is not None or not is_vfs_path(path):
+            return self.file_ops
+        if self.vfs_file_ops is None:
+            self.vfs_file_ops = KodiVfsFileOps()
+        return self.vfs_file_ops
 
     def localized(self, string_id):
         return self.addon.getLocalizedString(string_id)

@@ -4,8 +4,11 @@ import types
 import unittest
 from unittest import mock
 
+from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
+from tests.test_webshare_ui import FakeClient, xml
 from yawsp_app import router as production_router
 from yawsp_app.runtime import (
     ActionResult,
@@ -286,6 +289,158 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(len(recorder.notifications), 1)
             self.assertEqual(addon.open_settings_calls, 1)
             self.assertEqual(logger.calls, [])
+
+    def run_production_vfs_download(self, response, vfs):
+        with install_kodi_stubs(), mock.patch.object(
+            sys,
+            "argv",
+            ["plugin://plugin.video.yawspreloaded/", "17", "?action=download"],
+        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+            production_router.requests, "Session"
+        ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
+            session = FakeSession([response])
+            session.headers = {}
+            session_type.return_value = session
+            client = FakeClient()
+            client.link_results = ["https://cdn.invalid/movie"]
+            client.info_results = [
+                xml("<response><name>Příliš žluťoučký.mkv</name><ident>abc</ident></response>")
+            ]
+            client_type.return_value = client
+            addon = sys.modules["xbmcaddon"].Addon()
+            addon.setSetting("dfolder", "smb://server/share")
+            addon.setSetting("dnormalize", "false")
+            addon.setSetting("dnotify", "false")
+            vfs_module = sys.modules["xbmcvfs"]
+            vfs_module.exists = vfs.exists
+            vfs_module.File = vfs.File
+            vfs_module.rename = vfs.rename
+            vfs_module.delete = vfs.delete
+            production_router.close()
+            production_router._get_owner()
+
+            result = production_router.router("action=download&ident=abc")
+
+            return result, session, client, sys.modules["xbmcplugin"]._recorder
+
+    def test_production_remote_download_uses_vfs_stream_close_and_rename(self):
+        response = FakeResponse(
+            headers={"Content-Length": "6"},
+            chunks=[b"abc", b"def"],
+            forbid_content=True,
+        )
+        vfs = RecordingVFS(folders={"smb://server/share"})
+
+        result, session, _, recorder = self.run_production_vfs_download(response, vfs)
+
+        destination = "smb://server/share/Příliš žluťoučký.mkv"
+        self.assertTrue(result.handled)
+        self.assertEqual(vfs.files, {destination: b"abcdef"})
+        self.assertEqual(vfs.renames[0][1], destination)
+        self.assertTrue(vfs.renames[0][0].startswith(destination + ".part-"))
+        self.assertTrue(all(output.closed for output in vfs.open_files))
+        self.assertTrue(response.closed)
+        self.assertEqual(session.calls[0]["kwargs"]["stream"], True)
+        self.assertEqual(recorder.resolved_url_calls[-1]["handle"], 17)
+
+    def test_production_remote_download_failure_closes_and_cleans_partial_vfs_file(self):
+        for failure in ("stream", "write", "rename"):
+            with self.subTest(failure=failure):
+                response = FakeResponse(
+                    headers={"Content-Length": "6"},
+                    chunks=[b"abcdef"],
+                    stream_error=RuntimeError("interrupted") if failure == "stream" else None,
+                    forbid_content=True,
+                )
+                vfs = RecordingVFS(folders={"smb://server/share"})
+                vfs.fail_writes = failure == "write"
+                vfs.fail_renames = failure == "rename"
+
+                with self.assertLogs("yawsp_app.router", level="ERROR"):
+                    result, _, _, _ = self.run_production_vfs_download(response, vfs)
+
+                self.assertFalse(result.handled)
+                self.assertEqual(vfs.files, {})
+                self.assertEqual(len(vfs.renames), 1 if failure == "rename" else 0)
+                self.assertEqual(len(vfs.open_files), 1)
+                self.assertTrue(vfs.open_files[0].closed)
+                self.assertEqual(len(vfs.deleted), 1)
+                self.assertTrue(response.closed)
+
+    def test_real_owner_rebuilds_runtime_and_runner_for_sequential_invocations(self):
+        with install_kodi_stubs(), mock.patch.object(
+            sys,
+            "argv",
+            ["plugin://first.invalid/", "17", ""],
+        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+            production_router.close()
+            owner = production_router._get_owner()
+
+            def webshare_handlers(runtime, client_factory):
+                def directory(params):
+                    runtime.add_item(
+                        runtime.base_url + "?generated=1", runtime.list_item(label="Directory")
+                    )
+                    return DirectoryResult()
+
+                def play(params):
+                    return PlaybackResult(
+                        True, runtime.list_item(label="Play", path=runtime.base_url + "media")
+                    )
+
+                def action(params):
+                    return ActionResult(play_media="PlayMedia(" + runtime.base_url + "action)")
+
+                return {"menu": directory, "search": directory, "play": play, "settings": action}
+
+            def tmdb_handlers(runtime, client_factory, repositories, background):
+                return {"menu": lambda params: DirectoryResult()}
+
+            with mock.patch.object(
+                production_router, "build_webshare_handlers", side_effect=webshare_handlers
+            ), mock.patch.object(
+                production_router, "build_tmdb_handlers", side_effect=tmdb_handlers
+            ):
+                for route, kind in (
+                    ("action=search", "directory"),
+                    ("action=play", "playback"),
+                    ("action=settings", "action"),
+                ):
+                    for handle, base_url in (
+                        (17, "plugin://first.invalid/"),
+                        (23, "plugin://second.invalid/"),
+                    ):
+                        with self.subTest(route=route, handle=handle):
+                            sys.argv[:] = [base_url, str(handle), "?" + route]
+                            production_router.router(route)
+                            recorder = sys.modules["xbmcplugin"]._recorder
+                            if kind == "directory":
+                                self.assertEqual(recorder.items[-1]["handle"], handle)
+                                self.assertEqual(
+                                    recorder.items[-1]["url"], base_url + "?generated=1"
+                                )
+                                self.assertEqual(
+                                    recorder.end_of_directory_calls[-1]["handle"]
+                                    if "handle" in recorder.end_of_directory_calls[-1]
+                                    else recorder.calls[-1]["args"][0],
+                                    handle,
+                                )
+                            else:
+                                self.assertEqual(
+                                    recorder.resolved_url_calls[-1]["handle"], handle
+                                )
+                                if kind == "playback":
+                                    self.assertEqual(
+                                        recorder.resolved_url_calls[-1]["listitem"].path,
+                                        base_url + "media",
+                                    )
+                                else:
+                                    self.assertEqual(
+                                        recorder.builtin_commands[-1],
+                                        "PlayMedia(" + base_url + "action)",
+                                    )
+
+            self.assertIs(owner, production_router._get_owner())
 
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []

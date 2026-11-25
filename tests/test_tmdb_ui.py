@@ -14,7 +14,7 @@ from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
 from yawsp_app.tmdb import ShowRepository, TMDBClient, TMDBError, TrailerRepository
-from yawsp_app.tmdb_ui import build_tmdb_handlers
+from yawsp_app.tmdb_ui import _next_episode_suffix, build_tmdb_handlers
 
 
 class ListItem:
@@ -288,11 +288,45 @@ class TMDBUITests(unittest.TestCase):
         )
         self.assertEqual(self.background.trailers, [])
         commands = self.plugin.items[0]["listitem"].commands
-        self.assertTrue(
-            any("PlayMedia(plugin://plugin.video.youtube/play/?video_id=cached-video)" in command for _, command in commands)
+        trailer_action = next(
+            command for _, command in commands if "action=tmdb_trailer" in command
         )
+        self.assertTrue(trailer_action.startswith("RunPlugin("))
+        self.assertEqual(query(command_url(trailer_action, "RunPlugin("))["id"], "1")
+        self.assertFalse(any("PlayMedia" in command for _, command in commands))
         self.assertLess(self.events.index("add"), self.events.index("trailers") if "trailers" in self.events else len(self.events))
         self.assertEqual(self.plugin.builtin_commands, [])
+
+    def test_cached_watchlist_trailer_checks_youtube_without_direct_playmedia(self):
+        self.trailer_cache.save(
+            {"movie:42": {"ts": self.clock(), "youtube_id": "cached-video"}}
+        )
+        movie = {"id": 42, "title": "Film", "release_date": "2026-01-02"}
+        self.queue_watchlist([movie])
+        self.handlers = self.build_handlers()
+        self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies"}
+        )
+        trailer_action = next(
+            command
+            for _, command in self.plugin.items[0]["listitem"].commands
+            if "action=tmdb_trailer" in command
+        )
+        params = query(command_url(trailer_action, "RunPlugin("))
+        calls_before = list(self.client.calls)
+        self.events.clear()
+        self.plugin.builtin_commands.clear()
+
+        self.runtime.addon_available = lambda addon_id: False
+        result = self.runner.run_action(
+            lambda: self.handlers["tmdb_trailer"](params)
+        )
+
+        self.assertFalse(result.handled)
+        self.assertEqual(self.client.calls, calls_before)
+        self.assertEqual(self.events, ["resolve"])
+        self.assertEqual(self.plugin.builtin_commands, [])
+        self.assertFalse(any("PlayMedia" in command for command in self.plugin.builtin_commands))
 
     def test_uncached_trailer_is_actionable_and_background_data_appears_on_later_open(self):
         movie = {"id": 2, "title": "Film", "release_date": "2026-01-02"}
@@ -321,12 +355,12 @@ class TMDBUITests(unittest.TestCase):
         self.handlers["tmdb_watchlist"](
             {"action": "tmdb_watchlist", "category": "movies"}
         )
-        self.assertTrue(
-            any(
-                "video_id=later-video" in command
-                for _, command in self.plugin.items[0]["listitem"].commands
-            )
+        later_action = next(
+            command
+            for _, command in self.plugin.items[0]["listitem"].commands
+            if "action=tmdb_trailer" in command
         )
+        self.assertEqual(query(command_url(later_action, "RunPlugin("))["id"], "2")
 
     def test_uncached_show_data_is_not_fetched_inline_and_later_cache_changes_label(self):
         show = {"id": 3, "name": "Seriál", "first_air_date": "2025-01-01"}
@@ -362,6 +396,16 @@ class TMDBUITests(unittest.TestCase):
             {"action": "tmdb_watchlist", "category": "shows"}
         )
         self.assertIn("S02E04 (1. 12. 2026)", self.plugin.items[0]["listitem"].label)
+
+    def test_malformed_air_date_does_not_break_next_episode_presentation(self):
+        for air_date in (20261201, {"year": 2026}):
+            with self.subTest(air_date=air_date):
+                self.assertEqual(
+                    _next_episode_suffix(
+                        {"season": 2, "episode": 4, "air_date": air_date}
+                    ),
+                    " [COLOR gray]→ S02E04[/COLOR]",
+                )
 
     def test_estuary_infowall_default_runs_once_after_directory_completion(self):
         self.runtime.skin_dir = lambda: "skin.estuary"

@@ -80,6 +80,24 @@ class AtomicJsonCacheTests(unittest.TestCase):
             self.assertEqual(json.load(stream), {"valid": "original"})
         self.assertEqual(cache.load(), {"valid": "original"})
 
+    def test_deepcopy_failure_returns_false_and_preserves_original_bytes_and_load(self):
+        class Uncopyable:
+            def __deepcopy__(self, memo):
+                raise TypeError("defensive copy failed")
+
+        self.write_raw('{"valid": "original"}')
+        cache = self.cache()
+        with open(self.path, "rb") as stream:
+            original_bytes = stream.read()
+
+        with self.assertLogs(self.logger, level="ERROR") as logs:
+            self.assertFalse(cache.save({"new": Uncopyable()}))
+
+        self.assertEqual(len(logs.output), 1)
+        with open(self.path, "rb") as stream:
+            self.assertEqual(stream.read(), original_bytes)
+        self.assertEqual(cache.load(), {"valid": "original"})
+
     def test_replace_failure_leaves_original_file_and_cached_data_intact(self):
         self.write_raw(json.dumps({"valid": "original"}))
         cache = self.cache()

@@ -63,6 +63,33 @@ class LocalFileOps:
         return os.path.exists(path)
 
 
+class ContainedLocalFileOps(LocalFileOps):
+    """Fail before a regression can touch anything outside the test sandbox."""
+
+    def __init__(self, root):
+        self.root = os.path.abspath(root)
+        self.attempts = []
+
+    def _check(self, operation, path):
+        self.attempts.append((operation, path))
+        absolute = os.path.abspath(path)
+        if os.path.commonpath((self.root, absolute)) != self.root:
+            raise AssertionError("attempted to escape download sandbox: " + path)
+
+    def open_write(self, path):
+        self._check("write", path)
+        return super().open_write(path)
+
+    def replace(self, source, destination):
+        self._check("replace-source", source)
+        self._check("replace-destination", destination)
+        return super().replace(source, destination)
+
+    def remove(self, path):
+        self._check("remove", path)
+        return super().remove(path)
+
+
 class Addon(AddonRecorder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -527,6 +554,45 @@ class WebshareUITests(unittest.TestCase):
                 self.assertTrue(self.plugin.end_of_directory_calls[-1]["succeeded"])
                 self.client.api_calls.clear()
 
+    def test_queue_and_history_skip_invalid_rows_but_render_valid_rows(self):
+        invalid_rows = (
+            "<file><ident>missing-name</ident></file>",
+            "<file><name> \t </name><ident>blank-name</ident></file>",
+            "<file><name>Missing ident.mkv</name></file>",
+            "<file><name>Blank ident.mkv</name><ident> \t </ident></file>",
+        )
+        valid_row = "<file><name>Movie.mkv</name><ident>abc</ident><size>12</size></file>"
+        for action in ("queue", "history"):
+            with self.subTest(action=action):
+                self.client.api_responses = {
+                    action: [
+                        xml(
+                            "<response><status>OK</status>"
+                            + "".join(invalid_rows)
+                            + valid_row
+                            + valid_row
+                            + "</response>"
+                        )
+                    ]
+                }
+                self.plugin.items.clear()
+                self.logger.calls.clear()
+                error_count = len(self.errors)
+
+                result = self.runner.run_directory(
+                    lambda: self.handlers[action]({"action": action})
+                )
+
+                self.assertTrue(result.succeeded)
+                self.assertEqual(len(self.errors), error_count)
+                self.assertTrue(self.plugin.end_of_directory_calls[-1]["succeeded"])
+                expected_rows = 1 if action == "history" else 2
+                self.assertEqual(len(self.plugin.items), expected_rows)
+                self.assertTrue(
+                    all(item["listitem"].label == "Movie.mkv (12B)" for item in self.plugin.items)
+                )
+                self.assertEqual(len(self.logger.calls), len(invalid_rows))
+
     def test_invalid_play_link_returns_failure_and_runner_resolves_once(self):
         self.client.link_results = [""]
 
@@ -565,6 +631,62 @@ class WebshareUITests(unittest.TestCase):
         self.assertEqual(len(self.plugin.resolved_url_calls), 1)
         self.assertEqual(len(self.plugin.notifications), 1)
         self.assertIn("fallback-id", self.plugin.notifications[0]["message"])
+
+    def test_download_rejects_multicomponent_api_names_and_uses_safe_fallback(self):
+        cases = (
+            ("../outside.mkv", "Requested.mkv", "Requested.mkv"),
+            ("..\\outside.mkv", "Requested.mkv", "Requested.mkv"),
+            (os.path.join(self.tempdir.name, "absolute.mkv"), "Requested.mkv", "Requested.mkv"),
+            ("C:drive-relative.mkv", "Requested.mkv", "Requested.mkv"),
+            ("C:\\absolute.mkv", "Requested.mkv", "Requested.mkv"),
+            ("folder\\nested.mkv", "Requested.mkv", "Requested.mkv"),
+            ("../mixed\\separators.mkv", "Requested.mkv", "Requested.mkv"),
+            ("..\\metadata.mkv", "../requested.mkv", "safe-ident"),
+        )
+        for metadata_name, requested_name, expected_name in cases:
+            with self.subTest(name=metadata_name, requested=requested_name):
+                file_ops = ContainedLocalFileOps(self.download_dir)
+                self.runtime.file_ops = file_ops
+                self.client.link_results = ["https://cdn.invalid/movie"]
+                self.client.info_results = [
+                    xml(
+                        "<response><name>{0}</name><ident>safe-ident</ident></response>".format(
+                            metadata_name.replace("&", "&amp;").replace("<", "&lt;")
+                        )
+                    )
+                ]
+                self.session.queue_response(
+                    FakeResponse(
+                        content=b"movie",
+                        headers={"Content-Length": "5"},
+                        chunks=[b"movie"],
+                        forbid_content=True,
+                    )
+                )
+
+                result = self.handlers["download"](
+                    {
+                        "action": "download",
+                        "ident": "safe-ident",
+                        "name": requested_name,
+                    }
+                )
+
+                self.assertTrue(result.handled)
+                self.assertTrue(
+                    all(
+                        os.path.commonpath(
+                            (os.path.abspath(self.download_dir), os.path.abspath(path))
+                        )
+                        == os.path.abspath(self.download_dir)
+                        for _, path in file_ops.attempts
+                    )
+                )
+                destination = os.path.join(self.download_dir, expected_name)
+                with open(destination, "rb") as downloaded:
+                    self.assertEqual(downloaded.read(), b"movie")
+                self.assertEqual(os.listdir(self.download_dir), [expected_name])
+                os.remove(destination)
 
     def test_download_streams_to_validated_destination_using_real_service(self):
         self.client.link_results = ["https://cdn.invalid/movie"]
