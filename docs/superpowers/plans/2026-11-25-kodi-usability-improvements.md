@@ -25,7 +25,7 @@
 - Explicit refresh must preserve prior complete snapshot on transport/internal failure and no duplicate queued refresh after successful immediate update.
 - New `refresh=1` calls keep identity capture and exact scope; non-route/invalid/cancel flows complete only once.
 - CI cannot mutate git state, use mutable action tags or need live credentials.
-- Archive payload must be 25 runtime files beneath `plugin.video.yawspreloaded/`, plus `metadata.py` when added; no tests/docs/workflow or `__pycache__` may leak into it.
+- Archive payload must begin with 25 pre-plan runtime files beneath `plugin.video.yawspreloaded/`, adding only `metadata.py` and `discovery_ui.py` when created; no tests/docs/workflow or `__pycache__` may leak into it.
 
 ---
 
@@ -88,7 +88,7 @@
 
 **Interfaces:**
 - CI: `permissions: contents: read`, push and pull_request, Python 3.8/3.12 matrix. `actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683`, `actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c` exact SHAs. Install `requests==2.32.3` (test/tooling only) then full discovery + verifier.
-- `verify_release.py`: reads `addon.xml`, README, current git runtime filenames, builds a temp ZIP under a matching `plugin.video.yawspreloaded/` root and validates 1) version badge/setup presence, 2) exact file allowlist, 3) 26 entries with new metadata helper (25 before it), 4) CRC and every zipped byte equals source. Exclude tests, docs, `.github`, SDD, pycache and credentials. Print only counts/version/hash, exit nonzero on failure.
+- `verify_release.py`: reads `addon.xml`, README and selected current git runtime filenames, builds a temp ZIP beneath a single matching `plugin.video.yawspreloaded/` root and validates 1) version badge/setup presence, 2) exact file allowlist and current runtime count (25 before this plan, plus metadata and discovery as added), 3) CRC and every zipped byte equals source. No test/docs/workflow/SDD/pycache or credentials are allowed. Print only counts/version/hash, exit nonzero on failure.
 - Workflow parse test inspects YAML text semantically enough to assert permissions, triggers, full 40-character lowercase SHA action refs, no token-write permissions, actual test commands and no release/push.
 
 - [ ] Add failing path/XML/archive tests: valid current root passes; wrong root or extra file invalid; missing metadata.py if added becomes failure. Prove proper current manifest+README while gate catches both filename bytes and source differences.
@@ -122,11 +122,28 @@
 - [ ] Copy only the two approved backups; verify both source and destination SHA-256 and same bytes. Check no archive contents are printed.
 - [ ] Record target path and non-destructive validation for user/documentation. Do not delete Temp originals.
 
-### Task 7: Integrated isolated Kodi validation and final reviews
+### Task 8: Add separate TMDB Objevit gallery
+
+**Files:**
+- Create `yawsp_app/discovery_ui.py`, `tests/test_discovery_ui.py`
+- Modify `yawsp_app/tmdb_ui.py` main menu only and all three catalogs add **30441 Discover**, **30442 Popular**, **30443 Top rated**
+- Test `tests/test_resources.py`, main-menu/entrypoint contracts
+
+**Interfaces:**
+- `build_discovery_handlers(runtime, client, url_builder, genres, set_default_view)` returns `{"tmdb_discovery": handler}`.
+- Four immutable local mappings: `popular_movies`→`/movie/popular`, `popular_shows`→`/tv/popular`, `top_rated_movies`→`/movie/top_rated`, `top_rated_shows`→`/tv/top_rated`; only selected `client.get(path)` plus optional shared genre lookup. No personal scope or snapshot.
+- Webshare result is `action=search, what=localized_title, sort=largest` via existing `_url`; original-title context uses 30414 where useful. No auto-play/watch/queue operations.
+- Existing Task 2 `apply_video_metadata` supplies native tags and proper genre list. Runtime can use root menu plus now 7 entries (five webshare + TMDB Watchlist + TMDBObjevit as selected by user).
+
+- [ ] Add failing gallery tests: handler registered; four exact endpoints/non-null title/year/rating/plot/data; selected artwork genre/list metadata; ordinary+original Webshare destination; unknown source returns failed directory; one selected page no pagination/metadata/refresh/identity-resolution calls; missing key local settings flow and error path.
+- [ ] Implement small API/UI builder and one extra TMDB root menu entry beside existing watchlist. Add 30441/42/43 (including proper CS/SK translations) without modifying existing resource identifiers.
+- [ ] Verify literal correct public TMDB endpoint mapping, no external input path construction, exactly one selected catalog call and no extra queued work or counts compared to existing operations. Perform all focused/full suites and independent spec+quality review.
+
+### Task 9: Integrated isolated Kodi validation and final reviews
 
 **Files:** all task diffs + temporary deployment/test fixture and exact CI-style package. No release work unless separately approved.
 
 - [ ] Run full discovery, Python 3.8 AST parser, PO/XML parse, workflow lint-like checks, release verifier and git diff check.
-- [ ] Deploy current code to a New isolated native Kodi 21.2 Store profile copy. Verify enabled version, menu6, actual native InfoTag local metadata, manual refresh from a controlled endpoint, old complete data on failure and no `setInfo` deprecation line from this addon. Probe shutdown using Task 1's same method so before/after is comparable. Do not force quit the real main profile or print account data.
+- [ ] Deploy current code to a New isolated native Kodi 21.2 Store profile copy. Verify enabled version, all six previous main-menu items plus separate `Objevit` (7 items total), actual popular/top-rated metadata and Webshare destinations from a controlled endpoint, actual native InfoTag local metadata, manual refresh from a controlled endpoint, old complete data on failure and no `setInfo` deprecation line from this addon. Probe shutdown using Task 1's same method so before/after is comparable. Do not force quit the real main profile or print account data.
 - [ ] Independent final functional/performance/DevOps review of actual diff, witnesses valid URL/main lifecycle; no unsupported device/liveness claims. New Important findings return to owning task with a failing test.
 - [ ] Present exact final commit/test/live results and ask for integration/release choice; do not merge/push/tag/release automatically.
