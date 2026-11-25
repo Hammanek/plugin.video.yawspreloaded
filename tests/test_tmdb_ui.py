@@ -4,6 +4,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import requests
@@ -13,7 +14,13 @@ from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
-from yawsp_app.tmdb import ShowRepository, TMDBClient, TMDBError, TrailerRepository
+from yawsp_app.tmdb import (
+    BackgroundPrefetch,
+    ShowRepository,
+    TMDBClient,
+    TMDBError,
+    TrailerRepository,
+)
 from yawsp_app.tmdb_ui import _next_episode_suffix, build_tmdb_handlers
 
 
@@ -140,22 +147,34 @@ class ServiceSettings:
         self.addon.setSetting(key, value)
 
 
+class DeferredWorker:
+    def __init__(self):
+        self.jobs = []
+
+    def submit(self, function, *args):
+        self.jobs.append((function, args))
+
+
 class Background:
     def __init__(self, events):
         self.events = events
         self.trailers = []
         self.shows = []
+        self.trailer_missing_known = []
+        self.show_missing_known = []
 
-    def submit_trailers(self, media, media_ids):
+    def submit_trailers(self, media, media_ids, missing_known=False):
         ids = list(media_ids)
         self.events.append("trailers")
         self.trailers.append((media, ids))
+        self.trailer_missing_known.append(missing_known)
         return len(ids)
 
-    def submit_shows(self, show_ids):
+    def submit_shows(self, show_ids, missing_known=False):
         ids = list(show_ids)
         self.events.append("shows")
         self.shows.append(ids)
+        self.show_missing_known.append(missing_known)
         return len(ids)
 
 
@@ -332,8 +351,10 @@ class TMDBUITests(unittest.TestCase):
         movie = {"id": 2, "title": "Film", "release_date": "2026-01-02"}
         self.queue_watchlist([movie])
 
-        self.handlers["tmdb_watchlist"](
-            {"action": "tmdb_watchlist", "category": "movies"}
+        self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "movies"}
+            )
         )
 
         self.assertEqual(self.background.trailers, [("movie", [2])])
@@ -370,8 +391,10 @@ class TMDBUITests(unittest.TestCase):
         )
         self.client.queue_get("/3/genre/tv/list", {"genres": []})
 
-        self.handlers["tmdb_watchlist"](
-            {"action": "tmdb_watchlist", "category": "shows"}
+        self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "shows"}
+            )
         )
 
         self.assertEqual(self.background.shows, [[3]])
@@ -406,6 +429,97 @@ class TMDBUITests(unittest.TestCase):
                     ),
                     " [COLOR gray]→ S02E04[/COLOR]",
                 )
+
+    def test_submissions_and_view_hook_share_one_post_completion_callback(self):
+        self.runtime.skin_dir = lambda: "skin.estuary"
+        show = {"id": 3, "name": "Seriál", "first_air_date": "2025-01-01"}
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {"results": [show], "total_pages": 1},
+        )
+        self.client.queue_get("/3/genre/tv/list", {"genres": []})
+
+        result = self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "shows"}
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.events,
+            [
+                "add",
+                "end",
+                "Container.SetViewMode(54)",
+                "trailers",
+                "shows",
+            ],
+        )
+        self.assertEqual(self.events.count("end"), 1)
+        self.assertEqual(self.background.trailers, [("tv", [3])])
+        self.assertEqual(self.background.shows, [[3]])
+        self.assertEqual(self.background.trailer_missing_known, [True])
+        self.assertEqual(self.background.show_missing_known, [True])
+
+    def test_watchlist_reuses_single_discovery_read_per_cache_for_submission(self):
+        show = {"id": 3, "name": "Seriál", "first_air_date": "2025-01-01"}
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {"results": [show], "total_pages": 1},
+        )
+        self.client.queue_get("/3/genre/tv/list", {"genres": []})
+
+        self.background = BackgroundPrefetch(
+            settings=ServiceSettings(self.addon),
+            trailer_cache=self.trailer_cache,
+            show_cache=self.show_cache,
+            locale_mapper=lambda: "en-US",
+            session_factory=lambda: self.fail("worker must not start during submission"),
+            worker=DeferredWorker(),
+            clock=self.clock,
+        )
+        self.handlers = self.build_handlers()
+
+        with patch.object(
+            self.trailer_cache, "load", wraps=self.trailer_cache.load
+        ) as trailer_load, patch.object(
+            self.show_cache, "load", wraps=self.show_cache.load
+        ) as show_load:
+            self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "shows"}
+                )
+            )
+
+        self.assertEqual(trailer_load.call_count, 1)
+        self.assertEqual(show_load.call_count, 1)
+
+    def test_stale_show_value_is_displayed_while_still_scheduled_for_refresh(self):
+        stale = {"season": 1, "episode": 2, "air_date": "2026-01-01"}
+        self.show_cache.save(
+            {
+                "3": {
+                    "ts": self.clock() - 24 * 60 * 60 - 1,
+                    "next": stale,
+                }
+            }
+        )
+        show = {"id": 3, "name": "Seriál", "first_air_date": "2025-01-01"}
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {"results": [show], "total_pages": 1},
+        )
+        self.client.queue_get("/3/genre/tv/list", {"genres": []})
+
+        self.runner.run_directory(
+            lambda: self.handlers["tmdb_watchlist"](
+                {"action": "tmdb_watchlist", "category": "shows"}
+            )
+        )
+
+        self.assertIn("S01E02", self.plugin.items[0]["listitem"].label)
+        self.assertEqual(self.background.shows, [[3]])
 
     def test_estuary_infowall_default_runs_once_after_directory_completion(self):
         self.runtime.skin_dir = lambda: "skin.estuary"

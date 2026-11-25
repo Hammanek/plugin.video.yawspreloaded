@@ -829,6 +829,129 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         self.assertEqual(created, [session])
         self.assertTrue(session.closed)
 
+    def test_worker_cache_writes_coalesce_at_eight_validated_successes(self):
+        expected = {
+            ("trailers", 1): 1,
+            ("trailers", 8): 1,
+            ("trailers", 32): 4,
+            ("shows", 1): 1,
+            ("shows", 8): 1,
+            ("shows", 32): 4,
+        }
+        actual = {}
+        for kind, count in expected:
+            with self.subTest(kind=kind, count=count):
+                cache = AtomicJsonCache(
+                    os.path.join(
+                        self.temporary_directory.name,
+                        "{0}-{1}.json".format(kind, count),
+                    )
+                )
+                unused_cache = self.show_cache if kind == "trailers" else self.trailer_cache
+                responses = [
+                    json_response(
+                        {
+                            "results": [
+                                {
+                                    "site": "YouTube",
+                                    "type": "Trailer",
+                                    "key": "video-{0}".format(index),
+                                }
+                            ]
+                        }
+                        if kind == "trailers"
+                        else {"next_episode_to_air": None}
+                    )
+                    for index in range(count)
+                ]
+                worker = InlineWorker()
+                background = BackgroundPrefetch(
+                    settings=MemorySettings(tmdb_account_id="42"),
+                    trailer_cache=cache if kind == "trailers" else unused_cache,
+                    show_cache=cache if kind == "shows" else unused_cache,
+                    locale_mapper=lambda: "en-US",
+                    session_factory=lambda: FakeSession(responses),
+                    worker=worker,
+                    clock=FakeClock(),
+                )
+                with patch("yawsp_app.json_cache.os.fsync", wraps=os.fsync) as fsync:
+                    if kind == "trailers":
+                        accepted = background.submit_trailers(
+                            "movie", range(1, count + 1)
+                        )
+                    else:
+                        accepted = background.submit_shows(range(1, count + 1))
+                self.assertEqual(accepted, count)
+                actual[(kind, count)] = fsync.call_count
+
+        self.assertEqual(actual, expected)
+
+    def test_missing_known_skips_discovery_reads_without_changing_validation_or_dedup(self):
+        worker = ManualWorker()
+        background, _ = self.make_background([], worker)
+
+        with patch.object(self.show_cache, "load", wraps=self.show_cache.load) as load:
+            accepted = background.submit_shows(
+                [21, "21", "invalid", 22], missing_known=True
+            )
+
+        self.assertEqual(accepted, 2)
+        self.assertEqual(load.call_count, 0)
+        self.assertEqual(len(worker.jobs), 1)
+        self.assertEqual(background.submit_shows([21, 22], missing_known=True), 0)
+
+    def test_worker_flushes_completed_successes_when_aborted(self):
+        session = FakeSession(
+            [json_response({"next_episode_to_air": None}) for _ in range(3)]
+        )
+        worker = ManualWorker()
+        background, _ = self.make_background(
+            [session], worker, abort=lambda: len(session.calls) >= 2
+        )
+        background.submit_shows([31, 32, 33], missing_known=True)
+
+        with patch("yawsp_app.json_cache.os.fsync", wraps=os.fsync) as fsync:
+            worker.run_all()
+
+        self.assertEqual(fsync.call_count, 1)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"31", "32"})
+        self.assertTrue(session.closed)
+
+    def test_worker_flushes_prior_successes_after_unexpected_job_failure(self):
+        session = FakeSession([json_response({"next_episode_to_air": None})])
+        abort_checks = []
+
+        def failing_abort():
+            abort_checks.append(True)
+            if len(abort_checks) == 3:
+                raise RuntimeError("abort predicate failed unexpectedly")
+            return False
+
+        worker = ManualWorker()
+        background, _ = self.make_background([session], worker, abort=failing_abort)
+        background.submit_shows([34, 35], missing_known=True)
+
+        with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
+            with patch("yawsp_app.json_cache.os.fsync", wraps=os.fsync) as fsync:
+                worker.run_all()
+
+        self.assertEqual(fsync.call_count, 1)
+        self.assertEqual(set(self.read_cache(self.show_cache)), {"34"})
+        self.assertTrue(session.closed)
+        self.assertEqual(background.submit_shows([35], missing_known=True), 1)
+
+    def test_direct_lookup_persistence_remains_immediate(self):
+        client, _, _, _ = self.make_client(
+            [json_response({"next_episode_to_air": None})]
+        )
+        repository = ShowRepository(client, self.show_cache)
+
+        with patch("yawsp_app.json_cache.os.fsync", wraps=os.fsync) as fsync:
+            self.assertIsNone(repository.next_episode(36))
+            self.assertEqual(self.read_cache(self.show_cache)["36"]["next"], None)
+            self.assertEqual(fsync.call_count, 1)
+
     def test_no_ui_refresh_is_performed_by_background_completion(self):
         # BackgroundPrefetch has no plugin/UI argument or refresh callback; completion only updates JSON.
         session = FakeSession([json_response({"id": 31, "next_episode_to_air": None})])

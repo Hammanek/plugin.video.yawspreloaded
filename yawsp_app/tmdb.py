@@ -198,17 +198,38 @@ class TMDBClient:
 
 
 class _Repository:
-    def __init__(self, client, cache, clock=time.time, logger=None):
+    def __init__(self, client, cache, clock=time.time, logger=None, _defer_save=False):
         self.client = client
         self.cache = cache
         self.clock = clock
         self.logger = logger or _LOGGER
         self._entries = None
         self._lock = threading.RLock()
+        self._defer_save = _defer_save
+        self._save_pending = False
+        self._changes_since_flush = 0
 
     def _load(self):
         if self._entries is None:
             self._entries = self.cache.load()
+
+    def _save_success(self):
+        """Persist immediately on demand, or checkpoint a worker after eight successes."""
+        self._save_pending = True
+        if not self._defer_save:
+            self._flush()
+            return
+        self._changes_since_flush += 1
+        if self._changes_since_flush >= 8:
+            self._flush()
+
+    def _flush(self):
+        with self._lock:
+            if not self._save_pending:
+                return
+            if self.cache.save(self._entries):
+                self._save_pending = False
+                self._changes_since_flush = 0
 
     @staticmethod
     def _valid_timestamp(value):
@@ -324,7 +345,7 @@ class TrailerRepository(_Repository):
 
             entry = {"ts": self.clock(), "youtube_id": youtube_id}
             self._entries[key] = entry
-            self.cache.save(self._entries)
+            self._save_success()
             if youtube_id is None:
                 return TrailerLookup("missing", None)
             return TrailerLookup("hit", youtube_id)
@@ -425,7 +446,7 @@ class ShowRepository(_Repository):
                 return cached["next"] if cached is not None else None
 
             self._entries[key] = {"ts": self.clock(), "next": next_episode}
-            self.cache.save(self._entries)
+            self._save_success()
             return next_episode
 
 
@@ -521,7 +542,7 @@ class BackgroundPrefetch:
             return 0
         return len(accepted)
 
-    def submit_trailers(self, media, media_ids):
+    def submit_trailers(self, media, media_ids, missing_known=False):
         reader = TrailerRepository(None, self.trailer_cache, clock=self.clock)
         keys = []
         seen = set()
@@ -532,13 +553,15 @@ class BackgroundPrefetch:
             except (TypeError, ValueError):
                 continue
             key = ("trailer", str(media).strip(), normalized_id)
-            if key in seen or not reader.needs_lookup(media, normalized_id):
+            if key in seen or (
+                not missing_known and not reader.needs_lookup(media, normalized_id)
+            ):
                 continue
             seen.add(key)
             keys.append((key, cache_key, media, normalized_id))
         return self._enqueue(keys, self._run_trailers)
 
-    def submit_shows(self, show_ids):
+    def submit_shows(self, show_ids, missing_known=False):
         reader = ShowRepository(None, self.show_cache, clock=self.clock)
         keys = []
         seen = set()
@@ -549,7 +572,9 @@ class BackgroundPrefetch:
             except (TypeError, ValueError):
                 continue
             key = ("show", normalized_id)
-            if key in seen or not reader.needs_lookup(normalized_id):
+            if key in seen or (
+                not missing_known and not reader.needs_lookup(normalized_id)
+            ):
                 continue
             seen.add(key)
             keys.append((key, cache_key, normalized_id))
@@ -562,16 +587,21 @@ class BackgroundPrefetch:
         except Exception:
             self.logger.exception("Unable to close TMDB background HTTP session")
         finally:
-            self._release([item[0] for item in keys])
+            self._release(keys)
 
     def _run_trailers(self, keys):
         session = None
+        repository = None
         try:
             # The executor job, not the directory/UI thread, creates and owns
             # this HTTP session for its lifetime.
             session = self.session_factory()
             repository = TrailerRepository(
-                self._client(session), self.trailer_cache, clock=self.clock, logger=self.logger
+                self._client(session),
+                self.trailer_cache,
+                clock=self.clock,
+                logger=self.logger,
+                _defer_save=True,
             )
             for _, cache_key, media, media_id in keys:
                 if self._abort_requested():
@@ -580,14 +610,24 @@ class BackgroundPrefetch:
         except Exception:
             self.logger.exception("TMDB trailer prefetch failed")
         finally:
+            try:
+                if repository is not None:
+                    repository._flush()
+            except Exception:
+                self.logger.exception("Unable to flush TMDB trailer prefetch cache")
             self._finish(session, keys)
 
     def _run_shows(self, keys):
         session = None
+        repository = None
         try:
             session = self.session_factory()
             repository = ShowRepository(
-                self._client(session), self.show_cache, clock=self.clock, logger=self.logger
+                self._client(session),
+                self.show_cache,
+                clock=self.clock,
+                logger=self.logger,
+                _defer_save=True,
             )
             for _, cache_key, show_id in keys:
                 if self._abort_requested():
@@ -596,4 +636,9 @@ class BackgroundPrefetch:
         except Exception:
             self.logger.exception("TMDB show prefetch failed")
         finally:
+            try:
+                if repository is not None:
+                    repository._flush()
+            except Exception:
+                self.logger.exception("Unable to flush TMDB show prefetch cache")
             self._finish(session, keys)

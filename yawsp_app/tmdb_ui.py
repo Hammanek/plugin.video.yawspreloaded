@@ -37,9 +37,10 @@ def _url(runtime, **params):
 
 
 def _cached_trailers(repository, media, media_ids):
-    """Read cache through repository rules without permitting a network lookup."""
+    """Read cache once for immediate values and the matching freshness misses."""
     reader = TrailerRepository(None, repository.cache, clock=repository.clock)
     values = {}
+    missing = []
     with reader._lock:
         reader._load()
         for media_id in media_ids:
@@ -50,13 +51,16 @@ def _cached_trailers(repository, media, media_ids):
             entry = reader._entry(key)
             if reader._fresh(entry):
                 values[int(media_id)] = entry["youtube_id"]
-    return values
+            else:
+                missing.append(int(media_id))
+    return values, missing
 
 
 def _cached_shows(repository, show_ids):
-    """Return fresh or stale successful values; failures are never synthesized."""
+    """Read displayable fresh/stale values and freshness misses in one pass."""
     reader = ShowRepository(None, repository.cache, clock=repository.clock)
     values = {}
+    missing = []
     with reader._lock:
         reader._load()
         for show_id in show_ids:
@@ -67,7 +71,9 @@ def _cached_shows(repository, show_ids):
             entry = reader._entry(key)
             if entry is not None:
                 values[int(show_id)] = entry["next"]
-    return values
+            if not reader._fresh(entry):
+                missing.append(int(show_id))
+    return values, missing
 
 
 def _next_episode_suffix(next_episode):
@@ -457,9 +463,11 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
             genre_map = genres(media)
             media_ids = [value["id"] for value in results]
-            cached_trailers = _cached_trailers(trailer_repository, media, media_ids)
-            cached_shows = (
-                {}
+            cached_trailers, missing_trailers = _cached_trailers(
+                trailer_repository, media, media_ids
+            )
+            cached_shows, missing_shows = (
+                ({}, [])
                 if is_movie
                 else _cached_shows(show_repository, media_ids)
             )
@@ -559,17 +567,20 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     item,
                 )
 
-            # Scheduling occurs only after all cached rows have been submitted to
-            # Kodi. Workers persist data but never refresh a running container.
-            missing_trailers = [
-                media_id for media_id in media_ids if media_id not in cached_trailers
-            ]
-            if missing_trailers:
-                background.submit_trailers(media, missing_trailers)
-            if not is_movie:
-                background.submit_shows(media_ids)
             runtime.set_content("movies" if is_movie else "tvshows")
-            return DirectoryResult(post_complete=lambda: set_default_view(params))
+
+            def post_complete():
+                set_default_view(params)
+                # Cache misses were discovered with the row values above. Workers
+                # persist data but never refresh a running container.
+                if missing_trailers:
+                    background.submit_trailers(
+                        media, missing_trailers, missing_known=True
+                    )
+                if not is_movie and missing_shows:
+                    background.submit_shows(missing_shows, missing_known=True)
+
+            return DirectoryResult(post_complete=post_complete)
         except TMDBError as error:
             report_listing_error(error)
             return DirectoryResult(succeeded=False)
