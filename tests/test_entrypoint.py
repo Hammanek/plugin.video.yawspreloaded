@@ -868,6 +868,7 @@ class EntrypointTests(unittest.TestCase):
             first = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(first.succeeded)
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             self.assertEqual(len(session.calls), 3)
             self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account")
             self.assertIn("/watchlist/movies", session.calls[1]["url"])
@@ -879,13 +880,11 @@ class EntrypointTests(unittest.TestCase):
             scope = SnapshotScope("account-1", "movies", "en-US")
             owner.snapshot_store.save_complete(scope, movies, 0.0)
             recorder.items.clear()
-            session.queue_response(json_response({"id": "account-1"}))
 
             second = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(second.succeeded)
-            self.assertEqual(len(session.calls), 4)
-            self.assertEqual(session.calls[3]["url"], "https://api.themoviedb.org/3/account")
+            self.assertEqual(len(session.calls), 3)
             self.assertEqual(
                 [call for call in session.calls if "/watchlist/movies" in call["url"]],
                 [session.calls[1]],
@@ -899,7 +898,7 @@ class EntrypointTests(unittest.TestCase):
                 ["Áčko", "Chata"],
             )
             self.assertEqual(owner.snapshot_store.load(scope).results, movies)
-            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             watchlist_jobs = [
                 args
                 for function, args in owner.background.worker.jobs
@@ -908,7 +907,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(len(watchlist_jobs), 1)
             refresh_args = watchlist_jobs[0]
             self.assertEqual(refresh_args[1], scope)
-            self.assertIs(refresh_args[-1], True)
+            self.assertIs(refresh_args[-1], False)
 
     def test_production_worker_session_factories_clone_main_headers_without_sharing(self):
         with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
@@ -970,7 +969,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertTrue(result.handled)
             self.assertEqual(len(owner.background.worker.jobs), 1)
             owner.background.worker.run_all()
-            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
             self.assertEqual(len(session.calls), 3)
             self.assertEqual(
@@ -1103,16 +1102,26 @@ class EntrypointTests(unittest.TestCase):
             addon.setSetting("tmdb_account_id", "")
             original_set = addon.setSetting
             publication_attempts = []
+            response_returned = []
+            account_response = json_response({"id": "account-1"})
+            account_json = account_response.json
+
+            def returned_account_json():
+                data = account_json()
+                response_returned.append(True)
+                return data
 
             def switch_at_speculative_publication(key, value):
                 if key == "tmdb_account_id" and value == "account-1":
                     publication_attempts.append(value)
-                    original_set("tmdb_account_id", "account-2")
-                    original_set("tmdb_access_token", "session-2")
+                    if not response_returned:
+                        original_set("tmdb_account_id", "account-2")
+                        original_set("tmdb_access_token", "session-2")
                 original_set(key, value)
 
+            account_response.json = returned_account_json
             addon.setSetting = switch_at_speculative_publication
-            session.queue_response(json_response({"id": "account-1"}))
+            session.queue_response(account_response)
             session.queue_response(
                 json_response({"total_pages": 1, "results": [{"id": 1, "title": "Staged"}]})
             )
@@ -1121,8 +1130,9 @@ class EntrypointTests(unittest.TestCase):
             result = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(result.succeeded)
-            self.assertEqual(publication_attempts, [])
-            self.assertEqual(addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(response_returned, [True])
+            self.assertEqual(publication_attempts, ["account-1"])
+            self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
             self.assertEqual(
                 session.calls[1]["url"],

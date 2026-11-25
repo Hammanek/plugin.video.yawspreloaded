@@ -634,13 +634,16 @@ class _WatchlistResolutionSettings:
             self.settings.set(key, value)
 
     def commit(self, account_id):
-        """Validate a staged ID for this operation, never publish it globally."""
+        """Publish a staged ID only while its captured identity is still current."""
         current_account = str(self.settings.get("tmdb_account_id") or "").strip()
-        return (
+        if not (
             self.staged_account_id == account_id
             and current_account in ("", account_id)
             and self.identity_valid(account_id)
-        )
+        ):
+            return False
+        self.settings.set("tmdb_account_id", account_id)
+        return True
 
 
 def resolve_watchlist_account(client, session_id, language, identity_valid):
