@@ -102,7 +102,7 @@
 
 **Interfaces:**
 - `<news>` is concise factual XML content for already-released **2.0.0**; no fake later version.
-- README documents metadata API migration, manual `refresh=1`, cache explanatory label, added empty-state meaning, CI verifier, and durable backup location separately from Temp.
+- README documents metadata API migration, manual `refresh=1`, cache explanatory label, added empty-state meaning, first-position Objevit with four categories and explicit ordering, reversible custom Netflix / native InfoWall style (including next-open semantics and native-wall setting), Backup DB removal without user-data deletion, CI verifier, and durable backup location separately from Temp.
 - Exact live claim **Kodi 21.2 (Omega), Windows Store x64** vs Python 3.8 static compatibility; no claim Kodi 19 was actually started.
 
 - [ ] Before editing run a focused documentation/environment claim check capturing required missing assertions without merely removing them.
@@ -122,28 +122,49 @@
 - [ ] Copy only the two approved backups; verify both source and destination SHA-256 and same bytes. Check no archive contents are printed.
 - [ ] Record target path and non-destructive validation for user/documentation. Do not delete Temp originals.
 
+### Task 7: Retire obsolete Backup DB feature and its handlers
+
+**Files:**
+- Delete `yawsp_app/backup_db.py`, `tests/test_backup_db.py`
+- Modify `yawsp_app/webshare_ui.py`, `yawsp_app/download_jobs.py`, `resources/settings.xml` only if obsolete UI settings are actually present, all three PO catalogs only for DB-only IDs 30434/30435/30436, `README.md`, `.superpowers/sdd/2026-11-25-performance-remediation/performance-coverage.json`, `tests/test_documentation.py` and relevant Webshare/entrypoint tests; retain unrelated queue/history tests.
+- Create focused retirement regression `tests/test_backup_db_retirement.py`.
+
+**Interfaces:**
+- No `BackupDBStore` import/instantiation, Backup DB root label, DB installer/worker, `db` or `searchdb` handlers/actions, no text download/read for the old feature.
+- `DownloadJobKey` retains **media** only, and only its unrelated job lifecycle tests/behavior. No `backup_db_job_key` calls remain.
+- Explicit retired `db`/`searchdb` requests fall through existing root menu without `user_data`, authentication, database parsing or network. No arbitrary redirect or user-file destruction.
+- Historical performance coverage marks obsolete perf requirement as `removed` instead of pretending its symbols exist; don't delete evidence of unchanged history or regressions that cover media data.
+- User `database*`/JSON TXT files and permanent backup archives stay untouched; `close` and real download completion remain included.
+
+- [ ] Add failing regression with actual main menu and route/handlers before any deletion. Verify logout/token would not be called on retired routes, exactly no remaining DB UI/job namespaces and existing media path can still queue/close/complete. Also verify obsolete IDs resolve or are removed consistently across locale parser, no dead `backup_db` imports/symbol maps.
+- [ ] Delete only retirement-specific files/branches/test cases and update docs/performance map. No opportunistic rewriting of generic media download or shared worker policy.
+- [ ] Run test discovery and an independent removal review: no old actions can silently hit code missing its now-deleted dependency; legacy bookmarks return a benign directory, not a trace.
+
 ### Task 8: Add separate TMDB Objevit gallery
 
 **Files:**
-- Create `yawsp_app/discovery_ui.py`, `tests/test_discovery_ui.py`
-- Modify `yawsp_app/tmdb_ui.py` main menu only and all three catalogs add **30441 Discover**, **30442 Popular**, **30443 Top rated**
-- Test `tests/test_resources.py`, main-menu/entrypoint contracts
+- Create `yawsp_app/discovery_ui.py`, `yawsp_app/discovery_window.py`, `resources/skins/default/720p/DiscoveryWindow.xml`, `tests/test_discovery_ui.py`, `tests/test_discovery_window.py`
+- Modify `yawsp_app/tmdb_ui.py` menu/handler registration, `yawsp_app/router.py` for a **default-first** discovery entry before prior main menu items (no completion changes), `resources/settings.xml` for additive `discovery_native_wall` default false, and catalogs add **30441 Discover**, **30442 Popular**, **30443 Top rated**, **30444 Use native wall in Objevit**
+- Test `tests/test_resources.py`, main-menu/entrypoint/settings and performance contracts
 
 **Interfaces:**
-- `build_discovery_handlers(runtime, client, url_builder, genres, set_default_view)` returns `{"tmdb_discovery": handler}`.
-- Four immutable local mappings: `popular_movies`→`/movie/popular`, `popular_shows`→`/tv/popular`, `top_rated_movies`→`/movie/top_rated`, `top_rated_shows`→`/tv/top_rated`; only selected `client.get(path)` plus optional shared genre lookup. No personal scope or snapshot.
-- Webshare result is `action=search, what=localized_title, sort=largest` via existing `_url`; original-title context uses 30414 where useful. No auto-play/watch/queue operations.
-- Existing Task 2 `apply_video_metadata` supplies native tags and proper genre list. Runtime can use root menu plus now 7 entries (five webshare + TMDB Watchlist + TMDBObjevit as selected by user).
+- Immutable local mappings: `popular_movies`→`/movie/popular`, `popular_shows`→`/tv/popular`, `top_rated_movies`→`/movie/top_rated`, `top_rated_shows`→`/tv/top_rated`; only selected `client.get(path)` plus optional shared genre lookup. No personal account/snapshot and no page loop.
+- `build_discovery_handlers(runtime, client, url_builder, genres, set_default_view, window_factory)` receives existing helpers plus injected native custom window; factory can be locally replaced by semantics-faithful Kodi double, never inventing a fake unsupported API.
+- Shared result model supplies title/original, year, genre list, rating, plot, poster/thumb/backdrop and native info tags. Result `action=search, what=localized_title, sort=largest` using existing `_url`, plus optional original-title search 30414. No autoplay/watch/queue/trailer calls.
+- Default false uses custom Netflix-inspired native Kodi UI: category buttons, selected-item backdrop, metadata, explicit focus/grid visuals, loading/empty/error states, left/right/up/down, Enter and Back. One expected modal/window close per route, including report/recovery/error; no heavy animation or new framework. Inspect supported native controls from real 21.2 binding before choosing exact names.
+- Additive setting `discovery_native_wall=true` reuses native InfoWall; it never opens custom factory. Switching setting only changes the next opening, not watchlist, and doesn't require reinstall. Provider route with unset value starts with user-selected custom default.
+- Root is **Objevit → Vyhledávání → Chci si stáhnout → Historie stahování → Nastavení → TMDB Watchlist** after retirement. Static root does no discovery HTTP.
 
-- [ ] Add failing gallery tests: handler registered; four exact endpoints/non-null title/year/rating/plot/data; selected artwork genre/list metadata; ordinary+original Webshare destination; unknown source returns failed directory; one selected page no pagination/metadata/refresh/identity-resolution calls; missing key local settings flow and error path.
-- [ ] Implement small API/UI builder and one extra TMDB root menu entry beside existing watchlist. Add 30441/42/43 (including proper CS/SK translations) without modifying existing resource identifiers.
-- [ ] Verify literal correct public TMDB endpoint mapping, no external input path construction, exactly one selected catalog call and no extra queued work or counts compared to existing operations. Perform all focused/full suites and independent spec+quality review.
+- [ ] Add failing endpoints/menu tests for all four sources plus safe unknown source, field mapping and Webshare target; verify exactly one selected list call at most one shared genre call, no identity resolution, pagination, media metadata refresh or trailer lookup.
+- [ ] Add failing presenter tests for four categories and focus state, loading/empty/error, custom close-on-back (exactly once), Webshare activation once via Enter and view switch → next native directory. Show phoning, not static screenshots, through source-backed documented controls and test callback invocations. Ensure user keys cannot produce a second close/search call.
+- [ ] Implement small bounded UI/data/helper, its native resource XML, selected presentation and first root entry without replacing old watchlist. Add user-selected CS/SK/EN localization and new boolean in TMDB settings.
+- [ ] Verify route/completion, context menu original-title and existing genre/InfoTag names on native grid + custom window, never outside known immutable CDL. Prove API count independent of presentation and test full suite + independent UI/functional review.
 
 ### Task 9: Integrated isolated Kodi validation and final reviews
 
 **Files:** all task diffs + temporary deployment/test fixture and exact CI-style package. No release work unless separately approved.
 
 - [ ] Run full discovery, Python 3.8 AST parser, PO/XML parse, workflow lint-like checks, release verifier and git diff check.
-- [ ] Deploy current code to a New isolated native Kodi 21.2 Store profile copy. Verify enabled version, all six previous main-menu items plus separate `Objevit` (7 items total), actual popular/top-rated metadata and Webshare destinations from a controlled endpoint, actual native InfoTag local metadata, manual refresh from a controlled endpoint, old complete data on failure and no `setInfo` deprecation line from this addon. Probe shutdown using Task 1's same method so before/after is comparable. Do not force quit the real main profile or print account data.
+- [ ] Deploy current code to a New isolated native Kodi 21.2 Store profile copy. Verify enabled version and root order **Objevit, Vyhledávání, Chci si stáhnout, Historie stahování, Nastavení, TMDB Watchlist** (6 after DB retirement). Verify custom Netflix view, reversible native wall, focus navigation and Webshare destinations from a controlled endpoint, actual native InfoTag local metadata, manual refresh/failure behavior and no `setInfo` deprecation line from this addon. Probe shutdown using Task 1's same method so before/after is comparable. Do not force quit the real main profile or print account data.
 - [ ] Independent final functional/performance/DevOps review of actual diff, witnesses valid URL/main lifecycle; no unsupported device/liveness claims. New Important findings return to owning task with a failing test.
 - [ ] Present exact final commit/test/live results and ask for integration/release choice; do not merge/push/tag/release automatically.
