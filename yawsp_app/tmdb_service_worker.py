@@ -14,7 +14,11 @@ import time
 import requests
 
 from yawsp_app import tmdb_service_protocol as protocol
-from yawsp_app.discovery_ui import CATALOG_SOURCES, map_discovery_record
+from yawsp_app.discovery_ui import (
+    CATALOG_SOURCES,
+    map_discovery_record,
+    versioned_catalog_path,
+)
 from yawsp_app.tmdb import (
     _METADATA_RETRY_BACKOFF,
     ShowRepository,
@@ -469,7 +473,7 @@ class ServiceOperationEngine:
         params = request["params"]
         source = CATALOG_SOURCES[params["source"]]
         client = self._client(params["language"], public=True)
-        data = client.get(source.path)
+        data = client.get(versioned_catalog_path(source.path))
         values = data.get("results")
         if not isinstance(values, list):
             raise TMDBError("TMDB discovery response has no results array")

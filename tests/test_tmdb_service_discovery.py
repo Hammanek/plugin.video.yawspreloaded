@@ -168,10 +168,10 @@ class OperationServiceTests(unittest.TestCase):
         )
         engine = self.engine(session, identity_lock=ForbiddenIdentityLock())
         expected_paths = {
-            "popular_movies": "/movie/popular",
-            "popular_shows": "/tv/popular",
-            "top_rated_movies": "/movie/top_rated",
-            "top_rated_shows": "/tv/top_rated",
+            "popular_movies": "/3/movie/popular",
+            "popular_shows": "/3/tv/popular",
+            "top_rated_movies": "/3/movie/top_rated",
+            "top_rated_shows": "/3/tv/top_rated",
         }
         suffixes = {
             "popular_movies": " one",
@@ -193,12 +193,12 @@ class OperationServiceTests(unittest.TestCase):
         self.assertEqual(
             [(call["method"], call["url"]) for call in session.calls],
             [
-                ("GET", "https://api.themoviedb.org/movie/popular"),
+                ("GET", "https://api.themoviedb.org/3/movie/popular"),
                 ("GET", "https://api.themoviedb.org/3/genre/movie/list"),
-                ("GET", "https://api.themoviedb.org/tv/popular"),
+                ("GET", "https://api.themoviedb.org/3/tv/popular"),
                 ("GET", "https://api.themoviedb.org/3/genre/tv/list"),
-                ("GET", "https://api.themoviedb.org/movie/top_rated"),
-                ("GET", "https://api.themoviedb.org/tv/top_rated"),
+                ("GET", "https://api.themoviedb.org/3/movie/top_rated"),
+                ("GET", "https://api.themoviedb.org/3/tv/top_rated"),
             ],
         )
         for call in session.calls:
@@ -251,7 +251,7 @@ class OperationServiceTests(unittest.TestCase):
 
         self.assertEqual(result["rows"][0]["genres"], ["Drama", "Komedie"])
         self.assertEqual(len(session.calls), 1)
-        self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/movie/top_rated")
+        self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/movie/top_rated")
 
     def test_missing_empty_malformed_and_failed_lists_never_write_genres(self):
         cases = (
@@ -430,6 +430,146 @@ class OperationServiceTests(unittest.TestCase):
         protocol.make_result("b" * 32, "succeeded", seasons)
         protocol.make_result("c" * 32, "succeeded", episodes)
 
+    def test_season_mapper_rejects_non_dict_rows_and_wrong_field_shapes(self):
+        valid_season = {
+            "season_number": 2,
+            "episode_count": 3,
+            "poster_path": "/s.jpg",
+        }
+        cases = {
+            "non-dict-row": ["not-a-season"],
+            "title": {"name": {}, "seasons": [valid_season]},
+            "original-title": {"original_name": [], "seasons": [valid_season]},
+            "season-number": {"seasons": [dict(valid_season, season_number={})]},
+            "season-number-nonfinite": {
+                "seasons": [dict(valid_season, season_number=float("inf"))]
+            },
+            "episode-count": {"seasons": [dict(valid_season, episode_count=[])]},
+            "episode-count-nonfinite": {
+                "seasons": [dict(valid_season, episode_count=float("nan"))]
+            },
+            "poster-path": {"seasons": [dict(valid_season, poster_path=[])]},
+        }
+        for label, data in cases.items():
+            with self.subTest(field=label):
+                engine = self.engine(FakeSession([FakeResponse(json_data=data)]))
+                with self.assertRaises(TMDBError):
+                    engine.execute(protocol.seasons_request(8, "cs-CZ", BINDING))
+
+    def test_episode_mapper_rejects_non_dict_rows_and_wrong_field_shapes(self):
+        valid_episode = {
+            "episode_number": 4,
+            "name": "Díl",
+            "air_date": "2026-11-20",
+            "overview": "Děj dílu",
+            "vote_average": 8.5,
+            "runtime": 50,
+            "still_path": "/episode.jpg",
+        }
+        cases = {
+            "non-dict-row": [None],
+            "episode-number": [dict(valid_episode, episode_number={})],
+            "episode-number-bool": [dict(valid_episode, episode_number=True)],
+            "episode-number-nonfinite": [
+                dict(valid_episode, episode_number=float("nan"))
+            ],
+            "name": [dict(valid_episode, name={})],
+            "air-date": [dict(valid_episode, air_date={})],
+            "overview": [dict(valid_episode, overview=[])],
+            "rating": [dict(valid_episode, vote_average=[])],
+            "rating-nonfinite-string": [dict(valid_episode, vote_average="NaN")],
+            "runtime": [dict(valid_episode, runtime={})],
+            "runtime-nonnumeric-string": [dict(valid_episode, runtime="unknown")],
+            "runtime-nonfinite": [dict(valid_episode, runtime=float("inf"))],
+            "still-path": [dict(valid_episode, still_path=[])],
+        }
+        for label, episodes in cases.items():
+            with self.subTest(field=label):
+                engine = self.engine(
+                    FakeSession([FakeResponse(json_data={"episodes": episodes})])
+                )
+                with self.assertRaises(TMDBError):
+                    engine.execute(
+                        protocol.episodes_request(8, 2, "cs-CZ", BINDING)
+                    )
+
+    def test_detail_mappers_preserve_optional_values_and_supported_scalars(self):
+        seasons = self.engine(
+            FakeSession(
+                [
+                    FakeResponse(
+                        json_data={
+                            "name": None,
+                            "original_name": None,
+                            "seasons": [{"poster_path": None}],
+                        }
+                    )
+                ]
+            )
+        ).execute(protocol.seasons_request(8, "cs-CZ", BINDING))
+        self.assertEqual(
+            seasons,
+            {
+                "title": "",
+                "original_title": "",
+                "seasons": [
+                    {"season_number": 0, "episode_count": 0, "poster_path": None}
+                ],
+            },
+        )
+
+        episodes = self.engine(
+            FakeSession(
+                [
+                    FakeResponse(
+                        json_data={
+                            "episodes": [
+                                {
+                                    "episode_number": "4",
+                                    "name": None,
+                                    "air_date": "not-an-iso-date",
+                                    "overview": None,
+                                    "vote_average": "8.5",
+                                    "runtime": "50",
+                                    "still_path": None,
+                                },
+                                {
+                                    "episode_number": 5.0,
+                                    "vote_average": "",
+                                    "runtime": "",
+                                },
+                            ]
+                        }
+                    )
+                ]
+            )
+        ).execute(protocol.episodes_request(8, 2, "cs-CZ", BINDING))
+        self.assertEqual(
+            episodes,
+            {
+                "episodes": [
+                    {
+                        "episode_number": "4",
+                        "name": None,
+                        "air_date": "not-an-iso-date",
+                        "overview": None,
+                        "vote_average": "8.5",
+                        "runtime": "50",
+                        "still_path": None,
+                    },
+                    {
+                        "episode_number": 5.0,
+                        "name": None,
+                        "air_date": None,
+                        "overview": None,
+                        "vote_average": "",
+                        "runtime": "",
+                        "still_path": None,
+                    },
+                ]
+            },
+        )
+
     def test_empty_detail_arrays_succeed_and_malformed_arrays_are_typed_errors(self):
         engine = self.engine(
             FakeSession(
@@ -535,7 +675,7 @@ class OperationServiceTests(unittest.TestCase):
                 identity_lock=ForbiddenIdentityLock(),
             )
         )
-        self.assertEqual(client.get("/movie/popular"), {"results": []})
+        self.assertEqual(client.get("/3/movie/popular"), {"results": []})
         self.assertEqual(self.settings.values["tmdb_access_token"], "personal-session")
         self.assertNotIn("session_id", session.calls[0]["kwargs"]["params"])
 

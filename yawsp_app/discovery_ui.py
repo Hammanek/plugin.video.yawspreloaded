@@ -31,6 +31,11 @@ CATALOG_SOURCES = MappingProxyType(
 )
 
 
+def versioned_catalog_path(path):
+    """Apply the legacy v3 prefix in one place for UI and service callers."""
+    return "/3" + path
+
+
 @dataclass(frozen=True)
 class DiscoveryRecord:
     """Detached display/search values shared by native discovery rows."""

@@ -3,6 +3,7 @@
 from contextlib import nullcontext
 from datetime import date
 import io
+import math
 import os
 import struct
 import zlib
@@ -12,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
-from yawsp_app.discovery_ui import build_discovery_handlers
+from yawsp_app.discovery_ui import build_discovery_handlers, versioned_catalog_path
 from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
@@ -212,48 +213,94 @@ def _set_watchlist(client, media, media_id, account_id=None):
         response.close()
 
 
+def _detail_text(row, field):
+    value = row.get(field)
+    if value is not None and not isinstance(value, str):
+        raise TMDBError("TMDB detail response has an invalid " + field)
+    return value
+
+
+def _detail_number(value, field, integer=False, optional=False):
+    if optional and (value is None or value == ""):
+        return value
+    if isinstance(value, bool):
+        raise TMDBError("TMDB detail response has an invalid " + field)
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise TMDBError("TMDB detail response has an invalid " + field)
+        return value
+    if isinstance(value, str):
+        try:
+            converted = int(value) if integer else float(value)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise TMDBError("TMDB detail response has an invalid " + field) from error
+        if not integer and not math.isfinite(converted):
+            raise TMDBError("TMDB detail response has an invalid " + field)
+        return value
+    raise TMDBError("TMDB detail response has an invalid " + field)
+
+
+def _season_values(season):
+    if not isinstance(season, dict):
+        raise TMDBError("TMDB season response contains a non-object row")
+    return {
+        "season_number": _detail_number(
+            season.get("season_number", 0), "season_number"
+        ),
+        "episode_count": _detail_number(
+            season.get("episode_count", 0), "episode_count"
+        ),
+        "poster_path": _detail_text(season, "poster_path"),
+    }
+
+
 def map_seasons_response(show):
     """Extract detached season values without Kodi objects or navigation URLs."""
+    if not isinstance(show, dict):
+        raise TMDBError("TMDB season response must be an object")
     values = show.get("seasons", [])
     if not isinstance(values, list):
         raise TMDBError("TMDB season response has no seasons array")
-    title = show.get("name") or show.get("original_name") or ""
+    name = _detail_text(show, "name")
+    original_name = _detail_text(show, "original_name")
+    title = name or original_name or ""
     return {
         "title": title,
-        "original_title": show.get("original_name") or title,
-        "seasons": [
-            {
-                "season_number": season.get("season_number", 0),
-                "episode_count": season.get("episode_count", 0),
-                "poster_path": season.get("poster_path"),
-            }
-            for season in values
-        ],
+        "original_title": original_name or title,
+        "seasons": [_season_values(season) for season in values],
+    }
+
+
+def _episode_values(episode):
+    if not isinstance(episode, dict):
+        raise TMDBError("TMDB episode response contains a non-object row")
+    return {
+        "episode_number": _detail_number(
+            episode.get("episode_number"), "episode_number", integer=True
+        ),
+        "name": _detail_text(episode, "name"),
+        "air_date": _detail_text(episode, "air_date"),
+        "overview": _detail_text(episode, "overview"),
+        "vote_average": _detail_number(
+            episode.get("vote_average"), "vote_average", optional=True
+        ),
+        "runtime": _detail_number(
+            episode.get("runtime"), "runtime", integer=True, optional=True
+        ),
+        "still_path": _detail_text(episode, "still_path"),
     }
 
 
 def map_episodes_response(data):
     """Extract detached native episode inputs while retaining UI formatting."""
+    if not isinstance(data, dict):
+        raise TMDBError("TMDB episode response must be an object")
     values = data.get("episodes", [])
     if not isinstance(values, list):
         raise TMDBError("TMDB episode response has no episodes array")
-    return {
-        "episodes": [
-            {
-                key: episode.get(key)
-                for key in (
-                    "episode_number",
-                    "name",
-                    "air_date",
-                    "overview",
-                    "vote_average",
-                    "runtime",
-                    "still_path",
-                )
-            }
-            for episode in values
-        ]
-    }
+    return {"episodes": [_episode_values(episode) for episode in values]}
 
 
 def build_tmdb_handlers(runtime, client_factory, repositories, background):
@@ -311,7 +358,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
         @staticmethod
         def get(path):
-            return public_client.get("/3" + path)
+            return public_client.get(versioned_catalog_path(path))
 
     discovery_handlers = build_discovery_handlers(
         runtime,
