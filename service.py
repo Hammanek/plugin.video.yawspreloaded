@@ -66,6 +66,7 @@ def run(monitor=None):
             session,
             abort,
             _LOGGER,
+            identity_lock=store,
         ),
         watchlist_engine_factory=lambda session: ServiceWatchlistEngine(
             settings,

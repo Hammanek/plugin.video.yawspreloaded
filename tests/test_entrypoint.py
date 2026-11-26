@@ -1384,37 +1384,25 @@ class EntrypointTests(unittest.TestCase):
                     transition_state.append(state)
                     transition_condition.notify_all()
 
-            class ObservedIdentityLock:
-                def __init__(self, delegate):
-                    self.delegate = delegate
-
-                def __enter__(self):
-                    if qr_threads and threading.current_thread() is qr_threads[0]:
-                        # On broken production QR gets the free lock and must finish
-                        # replacement before the stale write. On fixed production it
-                        # blocks behind the request guard, so the old write completes
-                        # first and QR publishes its replacement afterwards.
-                        if self.delegate.acquire(blocking=False):
-                            transition_advanced("lock-acquired")
-                            return self
-                        transition_advanced("lock-waiting")
-                        self.delegate.acquire()
-                        return self
-                    self.delegate.acquire()
-                    return self
-
-                def __exit__(self, exc_type, exc_value, traceback):
-                    self.delegate.release()
-
-                def __getattr__(self, name):
-                    return getattr(self.delegate, name)
-
             original_identity_transaction = owner.service_store.identity_transaction
+            identity_holders = set()
 
+            @contextlib.contextmanager
             def observed_identity_transaction():
-                if qr_threads and threading.current_thread() is qr_threads[0]:
+                thread_id = threading.get_ident()
+                is_qr = qr_threads and threading.current_thread() is qr_threads[0]
+                if is_qr:
                     transition_advanced("lock-waiting")
-                return original_identity_transaction()
+                with original_identity_transaction():
+                    with transition_condition:
+                        identity_holders.add(thread_id)
+                    if is_qr:
+                        transition_advanced("lock-acquired")
+                    try:
+                        yield owner.service_store
+                    finally:
+                        with transition_condition:
+                            identity_holders.discard(thread_id)
 
             owner.service_store.identity_transaction = observed_identity_transaction
             original_set = addon.setSetting
@@ -1446,11 +1434,19 @@ class EntrypointTests(unittest.TestCase):
                     qr_thread.start()
                     with transition_condition:
                         if not transition_condition.wait_for(
-                            lambda: "replaced" in transition_state
-                            or "lock-waiting" in transition_state,
-                            2,
+                            lambda: "lock-waiting" in transition_state, 2
                         ):
                             raise AssertionError("QR transition did not reach its seam")
+                        if threading.get_ident() not in identity_holders:
+                            # Broken metadata has no compare-and-clear guard. Force
+                            # the complete replacement before its stale clear; the
+                            # guarded main-UI control instead releases QR above.
+                            if not transition_condition.wait_for(
+                                lambda: "replaced" in transition_state, 2
+                            ):
+                                raise AssertionError(
+                                    "Unguarded QR replacement did not complete"
+                                )
                 original_set(key, value)
 
             qr_results = []

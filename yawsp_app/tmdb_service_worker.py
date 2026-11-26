@@ -63,6 +63,7 @@ class ServiceMetadataEngine:
         session,
         abort,
         logger,
+        identity_lock=None,
         clock=time.time,
         sleeper=time.sleep,
     ):
@@ -77,6 +78,7 @@ class ServiceMetadataEngine:
             sleeper=sleeper,
             abort=self.abort,
             logger=self.logger,
+            identity_lock=_IdentityContext(identity_lock),
         )
         self._repositories = {
             "trailer": TrailerRepository(

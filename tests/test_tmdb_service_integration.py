@@ -176,6 +176,7 @@ class NativeComposition:
                 session,
                 abort,
                 logger,
+                identity_lock=self.store,
             ),
             lambda session: ServiceWatchlistEngine(
                 self.settings,
