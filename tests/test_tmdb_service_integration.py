@@ -545,6 +545,10 @@ class ProductionCompositionTests(unittest.TestCase):
 
     def test_manual_failure_preserves_bytes_and_never_falls_through_to_parent(self):
         with NativeComposition(self, [requests.Timeout("offline")]) as native:
+            # Keep valid fallback post-completion from adding unrelated trailer calls.
+            native.trailer_cache.save({"movie:1": {
+                "ts": time.time(), "youtube_id": "synthetic01",
+            }})
             scope = SnapshotScope("account-1", "movies", "en-US")
             original = native.snapshots.save_complete(
                 scope, [{"id": 1, "title": "Durable"}], 0.0
@@ -555,7 +559,12 @@ class ProductionCompositionTests(unittest.TestCase):
                     result = production_router.router(
                         "action=tmdb_watchlist&category=movies&refresh=1"
                     )
-            self.assertFalse(result.succeeded)
+            self.assertTrue(result.succeeded)
+            self.assertTrue(native.recorder.end_of_directory_calls[-1]["succeeded"])
+            self.assertEqual(
+                [row["listitem"].label for row in native.recorder.items],
+                ["Durable", "Refresh"],
+            )
             self.assertEqual(native.snapshots.load(scope), original)
             self.assertEqual(Path(native.snapshots.cache.path).read_bytes(), previous)
             self.assertEqual(len(native.service_session.calls), 1)

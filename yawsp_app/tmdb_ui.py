@@ -909,8 +909,11 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     except Exception:
                         runtime.logger.exception("Unable to submit TMDB metadata")
 
+            # A complete scoped fallback is usable despite the reported refresh
+            # error; marking it failed would make Kodi discard it for Files.
             return DirectoryResult(
-                succeeded=listing_error is None, post_complete=post_complete
+                succeeded=listing_error is None or cached_render,
+                post_complete=post_complete,
             )
         except TMDBError as error:
             # Snapshot invalidation belongs only to the service's explicit

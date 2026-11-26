@@ -1195,7 +1195,7 @@ class TMDBUITests(unittest.TestCase):
                 )
             )
 
-        self.assertFalse(result.succeeded)
+        self.assertTrue(result.succeeded)
         submit_watchlist.assert_not_called()
         self.assertEqual(
             [item["listitem"].label for item in self.plugin.items],
@@ -1245,7 +1245,7 @@ class TMDBUITests(unittest.TestCase):
                 )
             )
 
-        self.assertFalse(result.succeeded)
+        self.assertTrue(result.succeeded)
         submit_watchlist.assert_not_called()
         self.assertEqual(
             [item["listitem"].label for item in self.plugin.items],
@@ -1301,7 +1301,7 @@ class TMDBUITests(unittest.TestCase):
                 )
             )
 
-        self.assertFalse(result.succeeded)
+        self.assertTrue(result.succeeded)
         self.assertEqual(
             [item["listitem"].label for item in self.plugin.items], ["Keep", "Refresh"]
         )
@@ -1334,7 +1334,7 @@ class TMDBUITests(unittest.TestCase):
                 )
             )
 
-        self.assertFalse(result.succeeded)
+        self.assertTrue(result.succeeded)
         self.assertEqual(store.load(scope), original)
         with open(store.cache.path, "rb") as source:
             self.assertEqual(source.read(), original_bytes)
