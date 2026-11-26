@@ -11,15 +11,18 @@ import requests
 
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.support.legacy_service_adapter import LegacyServiceAdapter
+from tests.test_metadata import RecordingInfoTag
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
-from yawsp_app.watchlist_snapshot import SnapshotScope
+from yawsp_app.watchlist_snapshot import SnapshotPersistenceError, SnapshotScope
+from tests.support.background_prefetch import BackgroundPrefetch
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     ShowRepository,
     TMDBClient,
     TMDBError,
+    TrailerLookup,
     TrailerRepository,
     WATCHLIST_PREFETCH_LIMIT,
 )
@@ -46,6 +49,20 @@ class ListItem:
 
     def setProperty(self, key, value):
         self.properties[key] = value
+
+
+class NativeListItem(ListItem):
+    def __init__(self, label="", path=""):
+        super().__init__(label, path)
+        self.video_tag = RecordingInfoTag()
+        self.get_video_info_tag_calls = 0
+
+    def getVideoInfoTag(self):
+        self.get_video_info_tag_calls += 1
+        return self.video_tag
+
+    def setInfo(self, kind, info):
+        raise AssertionError("native rows must not use ListItem.setInfo")
 
 
 class Addon(AddonRecorder):
@@ -79,11 +96,10 @@ class Plugin(KodiRecorder):
         return super().executeBuiltin(command)
 
 
-class Response:
+class Response(FakeResponse):
     def __init__(self, data, status_code=200):
+        super().__init__(json_data=data, status_code=status_code)
         self.data = data
-        self.status_code = status_code
-        self.closed = False
 
     def json(self):
         if isinstance(self.data, BaseException):
@@ -292,6 +308,14 @@ class TMDBUITests(unittest.TestCase):
                 "tmdb_sort": "0",
                 "tmdb_hide_unreleased": "false",
             },
+            strings={
+                30401: "Invalid TMDB session",
+                30402: "Error loading",
+                30417: "Watchlist is empty",
+                30418: "TMDB Watchlist",
+                30438: "Refresh",
+                30439: "Local cache",
+            },
             addon_info={"name": "YAWsP", "id": "plugin.video.yawspreloaded"},
         )
         self.ui_logger = UILogger()
@@ -332,6 +356,31 @@ class TMDBUITests(unittest.TestCase):
         )
 
     def build_handlers(self):
+        if not isinstance(self.background, LegacyServiceAdapter):
+            from yawsp_app.tmdb import GenreRepository
+            from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
+
+            legacy = self.background
+            if getattr(legacy, "snapshot_store", None) is None:
+                legacy.snapshot_store = WatchlistSnapshotStore(
+                    AtomicJsonCache(
+                        os.path.join(self.temporary_directory.name, "watchlist.json")
+                    )
+                )
+            if not hasattr(legacy, "genre_repository"):
+                legacy.genre_repository = GenreRepository()
+            self.background = LegacyServiceAdapter(
+                settings=ServiceSettings(self.addon),
+                session=getattr(self.client, "session", None),
+                trailer_cache=self.trailer_cache,
+                show_cache=self.show_cache,
+                snapshot_store=legacy.snapshot_store,
+                genre_repository=legacy.genre_repository,
+                locale_mapper=lambda: self.client.language,
+                clock=self.clock,
+                legacy=legacy,
+            )
+        self.background.client = self.client
         repositories = {
             "trailers": TrailerRepository(
                 self.client, self.trailer_cache, clock=self.clock
@@ -380,6 +429,23 @@ class TMDBUITests(unittest.TestCase):
         self.handlers = self.build_handlers()
         return store, worker, created
 
+    def use_real_client(self, *responses):
+        session = FakeSession(responses)
+        self.client = TMDBClient(
+            session,
+            ServiceSettings(self.addon),
+            locale_mapper=lambda: "en-US",
+            clock=self.clock,
+            sleeper=lambda seconds: None,
+            logger=self.ui_logger,
+        )
+        self.handlers = self.build_handlers()
+        return session
+
+    @staticmethod
+    def non_refresh_items(items):
+        return [item for item in items if query(item["url"]).get("refresh") != "1"]
+
     def queue_watchlist(self, results, total_pages=1):
         self.client.queue_get(
             "/3/account/account-1/watchlist/movies",
@@ -390,7 +456,7 @@ class TMDBUITests(unittest.TestCase):
     def test_watchlist_uses_cached_values_and_never_waits_for_item_lookups(self):
         now = self.clock()
         self.trailer_cache.save(
-            {"movie:1": {"ts": now, "youtube_id": "cached-video"}}
+            {"movie:1": {"ts": now, "youtube_id": "cachevideo0"}}
         )
         self.queue_watchlist(
             [{"id": 1, "title": "Film", "release_date": "2026-01-02"}]
@@ -417,9 +483,89 @@ class TMDBUITests(unittest.TestCase):
         self.assertLess(self.events.index("add"), self.events.index("trailers") if "trailers" in self.events else len(self.events))
         self.assertEqual(self.plugin.builtin_commands, [])
 
+    def test_native_watchlist_movies_and_shows_preserve_all_display_metadata(self):
+        self.runtime.listitem_factory = NativeListItem
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {
+                "total_pages": 1,
+                "results": [
+                    {
+                        "id": 11,
+                        "title": "Film",
+                        "release_date": "2026-01-02",
+                        "overview": "Filmový popis",
+                        "genre_ids": [18, 35],
+                        "vote_average": 7.25,
+                        "poster_path": "/movie.jpg",
+                    }
+                ],
+            },
+        )
+        self.client.queue_get(
+            "/3/genre/movie/list",
+            {"genres": [{"id": 18, "name": "Drama"}, {"id": 35, "name": "Comedy"}]},
+        )
+
+        result = self.handlers["tmdb_watchlist"]({"category": "movies"})
+
+        self.assertTrue(result.succeeded)
+        movie = self.plugin.items[0]["listitem"]
+        self.assertEqual(
+            movie.video_tag.calls,
+            [
+                ("setTitle", "Film (2026)"),
+                ("setMediaType", "movie"),
+                ("setPlot", "Filmový popis"),
+                ("setYear", 2026),
+                ("setGenres", ["Drama", "Comedy"]),
+                ("setRating", 7.25),
+            ],
+        )
+        self.assertEqual(movie.art["thumb"], "https://image.tmdb.org/t/p/w500/movie.jpg")
+        self.assertEqual(query(self.plugin.items[0]["url"])["action"], "search")
+
+        self.plugin.items.clear()
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/tv",
+            {
+                "total_pages": 1,
+                "results": [
+                    {
+                        "id": 12,
+                        "name": "Seriál",
+                        "first_air_date": "2025-03-04",
+                        "overview": "Seriálový popis",
+                        "genre_ids": [18],
+                        "vote_average": 8.5,
+                    }
+                ],
+            },
+        )
+        self.client.queue_get(
+            "/3/genre/tv/list", {"genres": [{"id": 18, "name": "Drama"}]}
+        )
+
+        result = self.handlers["tmdb_watchlist"]({"category": "shows"})
+
+        self.assertTrue(result.succeeded)
+        show = self.plugin.items[0]["listitem"]
+        self.assertEqual(
+            show.video_tag.calls,
+            [
+                ("setTitle", "Seriál (2025)"),
+                ("setMediaType", "tvshow"),
+                ("setPlot", "Seriálový popis"),
+                ("setYear", 2025),
+                ("setGenres", ["Drama"]),
+                ("setRating", 8.5),
+            ],
+        )
+        self.assertEqual(query(self.plugin.items[0]["url"])["action"], "tmdb_watchlist")
+
     def test_cached_watchlist_trailer_checks_youtube_without_direct_playmedia(self):
         self.trailer_cache.save(
-            {"movie:42": {"ts": self.clock(), "youtube_id": "cached-video"}}
+            {"movie:42": {"ts": self.clock(), "youtube_id": "cachevideo0"}}
         )
         movie = {"id": 42, "title": "Film", "release_date": "2026-01-02"}
         self.queue_watchlist([movie])
@@ -551,6 +697,7 @@ class TMDBUITests(unittest.TestCase):
             self.events,
             [
                 "add",
+                "add",
                 "end",
                 "Container.SetViewMode(54)",
                 "trailers",
@@ -591,7 +738,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.background.watchlist_missing_accounts, [False])
         self.assertEqual(
             self.events,
-            ["add", "end", "Container.SetViewMode(54)", "watchlist", "trailers"],
+            ["add", "add", "end", "Container.SetViewMode(54)", "watchlist", "trailers"],
         )
         self.assertTrue(
             any(
@@ -651,7 +798,7 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(len(self.plugin.items), 100)
+        self.assertEqual(len(self.plugin.items), 101)
         self.assertEqual(self.background.trailers, [("tv", list(range(1, 51)))])
         self.assertEqual(self.background.shows, [list(range(1, 51))])
         self.assertEqual(WATCHLIST_PREFETCH_LIMIT, 50)
@@ -738,7 +885,10 @@ class TMDBUITests(unittest.TestCase):
             [call for call in self.client.calls if "/watchlist/" in call[1]], []
         )
         self.assertEqual(
-            [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+            [
+                item["listitem"].label.split(" (")[0]
+                for item in self.non_refresh_items(self.plugin.items)
+            ],
             ["Áčko", "Hora", "Chata"],
         )
         self.assertEqual(store.load(scope).revision, original.revision)
@@ -767,8 +917,9 @@ class TMDBUITests(unittest.TestCase):
         self.handlers["tmdb_watchlist"](
             {"action": "tmdb_watchlist", "category": "movies"}
         )
-        self.assertEqual(len(self.plugin.items), 1)
+        self.assertEqual(len(self.plugin.items), 2)
         self.assertEqual(self.plugin.items[0]["listitem"].label.split(" (")[0], "Chata")
+        self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
         self.assertEqual(self.client.calls, calls_before)
 
     def test_fresh_warm_snapshot_reuses_one_store_load_and_queues_no_worker(self):
@@ -863,7 +1014,10 @@ class TMDBUITests(unittest.TestCase):
                 )
 
                 self.assertEqual(
-                    [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+                    [
+                        item["listitem"].label.split(" (")[0]
+                        for item in self.non_refresh_items(self.plugin.items)
+                    ],
                     expected,
                 )
                 self.assertEqual(self.client.account_calls, 0)
@@ -897,12 +1051,15 @@ class TMDBUITests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         watchlist_calls = [call for call in self.client.calls if call[1] == path]
         self.assertEqual(len(watchlist_calls), 2)
         self.assertEqual([call[2]["page"] for call in watchlist_calls], [1, 2])
         self.assertEqual(
-            [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+            [
+                item["listitem"].label.split(" (")[0]
+                for item in self.non_refresh_items(self.plugin.items)
+            ],
             ["Áčko", "Chata"],
         )
         snapshot = store.load(scope)
@@ -932,6 +1089,323 @@ class TMDBUITests(unittest.TestCase):
         self.assertIsNone(store.load(scope))
         self.assertEqual(len([call for call in self.client.calls if call[1] == path]), 2)
 
+    def test_manual_refresh_uses_real_full_client_saves_then_skips_watchlist_worker(self):
+        store, _, created = self.enable_real_snapshots([])
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        peer_scope = SnapshotScope("account-1", "tv", "en-US")
+        original = store.save_complete(
+            scope, [{"id": 1, "title": "Old local movie"}], 0.0
+        )
+        peer = store.save_complete(peer_scope, [{"id": 8, "name": "Peer show"}], 0.0)
+        new_movie = {
+            "id": 2,
+            "title": "New TMDB movie",
+            "original_title": "New TMDB movie",
+            "release_date": "2026-11-20",
+            "overview": "Fresh from TMDB",
+            "genre_ids": [18],
+            "vote_average": 8.25,
+            "poster_path": "/new.jpg",
+            "backdrop_path": "/new-backdrop.jpg",
+        }
+        session = self.use_real_client(
+            FakeResponse(
+                json_data={
+                    "page": 1,
+                    "total_pages": 1,
+                    "total_results": 1,
+                    "results": [new_movie],
+                }
+            ),
+            FakeResponse(json_data={"genres": [{"id": 18, "name": "Drama"}]}),
+        )
+
+        with patch.object(
+            self.background, "submit_watchlist", wraps=self.background.submit_watchlist
+        ) as submit_watchlist:
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {
+                        "action": "tmdb_watchlist",
+                        "category": "movies",
+                        "refresh": "1",
+                    }
+                )
+            )
+
+        self.assertTrue(result.succeeded)
+        submit_watchlist.assert_not_called()
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["New TMDB movie (2026)", "Refresh"],
+        )
+        self.assertEqual(query(self.plugin.items[-1]["url"]), {
+            "action": "tmdb_watchlist", "category": "movies", "refresh": "1"
+        })
+        self.assertNotIn("session-token", self.plugin.items[-1]["url"])
+        self.assertNotIn("api-key", self.plugin.items[-1]["url"])
+        current = store.load(scope)
+        self.assertEqual(current.results, [new_movie])
+        self.assertEqual(current.generation, original.generation)
+        self.assertEqual(current.revision, original.revision + 1)
+        self.assertEqual(store.load(peer_scope), peer)
+        self.assertEqual(self.addon.getSetting("tmdb_account_id"), "account-1")
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertEqual(
+            [call["url"].split("api.themoviedb.org")[-1] for call in session.calls],
+            ["/3/account/account-1/watchlist/movies", "/3/genre/movie/list"],
+        )
+        self.assertEqual(session.calls[0]["kwargs"]["params"]["page"], 1)
+        self.assertEqual(session.calls[0]["kwargs"]["params"]["sort_by"], "created_at.desc")
+        self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-token")
+        self.assertEqual(session.calls[1]["kwargs"]["params"]["language"], "en-US")
+        self.assertEqual(created, [])
+        self.assertNotIn("Container.Refresh", self.plugin.builtin_commands)
+
+    def test_failed_manual_later_page_preserves_bytes_and_renders_scoped_fallback(self):
+        store, _, _ = self.enable_real_snapshots([])
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        original = store.save_complete(
+            scope, [{"id": 1, "title": "Durable local movie"}], 0.0
+        )
+        with open(store.cache.path, "rb") as source:
+            original_bytes = source.read()
+        session = self.use_real_client(
+            FakeResponse(json_data={
+                "page": 1,
+                "total_pages": 2,
+                "total_results": 2,
+                "results": [{"id": 2, "title": "Partial new movie"}],
+            }),
+            FakeResponse(
+                json_data={"status_code": 7, "status_message": "Synthetic failure"},
+                status_code=503,
+            ),
+            FakeResponse(json_data={"genres": []}),
+        )
+
+        with patch.object(
+            self.background, "submit_watchlist", wraps=self.background.submit_watchlist
+        ) as submit_watchlist:
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies", "refresh": "1"}
+                )
+            )
+
+        self.assertFalse(result.succeeded)
+        submit_watchlist.assert_not_called()
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["Durable local movie", "Refresh"],
+        )
+        with open(store.cache.path, "rb") as source:
+            self.assertEqual(source.read(), original_bytes)
+        self.assertEqual(store.load(scope), original)
+        self.assertEqual(self.addon.getSetting("tmdb_account_id"), "account-1")
+        self.assertEqual(self.addon.getSetting("tmdb_access_token"), "session-token")
+        self.assertEqual(len([call for call in session.calls if "watchlist" in call["url"]]), 2)
+        self.assertEqual(self.plugin.notifications[-1]["message"], "Error loading")
+        self.assertTrue(any(
+            call[0][0] == "TMDB listing failed: %s" for call in self.ui_logger.calls
+        ))
+        self.assertFalse(any("Partial new movie" in repr(call) for call in self.ui_logger.calls))
+        self.assertNotIn("session-token", repr(self.ui_logger.calls))
+        self.assertNotIn("api-key", repr(self.ui_logger.calls))
+
+    def test_manual_unauthorized_page_keeps_snapshot_visible_without_extra_error_flow(self):
+        store, _, _ = self.enable_real_snapshots([])
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        original = store.save_complete(
+            scope, [{"id": 1, "title": "Cached before authorization loss"}], 0.0
+        )
+        with open(store.cache.path, "rb") as source:
+            original_bytes = source.read()
+        session = self.use_real_client(
+            FakeResponse(json_data={
+                "page": 1,
+                "total_pages": 2,
+                "results": [{"id": 2, "title": "Never promoted"}],
+            }),
+            FakeResponse(
+                json_data={"status_code": 7, "status_message": "Invalid API key"},
+                status_code=401,
+            ),
+            FakeResponse(json_data={"genres": []}),
+        )
+
+        with patch.object(
+            self.background, "submit_watchlist", wraps=self.background.submit_watchlist
+        ) as submit_watchlist:
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies", "refresh": "1"}
+                )
+            )
+
+        self.assertFalse(result.succeeded)
+        submit_watchlist.assert_not_called()
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["Cached before authorization loss", "Refresh"],
+        )
+        with open(store.cache.path, "rb") as source:
+            self.assertEqual(source.read(), original_bytes)
+        self.assertEqual(store.load(scope), original)
+        self.assertEqual(self.plugin.notifications[-1]["message"], "Invalid TMDB session")
+        self.assertEqual(self.addon.open_settings_calls, 1)
+        self.assertEqual(sum(
+            call[0][0] == "TMDB listing failed: %s" for call in self.ui_logger.calls
+        ), 1)
+        self.assertNotIn("Never promoted", repr(self.ui_logger.calls))
+        self.assertNotIn("session-token", repr(self.ui_logger.calls))
+
+    def test_manual_generation_conflict_promotes_neither_stale_nor_new_rows(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        peer_scope = SnapshotScope("account-1", "tv", "en-US")
+        original = store.save_complete(
+            scope,
+            [{"id": 1, "title": "Removed meanwhile"}, {"id": 2, "title": "Keep"}],
+            0.0,
+        )
+        peer = store.save_complete(peer_scope, [{"id": 3, "name": "Peer"}], 0.0)
+        path = "/3/account/account-1/watchlist/movies"
+        self.client.queue_get(
+            path,
+            {"page": 1, "total_pages": 1, "results": [{"id": 9, "title": "Stale remote"}]},
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+        real_save = store.save_complete
+
+        def mutate_then_conflict(scope_arg, results, created_at, expected_generation=None):
+            self.assertEqual(scope_arg, scope)
+            self.assertEqual(expected_generation, original.generation)
+            real_save(
+                scope,
+                [{"id": 2, "title": "Keep"}],
+                original.created_at,
+                expected_generation=original.generation,
+                increment_generation=True,
+            )
+            return real_save(
+                scope_arg, results, created_at, expected_generation=expected_generation
+            )
+
+        with patch.object(store, "save_complete", side_effect=mutate_then_conflict):
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies", "refresh": "1"}
+                )
+            )
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items], ["Keep", "Refresh"]
+        )
+        current = store.load(scope)
+        self.assertEqual(current.results, [{"id": 2, "title": "Keep"}])
+        self.assertEqual(current.generation, original.generation + 1)
+        self.assertEqual(current.revision, original.revision + 1)
+        self.assertEqual(store.load(peer_scope), peer)
+        self.assertEqual(self.background.watchlists, [])
+        self.assertEqual(self.plugin.notifications[-1]["message"], "Error loading")
+
+    def test_manual_save_exception_reports_failure_and_preserves_cached_fallback(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        original = store.save_complete(scope, [{"id": 1, "title": "Still cached"}], 0.0)
+        with open(store.cache.path, "rb") as source:
+            original_bytes = source.read()
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"page": 1, "total_pages": 1, "results": [{"id": 2, "title": "Not saved"}]},
+        )
+        self.client.queue_get("/3/genre/movie/list", {"genres": []})
+
+        with patch.object(
+            store, "save_complete", side_effect=SnapshotPersistenceError("generation conflict")
+        ):
+            result = self.runner.run_directory(
+                lambda: self.handlers["tmdb_watchlist"](
+                    {"action": "tmdb_watchlist", "category": "movies", "refresh": "1"}
+                )
+            )
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(store.load(scope), original)
+        with open(store.cache.path, "rb") as source:
+            self.assertEqual(source.read(), original_bytes)
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items], ["Still cached", "Refresh"]
+        )
+        self.assertEqual(self.background.watchlists, [])
+        self.assertTrue(any(
+            call[0][0] == "TMDB listing failed: %s" for call in self.ui_logger.calls
+        ))
+        self.assertEqual(self.plugin.notifications[-1]["message"], "Error loading")
+
+    def test_refresh_button_is_last_even_for_complete_empty_results(self):
+        store = self.enable_snapshots()
+        scope = SnapshotScope("account-1", "movies", "en-US")
+        self.client.queue_get(
+            "/3/account/account-1/watchlist/movies",
+            {"page": 1, "total_pages": 1, "results": []},
+        )
+
+        result = self.handlers["tmdb_watchlist"](
+            {"action": "tmdb_watchlist", "category": "movies", "refresh": "1"}
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(store.load(scope).results, [])
+        self.assertEqual(
+            [item["listitem"].label for item in self.plugin.items],
+            ["Watchlist is empty", "Refresh"],
+        )
+        self.assertEqual(query(self.plugin.items[-1]["url"]), {
+            "action": "tmdb_watchlist", "category": "movies", "refresh": "1"
+        })
+        self.assertFalse(any("/genre/" in call[1] for call in self.client.calls))
+
+    def test_unexpected_refresh_values_keep_warm_snapshot_and_single_background_post(self):
+        for value in ("0", "true", "01", 1, None):
+            with self.subTest(value=value):
+                self.setUp()
+                store = self.enable_snapshots()
+                scope = SnapshotScope("account-1", "movies", "en-US")
+                original = store.save_complete(scope, [], self.clock())
+
+                with patch.object(
+                    self.background,
+                    "submit_watchlist",
+                    wraps=self.background.submit_watchlist,
+                ) as submit_watchlist:
+                    result = self.runner.run_directory(
+                        lambda: self.handlers["tmdb_watchlist"](
+                            {
+                                "action": "tmdb_watchlist",
+                                "category": "movies",
+                                "refresh": value,
+                            }
+                        )
+                    )
+
+                self.assertTrue(result.succeeded)
+                self.assertEqual(self.client.account_calls, 0)
+                self.assertEqual(self.client.calls, [])
+                self.assertEqual(store.load(scope), original)
+                submit_watchlist.assert_called_once_with(
+                    scope,
+                    allow_missing_account=False,
+                    refresh_due=False,
+                    generation=original.generation,
+                )
+                category_calls = [
+                    call for call in self.plugin.calls if call["method"] == "setPluginCategory"
+                ]
+                self.assertIn("Local cache", category_calls[-1]["args"][1])
+
     def test_only_other_account_snapshot_is_not_a_warm_fallback(self):
         store = self.enable_snapshots()
         other_scope = SnapshotScope("account-2", "movies", "en-US")
@@ -947,8 +1421,9 @@ class TMDBUITests(unittest.TestCase):
             {"action": "tmdb_watchlist", "category": "movies"}
         )
 
-        self.assertEqual(self.client.account_calls, 1)
-        self.assertEqual(len(self.plugin.items), 1)
+        self.assertEqual(self.client.account_calls, 0)
+        self.assertEqual(len(self.plugin.items), 2)
+        self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
         self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Current account"))
         self.assertEqual(store.load(other_scope).results[0]["title"], "Wrong account")
         self.assertEqual(store.load(current_scope).results[0]["title"], "Current account")
@@ -969,8 +1444,9 @@ class TMDBUITests(unittest.TestCase):
             {"action": "tmdb_watchlist", "category": "movies"}
         )
 
-        self.assertEqual(self.client.account_calls, 1)
-        self.assertEqual(len(self.plugin.items), 1)
+        self.assertEqual(self.client.account_calls, 0)
+        self.assertEqual(len(self.plugin.items), 2)
+        self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
         self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Česky"))
         self.assertEqual(store.load(english_scope).results[0]["title"], "English")
         self.assertEqual(store.load(czech_scope).results[0]["title"], "Česky")
@@ -989,7 +1465,7 @@ class TMDBUITests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         self.assertFalse(any("/genre/" in call[1] for call in self.client.calls))
         self.assertEqual(store.load(scope).results, [])
         self.plugin.items.clear()
@@ -1001,7 +1477,8 @@ class TMDBUITests(unittest.TestCase):
         )
         self.assertEqual(self.client.calls, calls_before)
         self.assertEqual(self.client.account_calls, account_calls_before)
-        self.assertEqual(len(self.plugin.items), 1)
+        self.assertEqual(len(self.plugin.items), 2)
+        self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
 
     def test_watched_success_removes_snapshot_row_and_failed_removal_preserves_it(self):
         for success in (True, False):
@@ -1062,7 +1539,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.addon.open_settings_calls, 2)
         self.assertEqual(len(self.client.calls), 1)
 
-    def test_http_identity_invalidation_removes_old_account_snapshots(self):
+    def test_failed_http_list_preserves_old_complete_snapshot_bytes(self):
         store = self.enable_snapshots()
         old_scope = SnapshotScope("account-1", "movies", "en-US")
         store.save_complete(old_scope, [{"id": 1, "title": "Old identity"}], 0.0)
@@ -1081,7 +1558,7 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertFalse(result.succeeded)
-        self.assertIsNone(store.load(old_scope))
+        self.assertEqual(store.load(old_scope).results, [{"id": 1, "title": "Old identity"}])
 
     def test_successful_reauthentication_invalidates_the_previous_identity_snapshots(self):
         store = self.enable_snapshots()
@@ -1095,6 +1572,12 @@ class TMDBUITests(unittest.TestCase):
         self.assertIsNone(store.load(old_scope))
 
     def test_successful_watched_post_closes_response_then_resolves_before_refresh(self):
+        store = self.enable_snapshots()
+        store.save_complete(
+            SnapshotScope("account-1", "movies", "en-US"),
+            [{"id": 42, "title": "Remove"}, {"id": 2, "title": "Keep"}],
+            0.0,
+        )
         response = Response({"success": True}, 201)
         self.client.post_results = [response]
 
@@ -1113,7 +1596,9 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(
             payload, {"media_type": "movie", "media_id": 42, "watchlist": False}
         )
-        self.assertEqual(self.events, ["resolve", "Container.Refresh"])
+        self.assertEqual(
+            self.events, ["watchlist", "resolve", "Container.Refresh"]
+        )
 
     def test_false_watched_result_and_api_error_resolve_without_refresh(self):
         for result_value in (Response({"success": False}), TMDBError("write failed")):
@@ -1144,7 +1629,7 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertFalse(result.handled)
-        self.assertEqual(self.client.calls[0][0], "POST")
+        self.assertEqual(self.client.calls, [])
         self.assertEqual(self.events, ["resolve"])
 
     def test_czech_collation_and_unreleased_movie_filter_are_deterministic(self):
@@ -1162,7 +1647,10 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [item["listitem"].label.split(" (")[0] for item in self.plugin.items],
+            [
+                item["listitem"].label.split(" (")[0]
+                for item in self.non_refresh_items(self.plugin.items)
+            ],
             ["Hora", "Chata", "Neurčené"],
         )
 
@@ -1217,6 +1705,76 @@ class TMDBUITests(unittest.TestCase):
         info = self.plugin.items[-1]["listitem"].info[0][1]
         self.assertEqual(info["duration"], 3000)
         self.assertEqual(info["aired"], "2026-11-20")
+
+    def test_native_season_and_episode_rows_keep_counts_dates_runtime_and_labels(self):
+        self.runtime.listitem_factory = NativeListItem
+        self.addon.strings.update({30408: "Unknown", 30410: "Season {0}"})
+        self.client.queue_get(
+            "/3/tv/8",
+            {
+                "name": "Seriál",
+                "original_name": "Original",
+                "seasons": [
+                    {"season_number": 2, "episode_count": 3, "poster_path": "/s.jpg"}
+                ],
+            },
+        )
+
+        self.handlers["tmdb_watchlist"]({"category": "shows", "show_id": "8"})
+
+        season = self.plugin.items[-1]["listitem"]
+        self.assertEqual(
+            season.video_tag.calls,
+            [
+                ("setTitle", "Season 2"),
+                ("setMediaType", "season"),
+                ("setSeason", 2),
+                ("setEpisode", 3),
+            ],
+        )
+        self.assertEqual(season.art["poster"], "https://image.tmdb.org/t/p/w500/s.jpg")
+
+        self.client.queue_get(
+            "/3/tv/8/season/2",
+            {
+                "episodes": [
+                    {
+                        "episode_number": 4,
+                        "name": "Díl",
+                        "air_date": "2026-11-20",
+                        "overview": "Děj dílu",
+                        "vote_average": 8.5,
+                        "runtime": 50,
+                        "still_path": "/episode.jpg",
+                    }
+                ]
+            },
+        )
+
+        self.handlers["tmdb_watchlist"](query(self.plugin.items[-1]["url"]))
+
+        episode = self.plugin.items[-1]["listitem"]
+        expected_label = "Díl [COLOR gray] (20.11.2026)[/COLOR]"
+        self.assertEqual(episode.label, expected_label)
+        self.assertEqual(
+            episode.video_tag.calls,
+            [
+                ("setTitle", expected_label),
+                ("setMediaType", "episode"),
+                ("setPlot", "Děj dílu"),
+                ("setRating", 8.5),
+                ("setSeason", 2),
+                ("setEpisode", 4),
+                ("setDuration", 3000),
+                ("setFirstAired", "2026-11-20"),
+            ],
+        )
+        self.assertEqual(
+            episode.art["thumb"], "https://image.tmdb.org/t/p/w300/episode.jpg"
+        )
+        self.assertEqual(
+            query(self.plugin.items[-1]["url"])["what"], "Original S02E04"
+        )
 
     def authenticate_with_real_client(self, *responses):
         token_response = FakeResponse(json_data={"request_token": "request-token"})
@@ -1351,6 +1909,30 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.events[-2:], ["Action(Back)", "resolve"])
         self.assertEqual(len(self.plugin.notifications), 2)
 
+    def test_malicious_hit_never_reaches_actual_playmedia_builtin(self):
+        class InvalidRepository:
+            def __init__(self, video_id):
+                self.video_id = video_id
+
+            def lookup(self, _media, _media_id):
+                return TrailerLookup("hit", self.video_id)
+
+        for video_id in ("short", "Abcdef_123-)"):
+            with self.subTest(video_id=video_id):
+                handlers = build_tmdb_handlers(
+                    self.runtime,
+                    lambda: self.client,
+                    {"trailers": InvalidRepository(video_id), "shows": object()},
+                    self.background,
+                )
+                result = handlers["tmdb_trailer"](
+                    {"action": "tmdb_trailer", "media": "movie", "id": "42"}
+                )
+                self.assertFalse(result.handled)
+                self.assertFalse(
+                    any("PlayMedia" in command for command in self.plugin.builtin_commands)
+                )
+
     def trailer(self, available=True):
         self.runtime.addon_available = lambda addon_id: available
         return self.runner.run_action(
@@ -1362,7 +1944,7 @@ class TMDBUITests(unittest.TestCase):
     def test_on_demand_trailer_hit_resolves_false_before_youtube_playmedia(self):
         self.client.queue_get(
             "/3/movie/42/videos",
-            {"results": [{"site": "YouTube", "type": "Trailer", "key": "video-hit"}]},
+            {"results": [{"site": "YouTube", "type": "Trailer", "key": "videohit001"}]},
         )
 
         result = self.trailer()
@@ -1370,7 +1952,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertTrue(result.handled)
         self.assertEqual(
             self.events,
-            ["resolve", "PlayMedia(plugin://plugin.video.youtube/play/?video_id=video-hit)"],
+            ["resolve", "PlayMedia(plugin://plugin.video.youtube/play/?video_id=videohit001)"],
         )
         self.assertEqual(len(self.plugin.resolved_url_calls), 1)
         self.assertFalse(self.plugin.resolved_url_calls[0]["succeeded"])
@@ -1396,7 +1978,7 @@ class TMDBUITests(unittest.TestCase):
 
     def test_youtube_unavailable_never_issues_playmedia(self):
         self.trailer_cache.save(
-            {"movie:42": {"ts": self.clock(), "youtube_id": "video-hit"}}
+            {"movie:42": {"ts": self.clock(), "youtube_id": "videohit001"}}
         )
         self.handlers = self.build_handlers()
 

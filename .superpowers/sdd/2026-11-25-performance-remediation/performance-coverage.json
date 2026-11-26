@@ -22,6 +22,19 @@
     "focused_regressions": {"log": "final-focused-tests.log", "tests": 10, "status": "OK"},
     "full_suite": {"log": "final-full-tests.log", "baseline_tests": 307, "tests": 316, "status": "OK"}
   },
+  "current_selector_execution": {
+    "status": "OK",
+    "mapped_selector_entries": 32,
+    "unique_selectors": 32,
+    "passed": 32,
+    "runs": [
+      {"log": "../2026-11-25-kodi-usability-improvements/task-7-active-selectors.log", "tests": 29, "status": "OK"},
+      {"log": "task-8-active-selectors.log", "tests": 30, "status": "OK"},
+      {"log": "task-native-first-selectors.log", "tests": 31, "status": "OK"},
+      {"log": "task-3-sequential-active-selectors.log", "tests": 32, "status": "OK"}
+    ],
+    "note": "All 32 current active mapped unique selectors, including the new ordered fresh-owner integer-ID genre regression, were executed together directly by a fail-closed Python runner in task-3-sequential-active-selectors.log in 1.009 seconds. The earlier 31-selector entry and historical 40-selector pre-removal evidence remain separate; DB-only symbols and deleted test selectors are retained solely in historical_* / historical_removed_* fields."
+  },
   "live_verification": {
     "kodi": "21.2",
     "scope": "main Windows Store profile",
@@ -41,7 +54,7 @@
         {"module": "yawsp_app.watchlist_snapshot", "symbol": "WatchlistSnapshotStore.load"},
         {"module": "yawsp_app.watchlist_snapshot", "symbol": "WatchlistSnapshotStore.save_complete"},
         {"module": "yawsp_app.tmdb", "symbol": "fetch_complete_watchlist"},
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch._run_watchlist"}
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch._run_watchlist"}
       ],
       "mutation_sensitive_tests": [
         "tests.test_tmdb_ui.TMDBUITests.test_warm_snapshot_has_zero_account_or_watchlist_calls_and_refreshes_after_end",
@@ -116,12 +129,14 @@
     },
     {
       "id": "PERF-03",
-      "production_symbols": [
+      "status": "removed",
+      "removal_scope": "Backup DB storage and validation were retired; this requirement and its symbols/selectors are historical evidence only. Existing user database/text files and permanent backups were not migrated or deleted.",
+      "historical_production_symbols": [
         {"module": "yawsp_app.backup_db", "symbol": "BackupDBStore._matches_validation_signature"},
         {"module": "yawsp_app.backup_db", "symbol": "BackupDBStore.ensure_installed"},
         {"module": "yawsp_app.backup_db", "symbol": "BackupDBStore.load"}
       ],
-      "mutation_sensitive_tests": [
+      "historical_mutation_sensitive_tests": [
         "tests.test_backup_db.BackupDBTests.test_matching_signature_avoids_warm_validation_and_parses_only_target",
         "tests.test_backup_db.BackupDBTests.test_is_valid_regenerates_signature_after_mtime_only_drift",
         "tests.test_backup_db.BackupDBTests.test_is_valid_recreates_corrupt_sidecar_then_uses_warm_metadata",
@@ -139,7 +154,7 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "Warm ensure plus one target load dropped from 55 data-document reads to one selected-file read and from 29.7032 ms to 9.8964 ms median on this offline run. Warm ensure alone reads zero data JSON documents; two small sidecar reads occur across ensure+load. UI-facing validation now regenerates a drifted/corrupt signature after full validation, and failed promotion preserves the previous marker.",
+        "summary": "Historical removed Backup DB evidence: warm ensure plus one target load dropped from 55 data-document reads to one selected-file read and from 29.7032 ms to 9.8964 ms median on that offline run. This is not a claim about current production, which no longer contains the feature.",
         "comparisons": [
           {"operation": "warm ensure + target load", "unit": "data JSON reads", "baseline": 55, "current": 1, "repetitions": 7},
           {"operation": "two is_valid calls after valid mtime-only drift", "unit": "data JSON reads / regenerated sidecars", "baseline": "4 / 0", "current": "2 / 1", "repetitions": 1},
@@ -158,6 +173,8 @@
     },
     {
       "id": "PERF-04",
+      "status": "active",
+      "scope": "Media downloads only; the former cold Backup DB handoff measurements are retained below solely as historical removed-feature evidence.",
       "production_symbols": [
         {"module": "yawsp_app.download_jobs", "symbol": "DownloadJobManager.submit"},
         {"module": "yawsp_app.download_jobs", "symbol": "DownloadJobManager._run"},
@@ -167,11 +184,13 @@
       ],
       "mutation_sensitive_tests": [
         "tests.test_webshare_ui.WebshareUITests.test_queued_media_returns_before_blocked_stream_and_completes_after_release",
-        "tests.test_webshare_ui.WebshareUITests.test_cold_database_handoff_has_one_reservation_no_partial_read_and_one_refresh",
-        "tests.test_webshare_ui.WebshareUITests.test_failed_database_job_does_not_refresh_or_expose_a_partial_listing",
         "tests.test_download_jobs.DownloadJobManagerTests.test_worker_start_failure_rolls_back_reservation_and_retry_succeeds",
         "tests.test_entrypoint.EntrypointTests.test_production_worker_session_factories_clone_main_headers_without_sharing",
-        "tests.test_entrypoint.EntrypointTests.test_production_remote_download_uses_vfs_stream_close_and_rename",
+        "tests.test_entrypoint.EntrypointTests.test_production_remote_download_uses_vfs_stream_close_and_rename"
+      ],
+      "historical_removed_mutation_sensitive_tests": [
+        "tests.test_webshare_ui.WebshareUITests.test_cold_database_handoff_has_one_reservation_no_partial_read_and_one_refresh",
+        "tests.test_webshare_ui.WebshareUITests.test_failed_database_job_does_not_refresh_or_expose_a_partial_listing",
         "tests.test_entrypoint.EntrypointTests.test_production_cold_database_uses_worker_session_and_one_post_promote_refresh"
       ],
       "benchmarks": [
@@ -184,13 +203,13 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "Legacy media invocation returned only after stream release. Current media and DB invocations return after accepted queue handoff before stream release; actual file success, promotion and DB refresh still happen only after release and validated completion. Worker-start failure removes only the unaccepted reservation/status and permits retry, while each independent worker session clones the main session headers without sharing the session object.",
+        "summary": "Current media invocation returns after accepted queue handoff before stream release; actual file success happens only after release and validated completion. Worker-start failure removes only the unaccepted reservation/status and permits retry, while each independent worker session clones the main session headers without sharing the session object. Cold DB rows are historical measurements from before Backup DB removal.",
         "comparisons": [
           {"operation": "media stream blocked", "unit": "invocation returned before release", "baseline": false, "current": true, "repetitions": 1},
           {"operation": "media stream blocked", "unit": "backend completion before release", "baseline": false, "current": false, "repetitions": 1},
-          {"operation": "cold DB stream blocked", "unit": "invocation returned before release", "baseline": false, "current": true, "repetitions": 1},
-          {"operation": "concurrent cold DB open", "unit": "install reservations / partial readers", "baseline": null, "current": "1 / 0", "repetitions": 1},
-          {"operation": "completed cold DB", "unit": "post-promotion refreshes / warm reopen new auth calls", "baseline": null, "current": "1 / 0", "repetitions": 1}
+          {"operation": "historical removed cold DB stream blocked", "unit": "invocation returned before release", "baseline": false, "current": true, "repetitions": 1},
+          {"operation": "historical removed concurrent cold DB open", "unit": "install reservations / partial readers", "baseline": null, "current": "1 / 0", "repetitions": 1},
+          {"operation": "historical removed completed cold DB", "unit": "post-promotion refreshes / warm reopen new auth calls", "baseline": null, "current": "1 / 0", "repetitions": 1}
         ]
       },
       "limitations": [
@@ -201,12 +220,20 @@
     },
     {
       "id": "PERF-05",
+      "status": "active",
+      "scope": "The static root and absent-source four-category discovery selector remain authentication-free without Backup DB. Retired db/searchdb bookmarks use the same ordinary root fallback without auth, network, client methods or user-data/database reads.",
       "production_symbols": [
         {"module": "yawsp_app.webshare_ui", "symbol": "build_webshare_handlers"},
         {"module": "yawsp_app.webshare", "symbol": "WebshareClient.revalidate"}
       ],
       "mutation_sensitive_tests": [
         "tests.test_webshare_ui.WebshareUITests.test_main_menu_renders_static_routes_without_authentication",
+        "tests.test_backup_db_retirement.BackupDBRetirementTests.test_webshare_menu_has_only_live_static_routes",
+        "tests.test_backup_db_retirement.BackupDBRetirementTests.test_retired_bookmarks_match_root_fallback_without_auth_network_or_user_data_io",
+        "tests.test_discovery_integration.DiscoveryIntegrationTests.test_root_places_discovery_first_without_http_or_background_work",
+        "tests.test_discovery_integration.DiscoveryIntegrationTests.test_missing_source_selects_four_categories_without_http"
+      ],
+      "historical_removed_mutation_sensitive_tests": [
         "tests.test_webshare_ui.WebshareUITests.test_installed_database_root_group_and_detail_do_not_authenticate",
         "tests.test_webshare_ui.WebshareUITests.test_installed_database_queue_still_authenticates_at_use"
       ],
@@ -220,32 +247,34 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "The same five static menu items now render with zero revalidation/auth and zero explicit remote calls instead of one revalidation. Installed DB root/group/detail retain zero calls; the real queue action still authenticates at use.",
+        "summary": "Four Webshare static menu items render with zero revalidation/auth and zero explicit remote calls. The combined pre-discovery root had five items after Backup DB retirement; the integrated root now has six with Objevit first, still without discovery HTTP or background jobs. Its absent-source selector renders exactly four fixed public category folders without HTTP/background jobs, API-key/default-view checks or a view callback. Retired db/searchdb bookmarks exactly match that current ordinary unknown-action root fallback, complete once and do not call auth/token/client methods, network or user-data/database reads.",
         "comparisons": [
           {"operation": "static main menu", "unit": "revalidation/auth calls", "baseline": 1, "current": 0, "repetitions": 1},
-          {"operation": "static main menu", "unit": "rendered items", "baseline": 5, "current": 5, "repetitions": 1},
-          {"operation": "installed DB root/group/detail", "unit": "auth calls per path", "baseline": 0, "current": 0, "repetitions": 1},
-          {"operation": "installed DB queue action", "unit": "revalidation calls", "baseline": 1, "current": 1, "repetitions": 1}
+          {"operation": "absent-source discovery selector", "unit": "HTTP/background/view-callback work", "baseline": null, "current": "0 / 0 / 0", "repetitions": 1},
+          {"operation": "static Webshare main menu after retirement", "unit": "rendered items", "baseline": 5, "current": 4, "repetitions": 1},
+          {"operation": "historical removed installed DB root/group/detail", "unit": "auth calls per path", "baseline": 0, "current": 0, "repetitions": 1},
+          {"operation": "historical removed installed DB queue action", "unit": "revalidation calls", "baseline": 1, "current": 1, "repetitions": 1}
         ]
       },
       "limitations": [
-        "This is lazy authentication, not bypassed authentication: cold installs, media, search and remote queue operations still validate at point of use.",
-        "Warm local DB safety depends on the PERF-03 metadata/full-revalidation rules."
+        "Media, search and remote queue operations still validate at point of use; the static root performs no authentication."
       ]
     },
     {
       "id": "PERF-06",
       "production_symbols": [
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch.submit_metadata"},
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch._schedule_metadata"},
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch.submit_metadata"},
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch._schedule_metadata"},
         {"module": "yawsp_app.tmdb", "symbol": "_Repository._shared_lookup"},
+        {"module": "yawsp_app.tmdb", "symbol": "GenreRepository.get"},
         {"module": "yawsp_app.tmdb_ui", "symbol": "build_tmdb_handlers"}
       ],
       "mutation_sensitive_tests": [
         "tests.test_tmdb.BackgroundPrefetchTests.test_large_direct_submission_drains_every_key_without_exceeding_active_cap",
         "tests.test_tmdb.BackgroundPrefetchTests.test_mixed_submission_alternates_trailer_and_show_lookups_deterministically",
         "tests.test_tmdb.BackgroundPrefetchTests.test_persistent_failures_retry_once_after_other_rows_without_negative_cache",
-        "tests.test_tmdb.BackgroundPrefetchTests.test_concurrent_on_demand_and_worker_lookup_share_one_http_request"
+        "tests.test_tmdb.BackgroundPrefetchTests.test_concurrent_on_demand_and_worker_lookup_share_one_http_request",
+        "tests.test_tmdb.GenreRepositoryTests.test_file_backed_commit_precedes_offline_fresh_owner_with_integer_ids"
       ],
       "benchmarks": [
         {
@@ -257,7 +286,7 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "A 100-key direct submission now covers all 100 keys exactly once in four <=32-key batches rather than silently dropping IDs 33-100. The gain is complete bounded draining and deduplication, not fewer total requests.",
+        "summary": "A 100-key direct submission now covers all 100 keys exactly once in four <=32-key batches rather than silently dropping IDs 33-100. The gain is complete bounded draining and deduplication, not fewer total requests. The added GenreRepository fresh-owner regression separately proves ordered response-close, validated save/replace, strict reload, then an offline fresh reader with integer public IDs; it does not change the original shared-worker coverage or claim a general list cache.",
         "comparisons": [
           {"operation": "100 successful direct trailer IDs", "unit": "covered keys", "baseline": 32, "current": 100, "repetitions": 1},
           {"operation": "100 successful direct trailer IDs", "unit": "actual HTTP lookups", "baseline": 32, "current": 100, "repetitions": 1},
@@ -270,7 +299,8 @@
       "limitations": [
         "Making 100 rather than 32 calls is intentional completeness, not evidence of reduced network traffic or lower latency.",
         "Each UI open schedules only the first 50 visible rows per family; all rows still render and on-demand lookup remains available.",
-        "One worker and process-local shared flights remain the lifecycle/concurrency boundary."
+        "One worker and process-local shared flights remain the lifecycle/concurrency boundary.",
+        "The public genre sidecar applies only to movie/tv with en-US/cs-CZ/sk-SK, has no inferred TTL, and is proven only for an ordered completed writer followed by a fresh reader; it is not a cross-process locking or background-shutdown remedy."
       ]
     },
     {
@@ -318,11 +348,13 @@
     },
     {
       "id": "PERF-08",
-      "production_symbols": [
+      "status": "removed",
+      "removal_scope": "Backup DB archive ingestion was retired with the feature; media stream_download and its unchanged media requirements remain active. This requirement is historical evidence only.",
+      "historical_production_symbols": [
         {"module": "yawsp_app.webshare_ui", "symbol": "build_webshare_handlers"},
         {"module": "yawsp_app.backup_db", "symbol": "BackupDBStore.ensure_installed"}
       ],
-      "mutation_sensitive_tests": [
+      "historical_mutation_sensitive_tests": [
         "tests.test_webshare_ui.WebshareUITests.test_backup_db_streams_mixed_compression_and_member_larger_than_chunk",
         "tests.test_backup_db.BackupDBTests.test_crc_failure_is_detected_by_extraction_without_testzip_pass"
       ],
@@ -336,7 +368,7 @@
       ],
       "measured_result": {
         "outcome": "improved",
-        "summary": "Production now writes the archive to an owned same-profile seekable temporary file at 262144-byte chunks, with zero response.content accesses or production whole-archive BytesIO copies. Full extraction detects CRC failure without a separate testzip pass; cold install still performs all 27 structural reads.",
+        "summary": "Historical removed Backup DB evidence: archive ingestion used an owned same-profile seekable temporary file at 262144-byte chunks, with zero response.content accesses or production whole-archive BytesIO copies. This archive path is absent from current production; media stream_download remains active under PERF-09.",
         "comparisons": [
           {"operation": "archive ingestion", "unit": "whole-response content reads / production whole-archive BytesIO copies", "baseline": "1 / 1", "current": "0 / 0", "repetitions": 1},
           {"operation": "archive validation", "unit": "redundant testzip full decompression passes", "baseline": 1, "current": 0, "repetitions": 1},

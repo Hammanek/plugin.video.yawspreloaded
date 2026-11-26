@@ -373,19 +373,31 @@ msgctxt "#30433"
 msgid "Download queued"
 msgstr ""
 
-msgctxt "#30434"
-msgid "Backup DB installation in progress"
-msgstr ""
-
-msgctxt "#30435"
-msgid "Backup DB installed"
-msgstr ""
-
-msgctxt "#30436"
-msgid "Backup DB installation failed"
-msgstr ""
-
 msgctxt "#30437"
 msgid "Download could not be queued"
+msgstr ""
+
+msgctxt "#30438"
+msgid "Refresh"
+msgstr ""
+
+msgctxt "#30439"
+msgid "Local cache"
+msgstr ""
+
+msgctxt "#30440"
+msgid "No matching files found"
+msgstr ""
+
+msgctxt "#30441"
+msgid "Discover"
+msgstr ""
+
+msgctxt "#30442"
+msgid "Popular"
+msgstr ""
+
+msgctxt "#30443"
+msgid "Top rated"
 msgstr ""
 

@@ -1,12 +1,13 @@
 import unittest
 
-from tests.support.kodi_stubs import KodiRecorder
+from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from yawsp_app.runtime import (
     ActionResult,
     ActionRunner,
     CompletionKind,
     DirectoryResult,
     PlaybackResult,
+    KodiRuntime,
     completion_for,
 )
 
@@ -229,6 +230,32 @@ class ActionRunnerTests(unittest.TestCase):
 
         self.assertEqual(self.plugin.builtin_commands, [])
         self.assertEqual(len(self.plugin.resolved_url_calls), 1)
+
+
+class RuntimeLocalizationTests(unittest.TestCase):
+    def make_runtime(self, addon, **kwargs):
+        return KodiRuntime(
+            plugin=KodiRecorder(),
+            addon=addon,
+            session=object(),
+            profile="",
+            base_url="plugin://test/",
+            handle=1,
+            listitem_factory=ListItem,
+            keyboard_factory=lambda *args: None,
+            textviewer=lambda *args: None,
+            **kwargs
+        )
+
+    def test_runtime_retains_addon_localization_without_obsolete_core_localizer(self):
+        addon = AddonRecorder(strings={1040: "Legacy compatible loading"})
+        runtime = self.make_runtime(addon)
+
+        self.assertEqual(runtime.localized(1040), "Legacy compatible loading")
+        self.assertEqual(addon.calls, [("getLocalizedString", 1040)])
+        self.assertFalse(hasattr(runtime, "system_localized"))
+        with self.assertRaises(TypeError):
+            self.make_runtime(addon, system_localizer=lambda string_id: "Core string")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,10 @@ class FakeResponse:
         if chunk_size is None or chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer")
         chunks = self._chunks
+        if chunks is None and self._json_data is not _JSON_NOT_PROVIDED:
+            # Preserve existing side-effecting JSON doubles while exercising
+            # the production chunked streaming decoder.
+            chunks = [json.dumps(self.json(), ensure_ascii=False).encode("utf-8")]
         if chunks is None:
             chunks = [self._content] if self._content else []
         for chunk in chunks:

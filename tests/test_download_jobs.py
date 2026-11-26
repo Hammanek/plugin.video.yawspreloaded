@@ -11,7 +11,6 @@ from yawsp_app.download_jobs import (
     DownloadJobKey,
     DownloadJobManager,
     DownloadOperation,
-    backup_db_job_key,
     media_job_key,
 )
 
@@ -162,17 +161,6 @@ class DownloadJobManagerTests(unittest.TestCase):
         self.assertEqual(retry.events, ["run", "succeeded"])
         manager.close(wait=True)
 
-    def test_database_duplicate_uses_one_profile_reservation(self):
-        manager = self.manager(max_pending=2)
-        release = threading.Event()
-        first = ControlledOperation([], lambda context: release.wait(2))
-        profile_key = backup_db_job_key("special://profile/")
-        self.assertTrue(manager.submit(profile_key, first))
-        self.assertFalse(manager.submit(profile_key, ControlledOperation([])))
-        self.assertIn(manager.status(profile_key), ("queued", "running"))
-        release.set()
-        self.assertTrue(first.succeeded_event.wait(2))
-
     def test_failure_releases_quota_and_does_not_poison_next_job(self):
         manager = self.manager(max_pending=1)
         failed = ControlledOperation(
@@ -199,7 +187,7 @@ class DownloadJobManagerTests(unittest.TestCase):
 
         first = ControlledOperation([], block_first)
         operation = ControlledOperation([])
-        key = backup_db_job_key("profile")
+        key = media_job_key("pending")
         self.assertTrue(manager.submit(media_job_key("blocker"), first))
         self.assertTrue(entered.wait(2))
         self.assertTrue(manager.submit(key, operation))

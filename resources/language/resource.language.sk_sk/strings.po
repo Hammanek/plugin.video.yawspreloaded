@@ -373,19 +373,31 @@ msgctxt "#30433"
 msgid "Download queued"
 msgstr "Sťahovanie zaradené do fronty"
 
-msgctxt "#30434"
-msgid "Backup DB installation in progress"
-msgstr "Inštalácia Backup DB prebieha"
-
-msgctxt "#30435"
-msgid "Backup DB installed"
-msgstr "Backup DB bola nainštalovaná"
-
-msgctxt "#30436"
-msgid "Backup DB installation failed"
-msgstr "Inštalácia Backup DB zlyhala"
-
 msgctxt "#30437"
 msgid "Download could not be queued"
 msgstr "Sťahovanie sa nepodarilo zaradiť do fronty"
+
+msgctxt "#30438"
+msgid "Refresh"
+msgstr "Obnoviť"
+
+msgctxt "#30439"
+msgid "Local cache"
+msgstr "Miestna vyrovnávacia pamäť"
+
+msgctxt "#30440"
+msgid "No matching files found"
+msgstr "Žiadne výsledky"
+
+msgctxt "#30441"
+msgid "Discover"
+msgstr "Objaviť"
+
+msgctxt "#30442"
+msgid "Popular"
+msgstr "Populárne"
+
+msgctxt "#30443"
+msgid "Top rated"
+msgstr "Najlepšie hodnotené"
 

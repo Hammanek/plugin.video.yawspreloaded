@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urlparse import parse_qsl
 
 from yawsp_app.download_jobs import DownloadJobManager
+from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import (
     ActionRunner,
@@ -24,12 +25,13 @@ from yawsp_app.runtime import (
     completion_for,
 )
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     GenreRepository,
     ShowRepository,
     TMDBClient,
     TrailerRepository,
 )
+from yawsp_app.tmdb_service_client import TMDBServiceClient
+from yawsp_app.tmdb_service_store import IdentityTransactionAdapter, ServiceStateStore
 from yawsp_app.tmdb_ui import build_tmdb_handlers, kodi_language
 from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
 from yawsp_app.webshare import WebshareClient
@@ -107,7 +109,7 @@ class _PluginAdapter:
 
 
 class _ProductionOwner:
-    """Own the default executor/session for the add-on process, not one route."""
+    """Own invocation-local auth/Webshare, media jobs, and service waiters."""
 
     def __init__(self):
         # These imports are deliberately lazy: importing the compatibility
@@ -177,24 +179,34 @@ class _ProductionOwner:
                 os.path.join(self.profile, "tmdb_watchlist.json"), logger=_LOGGER
             )
         )
-        self.genre_repository = GenreRepository()
+        self.genre_repository = GenreRepository(
+            file_cache=GenreFileCache(
+                os.path.join(self.profile, "tmdb_genres.json"), logger=_LOGGER
+            )
+        )
 
         def worker_session_factory():
+            # DownloadJobManager alone retains its independent media transport.
             session = requests.Session()
             session.headers.update(self.session.headers)
             return session
 
-        self.background = BackgroundPrefetch(
+        self.service_store = ServiceStateStore(self.profile)
+        self.background = TMDBServiceClient(
+            store=self.service_store,
             settings=self.settings,
             trailer_cache=self.trailer_cache,
             show_cache=self.show_cache,
             locale_mapper=self.language,
-            session_factory=worker_session_factory,
-            abort=self.monitor.abortRequested,
-            logger=_LOGGER,
             snapshot_store=self.snapshot_store,
-            genre_repository=self.genre_repository,
+            abort=self.monitor.abortRequested,
+            wait_for_abort=self.monitor.waitForAbort,
+            logger=_LOGGER,
         )
+        # The UI binds the same real OS identity transaction as the native
+        # service; TMDBServiceClient._lock protects waiters only.
+        self.background.identity_lock = self.service_store
+        self.background.genre_repository = self.genre_repository
         self.download_jobs = DownloadJobManager(
             session_factory=worker_session_factory,
             abort=self.monitor.abortRequested,
@@ -233,7 +245,7 @@ class _ProductionOwner:
         (runtime or self.runtime).notify(message)
 
     def handlers(self, runtime=None):
-        """Create per-open repositories so persisted worker data is re-read."""
+        """Create per-open read-only repositories and explicit-auth clients."""
         runtime = runtime or self.runtime
         webshare_client = WebshareClient(self.session, self.settings)
         tmdb_client = TMDBClient(
@@ -242,7 +254,7 @@ class _ProductionOwner:
             locale_mapper=self.language,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
-            identity_lock=self.background._lock,
+            identity_lock=IdentityTransactionAdapter(self.service_store),
         )
         webshare = build_webshare_handlers(
             runtime,
@@ -252,7 +264,6 @@ class _ProductionOwner:
             notify=lambda message: self.plugin.notification(
                 self.addon.getAddonInfo("name"), message
             ),
-            refresh=lambda: self.plugin.executeBuiltin("Container.Refresh"),
         )
         tmdb = build_tmdb_handlers(
             runtime,
@@ -264,18 +275,30 @@ class _ProductionOwner:
             self.background,
         )
         base_menu = webshare["menu"]
+        discovery_menu = tmdb.pop(
+            "discovery_menu", lambda params: DirectoryResult()
+        )
         tmdb_menu = tmdb.pop("menu")
 
         def menu(params):
+            discovery_result = discovery_menu(params)
             webshare_result = base_menu(params)
             tmdb_result = tmdb_menu(params)
             return DirectoryResult(
-                succeeded=webshare_result.succeeded and tmdb_result.succeeded,
+                succeeded=(
+                    discovery_result.succeeded
+                    and webshare_result.succeeded
+                    and tmdb_result.succeeded
+                ),
                 update_listing=(
-                    webshare_result.update_listing or tmdb_result.update_listing
+                    discovery_result.update_listing
+                    or webshare_result.update_listing
+                    or tmdb_result.update_listing
                 ),
                 cache_to_disc=(
-                    webshare_result.cache_to_disc and tmdb_result.cache_to_disc
+                    discovery_result.cache_to_disc
+                    and webshare_result.cache_to_disc
+                    and tmdb_result.cache_to_disc
                 ),
             )
 

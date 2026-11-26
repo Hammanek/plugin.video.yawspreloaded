@@ -1,5 +1,6 @@
 import contextlib
 import importlib
+import json
 import sys
 import tempfile
 import threading
@@ -11,9 +12,10 @@ from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
-from tests.test_tmdb import ManualWorker, json_response
-from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, archive_bytes, xml
+from tests.test_tmdb import json_response
+from tests.test_webshare_ui import FakeClient, Keyboard as CompatibleKeyboard, xml
 from yawsp_app import router as production_router
+from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.watchlist_snapshot import SnapshotScope
 from yawsp_app.runtime import (
     ActionResult,
@@ -79,8 +81,6 @@ class Owner:
             "search": directory,
             "queue": directory,
             "history": directory,
-            "db": directory,
-            "searchdb": directory,
             "tmdb_watchlist": watchlist,
             "play": play,
             "settings": action,
@@ -104,10 +104,12 @@ def install_kodi_stubs():
             30303: "Downloaded",
             30304: "Download failed",
             30433: "Download queued",
-            30434: "Backup DB installation in progress",
-            30435: "Backup DB installed",
-            30436: "Backup DB installation failed",
             30437: "Download could not be queued",
+            30438: "Refresh",
+            30440: "No matching files found",
+            30441: "Objevit",
+            30442: "Populární",
+            30443: "Nejlépe hodnocené",
         },
     )
     addon.open_settings_calls = 0
@@ -181,35 +183,50 @@ def install_kodi_stubs():
 
 @contextlib.contextmanager
 def production_tmdb_invocation(responses, language="en"):
-    with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
-        sys,
-        "argv",
-        ["plugin://plugin.video.yawspreloaded/", "17", ""],
-    ), mock.patch.object(production_router.requests, "Session") as session_type:
-        addon = sys.modules["xbmcaddon"].Addon()
-        addon.settings.update(
-            {
-                "tmdb_api_key": "offline-api-key",
-                "tmdb_access_token": "session-1",
-                "tmdb_account_id": "account-1",
-                "tmdb_sort": "0",
-                "tmdb_hide_unreleased": "false",
-            }
-        )
-        sys.modules["xbmc"]._language = language
-        translate = lambda value: profile
-        sys.modules["xbmc"].translatePath = translate
-        sys.modules["xbmcvfs"].translatePath = translate
-        session = FakeSession(responses)
-        session.headers = {}
-        session_type.return_value = session
-        production_router.close()
-        owner = production_router._get_owner()
-        owner.background.worker = ManualWorker()
-        try:
-            yield owner, session, addon, sys.modules["xbmcplugin"]._recorder
-        finally:
-            production_router.close()
+    """Compose the genuine owner/store/client with a serial native fixture."""
+    from tests.test_tmdb_service_integration import NativeComposition
+
+    class Host:
+        def __init__(self):
+            self.cleanups = []
+
+        def addCleanup(self, function):
+            self.cleanups.append(function)
+
+        def assertFalse(self, value):
+            if value:
+                raise AssertionError("native service startup did unexpected work")
+
+        def close(self):
+            for function in reversed(self.cleanups):
+                function()
+
+    host = Host()
+    native = NativeComposition(
+        host, responses, share_session=True, drain_background=False
+    )
+    try:
+        with native:
+            sys.modules["xbmc"]._language = language
+            yield (
+                native.owner,
+                native.service_session,
+                native.addon,
+                native.recorder,
+            )
+    finally:
+        host.close()
+
+
+def service_jobs(owner, operation=None, pending=False):
+    """Read real committed service jobs, never a LegacyServiceAdapter queue."""
+    with open(owner.service_store.manifest_path, encoding="utf-8") as source:
+        jobs = json.load(source)["jobs"]
+    if operation is not None:
+        jobs = [job for job in jobs if job["request"]["operation"] == operation]
+    if pending:
+        jobs = [job for job in jobs if job["state"] in ("queued", "backlog", "active")]
+    return jobs
 
 
 def switch_json_response(data, switch):
@@ -333,10 +350,31 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(len(owner.plugin.resolved_url_calls), 3)
         self.assertFalse(owner.plugin.end_of_directory_calls[0]["succeeded"])
 
-    def test_real_kodi_adapters_share_one_default_executor_and_map_language(self):
+    def test_real_owner_supplies_one_profile_genre_file_cache_without_startup_io(self):
+        with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
+            sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
+        ), mock.patch.object(production_router, "TMDBServiceClient"), mock.patch.object(
+            production_router, "DownloadJobManager"
+        ):
+            translate = lambda value: profile
+            sys.modules["xbmc"].translatePath = translate
+            sys.modules["xbmcvfs"].translatePath = translate
+            production_router.close()
+            owner = production_router._get_owner()
+            try:
+                file_cache = owner.genre_repository._file_cache
+                expected_path = production_router.os.path.join(owner.profile, "tmdb_genres.json")
+                self.assertIsInstance(file_cache, GenreFileCache)
+                self.assertEqual(file_cache.path, expected_path)
+                self.assertIs(file_cache.logger, production_router._LOGGER)
+                self.assertFalse(production_router.os.path.exists(expected_path))
+            finally:
+                production_router.close()
+
+    def test_real_kodi_adapters_share_service_client_and_map_language(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=settings"]
-        ), mock.patch.object(production_router, "BackgroundPrefetch") as background_type, mock.patch.object(
+        ), mock.patch.object(production_router, "TMDBServiceClient") as background_type, mock.patch.object(
             production_router, "DownloadJobManager"
         ) as download_jobs_type:
             background = background_type.return_value
@@ -345,6 +383,7 @@ class EntrypointTests(unittest.TestCase):
             owner = production_router._get_owner()
 
             self.assertIs(owner, production_router._get_owner())
+            self.assertNotIn("system_localizer", owner._runtime_options)
             production_router.router("action=settings")
             recorder = sys.modules["xbmcplugin"]._recorder
             self.assertEqual(len(recorder.resolved_url_calls), 1)
@@ -394,9 +433,10 @@ class EntrypointTests(unittest.TestCase):
                 background_type.call_args.kwargs["snapshot_store"], owner.snapshot_store
             )
             self.assertIs(
-                background_type.call_args.kwargs["genre_repository"],
-                owner.genre_repository,
+                background_type.call_args.kwargs["store"],
+                owner.service_store,
             )
+            self.assertIs(background.genre_repository, owner.genre_repository)
             production_router.close()
             background.close.assert_called_once_with(wait=False)
             download_jobs.close.assert_called_once_with(wait=False)
@@ -404,7 +444,7 @@ class EntrypointTests(unittest.TestCase):
     def test_production_watched_without_api_key_is_one_clean_action_completion(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=tmdb_watchlist"]
-        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+        ), mock.patch.object(production_router, "TMDBServiceClient"):
             production_router.close()
             owner = production_router._get_owner()
             logger = RecordingLogger()
@@ -428,7 +468,7 @@ class EntrypointTests(unittest.TestCase):
             sys,
             "argv",
             ["plugin://plugin.video.yawspreloaded/", "17", "?action=download"],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+        ), mock.patch.object(production_router, "TMDBServiceClient"), mock.patch.object(
             production_router.requests, "Session"
         ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
             ui_session = FakeSession()
@@ -528,96 +568,12 @@ class EntrypointTests(unittest.TestCase):
                 self.assertEqual(len(vfs.deleted), 1)
                 self.assertTrue(response.closed)
 
-    def test_production_cold_database_uses_worker_session_and_one_post_promote_refresh(self):
-        with install_kodi_stubs(), mock.patch.object(
-            sys,
-            "argv",
-            ["plugin://plugin.video.yawspreloaded/", "17", "?action=db"],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
-            production_router.requests, "Session"
-        ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
-            ui_session = FakeSession()
-            ui_session.headers = {}
-            payload = archive_bytes()
-            response = FakeResponse(content=payload, forbid_content=True)
-            worker_session = FakeSession([response])
-            worker_session.headers = {}
-            session_type.side_effect = [ui_session, worker_session]
-            client = FakeClient()
-            client.link_results = ["https://cdn.invalid/db.zip"]
-            client_type.return_value = client
-            entered = threading.Event()
-            release = threading.Event()
-
-            def blocked_stream(chunk_size=1, decode_unicode=False):
-                entered.set()
-                if not release.wait(2):
-                    raise AssertionError("production database stream was not released")
-                yield payload
-
-            response.iter_content = blocked_stream
-            with tempfile.TemporaryDirectory() as profile:
-                translate = lambda value: profile
-                sys.modules["xbmc"].translatePath = translate
-                sys.modules["xbmcvfs"].translatePath = translate
-                production_router.close()
-                owner = production_router._get_owner()
-                recorder = sys.modules["xbmcplugin"]._recorder
-                refreshed = threading.Event()
-                execute_builtin = recorder.executeBuiltin
-
-                def observed_refresh(command):
-                    execute_builtin(command)
-                    if command == "Container.Refresh":
-                        refreshed.set()
-
-                recorder.executeBuiltin = observed_refresh
-                sys.modules["xbmc"].executebuiltin = observed_refresh
-                returned = threading.Event()
-                results = []
-
-                def invoke():
-                    results.append(production_router.router("action=db&file=A.txt"))
-                    returned.set()
-
-                invocation = threading.Thread(target=invoke)
-                invocation.start()
-                self.assertTrue(returned.wait(2), "production DB handoff blocked on its archive")
-                invocation.join(2)
-                self.assertTrue(entered.wait(2))
-                self.assertTrue(results[0].succeeded)
-                self.assertEqual(len(recorder.end_of_directory_calls), 1)
-                self.assertEqual(len(recorder.items), 1)
-                self.assertEqual(
-                    recorder.items[0]["listitem"].label,
-                    "Backup DB installation in progress",
-                )
-                self.assertFalse(refreshed.is_set())
-                self.assertEqual(ui_session.calls, [])
-
-                release.set()
-
-                self.assertTrue(refreshed.wait(2))
-                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
-                self.assertEqual(len(recorder.end_of_directory_calls), 1)
-                self.assertTrue(response.closed)
-                warm = production_router.router("action=db&file=A.txt")
-                self.assertTrue(warm.succeeded)
-                self.assertTrue(
-                    any(item["listitem"].label == "Film" for item in recorder.items)
-                )
-                self.assertEqual(client.revalidate_calls, 1)
-                self.assertEqual(len(worker_session.calls), 1)
-                self.assertEqual(ui_session.calls, [])
-                self.assertEqual(recorder.builtin_commands, ["Container.Refresh"])
-                self.assertEqual(len(recorder.end_of_directory_calls), 2)
-
     def test_real_owner_rebuilds_runtime_and_runner_for_sequential_invocations(self):
         with install_kodi_stubs(), mock.patch.object(
             sys,
             "argv",
             ["plugin://first.invalid/", "17", ""],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+        ), mock.patch.object(production_router, "TMDBServiceClient"):
             production_router.close()
             owner = production_router._get_owner()
 
@@ -687,6 +643,12 @@ class EntrypointTests(unittest.TestCase):
 
             self.assertIs(owner, production_router._get_owner())
 
+    def test_production_tmdb_invocation_never_replaces_real_service_composition(self):
+        with production_tmdb_invocation([]) as (owner, _session, _addon, _recorder):
+            self.assertIsInstance(owner.background, production_router.TMDBServiceClient)
+            self.assertIs(owner.background.store, owner.service_store)
+            self.assertFalse(hasattr(owner.background, "worker"))
+
     def test_production_cold_mid_page_account_switch_discards_then_recovers(self):
         def switch_account(addon):
             addon.setSetting("tmdb_account_id", "account-2")
@@ -724,7 +686,8 @@ class EntrypointTests(unittest.TestCase):
             recovered = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(recovered.succeeded)
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Current")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Current")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertIsNone(
                 owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
             )
@@ -768,7 +731,8 @@ class EntrypointTests(unittest.TestCase):
             recovered = production_router.router("action=tmdb_watchlist&category=movies")
 
             self.assertTrue(recovered.succeeded)
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Česky")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Česky")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertIsNone(
                 owner.snapshot_store.load(SnapshotScope("account-1", "movies", "en-US"))
             )
@@ -806,7 +770,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertFalse(result.handled)
             self.assertEqual(owner.snapshot_store.load(first_scope), first)
             self.assertEqual(owner.snapshot_store.load(second_scope), second)
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(session.calls[0]["url"], "https://api.themoviedb.org/3/account/account-1/watchlist")
             self.assertEqual(session.calls[0]["kwargs"]["params"]["session_id"], "session-1")
             self.assertEqual(recorder.builtin_commands, [])
@@ -821,22 +785,26 @@ class EntrypointTests(unittest.TestCase):
             )
             remove = owner.snapshot_store.remove
 
-            def remove_then_clear_account(scope, media_id):
+            def remove_then_clear_account(_store, scope, media_id):
                 snapshot = remove(scope, media_id)
                 addon.setSetting("tmdb_account_id", "")
                 return snapshot
 
-            owner.snapshot_store.remove = remove_then_clear_account
             session.queue_response(json_response({"success": True}))
-
-            result = production_router.router(
-                "action=tmdb_watchlist&category=movies&watched=42"
-            )
+            with mock.patch.object(
+                type(owner.snapshot_store),
+                "remove",
+                autospec=True,
+                side_effect=remove_then_clear_account,
+            ):
+                result = production_router.router(
+                    "action=tmdb_watchlist&category=movies&watched=42"
+                )
 
             self.assertTrue(result.handled)
             self.assertEqual(addon.getSetting("tmdb_account_id"), "")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(len(session.calls), 1)
             self.assertEqual(
                 session.calls[0]["url"],
@@ -874,9 +842,10 @@ class EntrypointTests(unittest.TestCase):
             self.assertIn("/watchlist/movies", session.calls[1]["url"])
             self.assertIn("/genre/movie/list", session.calls[2]["url"])
             self.assertEqual(
-                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                [item["listitem"].label.split(" (")[0] for item in recorder.items[:-1]],
                 ["Áčko", "Chata"],
             )
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             scope = SnapshotScope("account-1", "movies", "en-US")
             owner.snapshot_store.save_complete(scope, movies, 0.0)
             recorder.items.clear()
@@ -894,20 +863,24 @@ class EntrypointTests(unittest.TestCase):
                 [session.calls[2]],
             )
             self.assertEqual(
-                [item["listitem"].label.split(" (")[0] for item in recorder.items],
+                [item["listitem"].label.split(" (")[0] for item in recorder.items[:-1]],
                 ["Áčko", "Chata"],
             )
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
             self.assertEqual(owner.snapshot_store.load(scope).results, movies)
             self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             watchlist_jobs = [
-                args
-                for function, args in owner.background.worker.jobs
-                if function.__name__ == "_run_watchlist"
+                job
+                for job in service_jobs(owner, "watchlist.refresh", pending=True)
+                if not job["interactive"]
             ]
             self.assertEqual(len(watchlist_jobs), 1)
-            refresh_args = watchlist_jobs[0]
-            self.assertEqual(refresh_args[1], scope)
-            self.assertIs(refresh_args[-1], False)
+            self.assertEqual(
+                watchlist_jobs[0]["request"]["params"]["scope"],
+                dict(scope.__dict__),
+            )
+            self.assertIs(watchlist_jobs[0]["request"]["force"], False)
+            self.assertEqual(watchlist_jobs[0]["state"], "queued")
 
     def test_production_worker_session_factories_clone_main_headers_without_sharing(self):
         with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
@@ -921,13 +894,16 @@ class EntrypointTests(unittest.TestCase):
             production_router.close()
             owner = production_router._get_owner()
             try:
-                metadata = owner.background.session_factory()
-                download = owner.download_jobs._session_factory()
-                following_download = owner.download_jobs._session_factory()
+                self.assertIsInstance(owner.background, production_router.TMDBServiceClient)
+                self.assertFalse(hasattr(owner.background, "session_factory"))
+                self.assertFalse(hasattr(owner.background, "worker"))
+                workers = (
+                    owner.download_jobs._session_factory(),
+                    owner.download_jobs._session_factory(),
+                )
                 try:
-                    workers = (metadata, download, following_download)
                     self.assertTrue(all(session is not owner.session for session in workers))
-                    self.assertEqual(len({id(session) for session in workers}), 3)
+                    self.assertEqual(len({id(session) for session in workers}), 2)
                     for session in workers:
                         self.assertEqual(
                             session.headers["User-Agent"],
@@ -961,17 +937,25 @@ class EntrypointTests(unittest.TestCase):
                     {"total_pages": 1, "results": [{"id": 2, "title": "Refreshed"}]}
                 )
             )
+            session.queue_response(json_response({"genres": []}))
 
             result = production_router.router(
                 "action=tmdb_watchlist&category=movies&watched=42"
             )
 
             self.assertTrue(result.handled)
-            self.assertEqual(len(owner.background.worker.jobs), 1)
-            owner.background.worker.run_all()
+            refreshes = [
+                job
+                for job in service_jobs(owner, "watchlist.refresh")
+                if not job["interactive"]
+            ]
+            self.assertEqual(len(refreshes), 1)
+            self.assertEqual(refreshes[0]["state"], "succeeded")
+            self.assertTrue(refreshes[0]["request"]["force"])
+            owner.service_store.runner.run_once()
             self.assertEqual(addon.getSetting("tmdb_account_id"), "account-1")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-1")
-            self.assertEqual(len(session.calls), 3)
+            self.assertEqual(len(session.calls), 4)
             self.assertEqual(
                 session.calls[0]["url"], "https://api.themoviedb.org/3/account"
             )
@@ -983,7 +967,9 @@ class EntrypointTests(unittest.TestCase):
                 session.calls[2]["url"],
                 "https://api.themoviedb.org/3/account/account-1/watchlist/movies",
             )
-            for call in session.calls:
+            self.assertEqual(session.calls[3]["url"], "https://api.themoviedb.org/3/genre/movie/list")
+            self.assertNotIn("session_id", session.calls[3]["kwargs"]["params"])
+            for call in session.calls[:3]:
                 self.assertEqual(call["kwargs"]["params"]["session_id"], "session-1")
             self.assertEqual(
                 owner.snapshot_store.load(scope).results,
@@ -1099,7 +1085,14 @@ class EntrypointTests(unittest.TestCase):
                 def __getattr__(self, name):
                     return getattr(self.delegate, name)
 
-            owner.background._lock = ObservedIdentityLock(owner.background._lock)
+            original_identity_transaction = owner.service_store.identity_transaction
+
+            def observed_identity_transaction():
+                if qr_threads and threading.current_thread() is qr_threads[0]:
+                    transition_advanced("lock-waiting")
+                return original_identity_transaction()
+
+            owner.service_store.identity_transaction = observed_identity_transaction
             original_set = addon.setSetting
 
             def coordinate_exact_publication_boundary(key, value):
@@ -1163,6 +1156,12 @@ class EntrypointTests(unittest.TestCase):
                     addon.getSetting("tmdb_access_token"),
                 )
 
+                if "watched=" in recovery_query:
+                    owner.snapshot_store.save_complete(
+                        SnapshotScope("account-2", "movies", "en-US"),
+                        [{"id": 42, "title": "Remove current"}],
+                        100.0,
+                    )
                 second_result = production_router.router(recovery_query)
 
             mixed_requests = [
@@ -1260,7 +1259,14 @@ class EntrypointTests(unittest.TestCase):
                 def __getattr__(self, name):
                     return getattr(self.delegate, name)
 
-            owner.background._lock = ObservedIdentityLock(owner.background._lock)
+            original_identity_transaction = owner.service_store.identity_transaction
+
+            def observed_identity_transaction():
+                if qr_threads and threading.current_thread() is qr_threads[0]:
+                    transition_advanced("lock-waiting")
+                return original_identity_transaction()
+
+            owner.service_store.identity_transaction = observed_identity_transaction
             original_set = addon.setSetting
 
             def coordinate_exact_invalidation_boundary(key, value):
@@ -1300,7 +1306,7 @@ class EntrypointTests(unittest.TestCase):
             self.assertEqual(owner.background.submit_watchlist(scope, force=True), 1)
             addon.setSetting = coordinate_exact_invalidation_boundary
             qr_results = []
-            refresh_thread = threading.Thread(target=owner.background.worker.run_all)
+            refresh_thread = threading.Thread(target=owner.service_store.runner.run_once)
             refresh_threads.append(refresh_thread)
             with mock.patch.object(production_router._LOGGER, "exception"):
                 refresh_thread.start()
@@ -1338,9 +1344,11 @@ class EntrypointTests(unittest.TestCase):
                     for call in session.calls
                 )
             )
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
 
-    def _assert_production_stale_generic_401(self, stale_url, prepare_stale_request):
+    def _assert_production_stale_generic_401(
+        self, stale_url, prepare_stale_request, expected_stale_calls=1
+    ):
         with production_tmdb_invocation([]) as (owner, session, addon, recorder):
             original_request = session.request
             unauthorized_responses = []
@@ -1376,32 +1384,27 @@ class EntrypointTests(unittest.TestCase):
                     transition_state.append(state)
                     transition_condition.notify_all()
 
-            class ObservedIdentityLock:
-                def __init__(self, delegate):
-                    self.delegate = delegate
+            original_identity_transaction = owner.service_store.identity_transaction
+            identity_holders = set()
 
-                def __enter__(self):
-                    if qr_threads and threading.current_thread() is qr_threads[0]:
-                        # On broken production QR gets the free lock and must finish
-                        # replacement before the stale write. On fixed production it
-                        # blocks behind the request guard, so the old write completes
-                        # first and QR publishes its replacement afterwards.
-                        if self.delegate.acquire(blocking=False):
-                            transition_advanced("lock-acquired")
-                            return self
-                        transition_advanced("lock-waiting")
-                        self.delegate.acquire()
-                        return self
-                    self.delegate.acquire()
-                    return self
+            @contextlib.contextmanager
+            def observed_identity_transaction():
+                thread_id = threading.get_ident()
+                is_qr = qr_threads and threading.current_thread() is qr_threads[0]
+                if is_qr:
+                    transition_advanced("lock-waiting")
+                with original_identity_transaction():
+                    with transition_condition:
+                        identity_holders.add(thread_id)
+                    if is_qr:
+                        transition_advanced("lock-acquired")
+                    try:
+                        yield owner.service_store
+                    finally:
+                        with transition_condition:
+                            identity_holders.discard(thread_id)
 
-                def __exit__(self, exc_type, exc_value, traceback):
-                    self.delegate.release()
-
-                def __getattr__(self, name):
-                    return getattr(self.delegate, name)
-
-            owner.background._lock = ObservedIdentityLock(owner.background._lock)
+            owner.service_store.identity_transaction = observed_identity_transaction
             original_set = addon.setSetting
             stale_threads = []
 
@@ -1431,11 +1434,19 @@ class EntrypointTests(unittest.TestCase):
                     qr_thread.start()
                     with transition_condition:
                         if not transition_condition.wait_for(
-                            lambda: "replaced" in transition_state
-                            or "lock-waiting" in transition_state,
-                            2,
+                            lambda: "lock-waiting" in transition_state, 2
                         ):
                             raise AssertionError("QR transition did not reach its seam")
+                        if threading.get_ident() not in identity_holders:
+                            # Broken metadata has no compare-and-clear guard. Force
+                            # the complete replacement before its stale clear; the
+                            # guarded main-UI control instead releases QR above.
+                            if not transition_condition.wait_for(
+                                lambda: "replaced" in transition_state, 2
+                            ):
+                                raise AssertionError(
+                                    "Unguarded QR replacement did not complete"
+                                )
                 original_set(key, value)
 
             qr_results = []
@@ -1466,7 +1477,7 @@ class EntrypointTests(unittest.TestCase):
                 )
 
             stale_calls = [call for call in session.calls if call["url"].endswith(stale_url)]
-            self.assertEqual(len(stale_calls), 1)
+            self.assertEqual(len(stale_calls), expected_stale_calls)
             self.assertEqual(
                 stale_calls[0]["kwargs"]["params"].get("session_id"), "session-1"
             )
@@ -1487,9 +1498,11 @@ class EntrypointTests(unittest.TestCase):
     def test_production_background_metadata_stale_401_cannot_clear_new_qr_session(self):
         def prepare(owner):
             self.assertEqual(owner.background.submit_trailers("movie", [42]), 1)
-            return owner.background.worker.run_all
+            return owner.service_store.runner.run_once
 
-        self._assert_production_stale_generic_401("/3/movie/42/videos", prepare)
+        self._assert_production_stale_generic_401(
+            "/3/movie/42/videos", prepare, expected_stale_calls=2
+        )
 
     def test_production_main_ui_stale_401_cannot_clear_new_qr_session(self):
         def prepare(owner):
@@ -1549,6 +1562,12 @@ class EntrypointTests(unittest.TestCase):
                 100.0,
             )
             session.queue_response(json_response({"success": True}))
+            session.queue_response(
+                json_response(
+                    {"total_pages": 1, "results": [{"id": 2, "title": "Keep"}]}
+                )
+            )
+            session.queue_response(json_response({"genres": []}))
 
             recovered = production_router.router(
                 "action=tmdb_watchlist&category=movies&watched=42"
@@ -1565,7 +1584,14 @@ class EntrypointTests(unittest.TestCase):
                 owner.snapshot_store.load(second_scope).results,
                 [{"id": 2, "title": "Keep"}],
             )
-            self.assertEqual(len(owner.background.worker.jobs), 1)
+            refreshes = [
+                job
+                for job in service_jobs(owner, "watchlist.refresh")
+                if not job["interactive"]
+            ]
+            self.assertEqual(len(refreshes), 1)
+            self.assertEqual(refreshes[0]["state"], "succeeded")
+            self.assertTrue(refreshes[0]["request"]["force"])
             self.assertEqual(addon.getSetting("tmdb_account_id"), "account-2")
             self.assertEqual(addon.getSetting("tmdb_access_token"), "session-2")
 
@@ -1617,7 +1643,8 @@ class EntrypointTests(unittest.TestCase):
                 ).results,
                 [{"id": 1, "title": "Staged"}],
             )
-            self.assertEqual(recorder.items[-1]["listitem"].label, "Staged")
+            self.assertEqual(recorder.items[-2]["listitem"].label, "Staged")
+            self.assertEqual(recorder.items[-1]["listitem"].label, "Refresh")
 
     def test_route_calls_share_one_cached_owner_until_close(self):
         owners = []

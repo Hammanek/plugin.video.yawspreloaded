@@ -1,29 +1,35 @@
 from email.utils import formatdate
 import inspect
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
+import traceback
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
 import yawsp_app.tmdb as tmdb_service
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import KodiRecorder
+from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.watchlist_snapshot import SnapshotScope, WatchlistSnapshotStore
+from tests.support.background_prefetch import BackgroundPrefetch
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     ShowRepository,
     TMDBAbortError,
     TMDBClient,
     TMDBError,
     TrailerLookup,
     TrailerRepository,
+    execute_show_metadata,
+    execute_trailer_metadata,
 )
 
 
@@ -106,7 +112,7 @@ class MetadataSession:
                     {
                         "site": "YouTube",
                         "type": "Trailer",
-                        "key": "video-{0}".format(media_id),
+                        "key": "video{0:06d}".format(media_id),
                     }
                 ]
             }
@@ -185,6 +191,159 @@ class ClientTests(TMDBServiceTestCase):
                 with self.assertRaises(TMDBError) as caught:
                     client.get("/3/example")
                 self.assertIsInstance(caught.exception.__cause__, requests.RequestException)
+
+    def test_http_error_traceback_excludes_request_credentials(self):
+        for status_code in (404, 500):
+            with self.subTest(status_code=status_code):
+                api_key = "synthetic-http-api-key"
+                session_id = "synthetic-http-session-id"
+                prepared = requests.Request(
+                    "GET",
+                    "https://api.themoviedb.org/3/example",
+                    params={
+                        "language": "cs-CZ",
+                        "api_key": api_key,
+                        "session_id": session_id,
+                    },
+                ).prepare()
+                response = requests.Response()
+                response.status_code = status_code
+                response.reason = {404: "Not Found", 500: "Server Error"}[status_code]
+                response.url = prepared.url
+                response.request = prepared
+                response._content = b"{}"
+                response.raw = io.BytesIO()
+                settings = MemorySettings(
+                    tmdb_api_key=api_key, tmdb_access_token=session_id
+                )
+                client, _, _, _ = self.make_client([response], settings=settings)
+
+                with self.assertRaises(TMDBError) as caught:
+                    client.get("/3/example")
+
+                error = caught.exception
+                cause = error.__cause__
+                rendered = "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+                self.assertIn(api_key, response.url)
+                self.assertIn(session_id, response.url)
+                self.assertNotIn(api_key, rendered)
+                self.assertNotIn(session_id, rendered)
+                self.assertIs(type(cause), requests.HTTPError)
+                self.assertIs(cause.response, response)
+                self.assertIs(cause.request, prepared)
+                self.assertEqual(
+                    str(error),
+                    "TMDB /3/example returned HTTP {0}".format(status_code),
+                )
+                self.assertTrue(response.raw.closed)
+
+    def test_transport_error_traceback_and_log_exclude_request_credentials(self):
+        api_key = "synthetic-transport-api-key"
+        session_id = "synthetic-transport-session-id"
+        prepared = requests.Request(
+            "GET",
+            "https://api.themoviedb.org/3/example",
+            params={"api_key": api_key, "session_id": session_id},
+        ).prepare()
+        failure = requests.Timeout(
+            "synthetic timeout for {0}".format(prepared.url), request=prepared
+        )
+        self.assertIn(api_key, str(failure))
+        self.assertIn(session_id, str(failure))
+        settings = MemorySettings(tmdb_api_key=api_key, tmdb_access_token=session_id)
+        client, _, _, _ = self.make_client([failure], settings=settings)
+
+        with self.assertRaises(TMDBError) as caught:
+            client.get("/3/example")
+
+        error = caught.exception
+        cause = error.__cause__
+        rendered = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with self.assertLogs(client.logger, level="ERROR") as logged:
+            client.logger.exception("Synthetic TMDB public log", exc_info=error)
+        public_log = "\n".join(logged.output)
+        for secret in (api_key, session_id):
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn(secret, public_log)
+        self.assertIs(cause, failure)
+        self.assertIs(type(cause), requests.Timeout)
+        self.assertIs(cause.request, prepared)
+        self.assertEqual(str(error), "TMDB /3/example request failed")
+
+    def test_nested_adapter_transport_context_excludes_request_credentials(self):
+        api_key = "synthetic-adapter-api-key"
+        session_id = "synthetic-adapter-session-id"
+        client_name = "synthetic-max-retry-client"
+
+        class SyntheticMaxRetryAdapter(requests.adapters.HTTPAdapter):
+            def __init__(self):
+                super().__init__()
+                self.max_retry_error = None
+                self.original_error = None
+                self.original_context = None
+
+            def get_connection_with_tls_context(self, request, verify, **kwargs):
+                return self
+
+            def urlopen(self, method, url, **kwargs):
+                self.max_retry_error = MaxRetryError(
+                    client_name, url, reason=ConnectTimeoutError()
+                )
+                raise self.max_retry_error
+
+            def send(self, request, **kwargs):
+                try:
+                    return super().send(request, **kwargs)
+                except requests.ConnectTimeout as error:
+                    self.original_error = error
+                    self.original_context = error.__context__
+                    raise
+
+        adapter = SyntheticMaxRetryAdapter()
+        session = requests.Session()
+        session.trust_env = False
+        session.mount("http://", adapter)
+        self.addCleanup(session.close)
+        settings = MemorySettings(tmdb_api_key=api_key, tmdb_access_token=session_id)
+        client = TMDBClient(
+            session,
+            settings,
+            locale_mapper=lambda: "cs-CZ",
+            api_url="http://api.themoviedb.org",
+        )
+
+        with self.assertRaises(TMDBError) as caught:
+            client.get("/3/example")
+
+        error = caught.exception
+        cause = error.__cause__
+        self.assertIs(cause, adapter.original_error)
+        self.assertIs(type(cause), requests.ConnectTimeout)
+        self.assertIs(adapter.original_context, adapter.max_retry_error)
+        self.assertIs(type(adapter.original_context), MaxRetryError)
+        self.assertNotIn(cause.request.url, (None, ""))
+        for secret in (api_key, session_id, client_name):
+            self.assertIn(secret, str(adapter.original_context))
+
+        rendered = "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        )
+        with self.assertLogs(client.logger, level="ERROR") as logged:
+            client.logger.exception("Synthetic TMDB public log", exc_info=error)
+        public_log = "\n".join(logged.output)
+        for secret in (api_key, session_id, client_name):
+            self.assertNotIn(secret, rendered)
+            self.assertNotIn(secret, public_log)
+            self.assertIn(secret, str(adapter.original_context))
+        self.assertIsNone(cause.__context__)
+        self.assertIsNone(cause.__cause__)
+        self.assertTrue(cause.__suppress_context__)
+        self.assertEqual(cause.args, ())
+        self.assertEqual(str(error), "TMDB /3/example request failed")
 
     def test_error_responses_close_but_success_remains_open_for_parsing(self):
         for status_code, count in ((500, 1), (401, 1), (429, 3)):
@@ -373,13 +532,13 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                 json_response(
                     {
                         "results": [
-                            {"site": "YouTube", "type": "Teaser", "key": "teaser"},
-                            {"site": "YouTube", "type": "Trailer", "key": "plain"},
+                            {"site": "YouTube", "type": "Teaser", "key": "teaser00000"},
+                            {"site": "YouTube", "type": "Trailer", "key": "plain000000"},
                             {
                                 "site": "YouTube",
                                 "type": "Trailer",
                                 "official": True,
-                                "key": "official",
+                                "key": "official001",
                             },
                         ]
                     }
@@ -389,18 +548,18 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
 
         result = TrailerRepository(client, self.trailer_cache).lookup("movie", 1)
 
-        self.assertEqual(result, TrailerLookup(status="hit", youtube_id="official"))
+        self.assertEqual(result, TrailerLookup(status="hit", youtube_id="official001"))
         self.assertEqual(session.calls[0]["kwargs"]["params"]["language"], "en-US")
-        self.assertEqual(self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "official")
+        self.assertEqual(self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "official001")
 
     def test_non_trailer_youtube_video_is_the_final_fallback(self):
         client, _, _, _ = self.make_client(
-            [json_response({"results": [{"site": "YouTube", "type": "Featurette", "key": "fallback"}]})]
+            [json_response({"results": [{"site": "YouTube", "type": "Featurette", "key": "fallback000"}]})]
         )
 
         result = TrailerRepository(client, self.trailer_cache).lookup("tv", 8)
 
-        self.assertEqual(result, TrailerLookup("hit", "fallback"))
+        self.assertEqual(result, TrailerLookup("hit", "fallback000"))
 
     def test_success_without_youtube_video_is_cached_as_missing_for_six_hours(self):
         clock = FakeClock()
@@ -422,7 +581,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
         client, session, _, _ = self.make_client(
             [
                 json_response(
-                    {"results": [{"site": "YouTube", "type": "Trailer", "key": "cached"}]}
+                    {"results": [{"site": "YouTube", "type": "Trailer", "key": "cached00000"}]}
                 ),
                 json_response({"results": []}),
             ],
@@ -432,32 +591,37 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
 
         self.assertEqual(repository.lookup("movie", 9).status, "hit")
         clock.now += 7 * 24 * 60 * 60 - 1
-        self.assertEqual(repository.lookup("movie", 9), TrailerLookup("hit", "cached"))
+        self.assertEqual(repository.lookup("movie", 9), TrailerLookup("hit", "cached00000"))
         self.assertEqual(len(session.calls), 1)
         clock.now += 2
         self.assertEqual(repository.lookup("movie", 9), TrailerLookup("missing", None))
         self.assertEqual(len(session.calls), 2)
 
     def test_legacy_valid_id_is_usable_but_legacy_none_is_discarded(self):
-        self.trailer_cache.save({"movie:1": "legacy-valid", "movie:2": None})
-        client, session, _, _ = self.make_client([json_response({"id": 2, "results": []})])
+        self.trailer_cache.save({"movie:1": "legacy00001", "movie:2": None})
+        client, session, _, _ = self.make_client([
+            json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "legacy00001"}]}),
+            json_response({"id": 2, "results": []}),
+        ])
         repository = TrailerRepository(client, self.trailer_cache)
 
-        self.assertEqual(repository.lookup("movie", 1), TrailerLookup("hit", "legacy-valid"))
+        self.assertEqual(repository.lookup("movie", 1), TrailerLookup("hit", "legacy00001"))
         self.assertEqual(repository.lookup("movie", 2), TrailerLookup("missing", None))
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 2)
 
     def test_legacy_valid_id_is_migrated_so_its_ttl_survives_new_repositories(self):
         clock = FakeClock()
-        self.trailer_cache.save({"movie:4": "legacy-valid"})
-        client, first_session, _, _ = self.make_client([], clock=clock)
+        self.trailer_cache.save({"movie:4": "legacy00001"})
+        client, first_session, _, _ = self.make_client([
+            json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "legacy00001"}]})
+        ], clock=clock)
         first_repository = TrailerRepository(client, self.trailer_cache, clock=clock)
 
-        self.assertEqual(first_repository.lookup("movie", 4), TrailerLookup("hit", "legacy-valid"))
-        self.assertEqual(first_session.calls, [])
+        self.assertEqual(first_repository.lookup("movie", 4), TrailerLookup("hit", "legacy00001"))
+        self.assertEqual(len(first_session.calls), 1)
         self.assertEqual(
             self.read_cache(self.trailer_cache)["movie:4"],
-            {"ts": 1_700_000_000, "youtube_id": "legacy-valid"},
+            {"ts": 1_700_000_000, "youtube_id": "legacy00001"},
         )
 
         clock.now += 7 * 24 * 60 * 60 + 1
@@ -482,7 +646,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                     responses = [failure] * 3
                 responses.append(
                     json_response(
-                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "later"}]}
+                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "later000000"}]}
                     )
                 )
                 cache = AtomicJsonCache(
@@ -494,7 +658,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                 with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
                     self.assertEqual(repository.lookup("movie", 5), TrailerLookup("error", None))
                 self.assertFalse(os.path.exists(cache.path))
-                self.assertEqual(repository.lookup("movie", 5), TrailerLookup("hit", "later"))
+                self.assertEqual(repository.lookup("movie", 5), TrailerLookup("hit", "later000000"))
 
     def test_expired_trailer_does_not_masquerade_as_a_hit_when_refresh_fails(self):
         clock = FakeClock()
@@ -1339,12 +1503,21 @@ class WatchlistBackgroundTests(TMDBServiceTestCase):
 
 
 class GenreRepositoryTests(TMDBServiceTestCase):
-    def repository(self):
+    def repository(self, file_cache=None):
         self.assertTrue(
             hasattr(tmdb_service, "GenreRepository"),
             "shared genre repository is not implemented",
         )
-        return tmdb_service.GenreRepository()
+        if file_cache is None:
+            return tmdb_service.GenreRepository()
+        return tmdb_service.GenreRepository(file_cache=file_cache)
+
+    def genre_path(self):
+        return os.path.join(self.temporary_directory.name, "profile", "tmdb_genres.json")
+
+    def file_repository(self, path=None):
+        path = path or self.genre_path()
+        return self.repository(GenreFileCache(path))
 
     def test_genres_are_shared_by_media_and_language_across_clients(self):
         repository = self.repository()
@@ -1367,6 +1540,310 @@ class GenreRepositoryTests(TMDBServiceTestCase):
         self.assertEqual(
             czech_session.calls[0]["kwargs"]["params"]["language"], "cs-CZ"
         )
+
+    def test_file_backed_commit_precedes_offline_fresh_owner_with_integer_ids(self):
+        path = self.genre_path()
+        events = []
+        response = json_response({"genres": [{"id": 12, "name": "Adventure"}]})
+        original_close = response.close
+
+        def close_response():
+            original_close()
+            events.append("response closed")
+
+        response.close = close_response
+        client, session, _, _ = self.make_client([response])
+        first_cache = GenreFileCache(path)
+        repository = self.repository(first_cache)
+        original_store = first_cache.store
+
+        def observed_store(media, language, mapping):
+            committed = original_store(media, language, mapping)
+            self.assertTrue(committed)
+            events.append("store committed")
+            return committed
+
+        first_cache.store = observed_store
+        original_replace = os.replace
+
+        def observed_replace(source, destination):
+            result = original_replace(source, destination)
+            events.append("file replaced")
+            return result
+
+        with patch("yawsp_app.json_cache.os.replace", side_effect=observed_replace):
+            first = repository.get(client, "movie", "en-US")
+
+        self.assertEqual(first, {12: "Adventure"})
+        self.assertIs(type(next(iter(first))), int)
+        self.assertTrue(response.closed)
+        self.assertEqual(events, ["response closed", "file replaced", "store committed"])
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(
+            session.calls[0]["url"], "https://api.themoviedb.org/3/genre/movie/list"
+        )
+        self.assertEqual(session.calls[0]["kwargs"]["params"]["language"], "en-US")
+        with open(path, encoding="utf-8") as stream:
+            stored = json.load(stream)
+        self.assertEqual(stored, {"schema": 1, "genres": {"movie/en-US": {"12": "Adventure"}}})
+        self.assertIs(type(next(iter(stored["genres"]["movie/en-US"]))), str)
+
+        first[12] = "caller mutation"
+        second_client, second_session, _, _ = self.make_client([json_response({}, status_code=401)])
+        second_repository = self.file_repository(path)
+        events.append("new owners constructed")
+
+        second = second_repository.get(second_client, "movie", "en-US")
+
+        self.assertEqual(second, {12: "Adventure"})
+        self.assertIs(type(next(iter(second))), int)
+        self.assertEqual(second_session.calls, [])
+        self.assertEqual(events[-1], "new owners constructed")
+
+    def test_file_backed_movie_and_tv_groups_persist_independently(self):
+        path = self.genre_path()
+        movie_client, movie_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 12, "name": "Adventure"}]})]
+        )
+        tv_client, tv_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 35, "name": "Comedy"}]})]
+        )
+
+        self.assertEqual(
+            self.file_repository(path).get(movie_client, "movie", "en-US"),
+            {12: "Adventure"},
+        )
+        self.assertEqual(
+            self.file_repository(path).get(tv_client, "tv", "en-US"),
+            {35: "Comedy"},
+        )
+
+        offline_movie, offline_movie_session, _, _ = self.make_client([])
+        offline_tv, offline_tv_session, _, _ = self.make_client([])
+        reader = self.file_repository(path)
+        self.assertEqual(reader.get(offline_movie, "movie", "en-US"), {12: "Adventure"})
+        self.assertEqual(reader.get(offline_tv, "tv", "en-US"), {35: "Comedy"})
+        self.assertEqual(len(movie_session.calls), 1)
+        self.assertEqual(len(tv_session.calls), 1)
+        self.assertEqual(offline_movie_session.calls, [])
+        self.assertEqual(offline_tv_session.calls, [])
+        with open(path, encoding="utf-8") as stream:
+            groups = json.load(stream)["genres"]
+        self.assertEqual(
+            groups,
+            {"movie/en-US": {"12": "Adventure"}, "tv/en-US": {"35": "Comedy"}},
+        )
+
+    def test_file_backed_present_empty_group_is_a_hit(self):
+        path = self.genre_path()
+        client, session, _, _ = self.make_client([json_response({"genres": []})])
+
+        self.assertEqual(self.file_repository(path).get(client, "movie", "cs-CZ"), {})
+
+        offline_client, offline_session, _, _ = self.make_client([])
+        self.assertEqual(self.file_repository(path).get(offline_client, "movie", "cs-CZ"), {})
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(offline_session.calls, [])
+        with open(path, encoding="utf-8") as stream:
+            self.assertEqual(json.load(stream)["genres"]["movie/cs-CZ"], {})
+
+    def test_unsupported_file_modes_keep_original_memory_route_and_language(self):
+        path = self.genre_path()
+        cache = GenreFileCache(path)
+        repository = self.repository(cache)
+        client, session, _, _ = self.make_client(
+            [
+                json_response({"genres": [{"id": 12, "name": "Aventure"}]}),
+                json_response({"genres": [{"id": 35, "name": "Comedy"}]}),
+            ]
+        )
+        with patch.object(cache, "get", side_effect=AssertionError("unexpected read")) as get:
+            with patch.object(
+                cache, "store", side_effect=AssertionError("unexpected write")
+            ) as store:
+                for media, language, expected in (
+                    ("movie", "fr-FR", {12: "Aventure"}),
+                    ("person", "en-US", {35: "Comedy"}),
+                ):
+                    self.assertEqual(repository.get(client, media, language), expected)
+                    self.assertEqual(repository.get(client, media, language), expected)
+
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(
+            [call["kwargs"]["params"]["language"] for call in session.calls],
+            ["fr-FR", "en-US"],
+        )
+        get.assert_not_called()
+        store.assert_not_called()
+        self.assertFalse(os.path.exists(path))
+
+    def test_file_storage_filters_rows_without_tightening_public_api_mapping(self):
+        path = self.genre_path()
+        long_name = "x" * 201
+        raw_genres = [
+            {"id": 12, "name": "Action"},
+            {"id": 13, "name": "  Science Fiction  "},
+            {"id": -1, "name": "Negative"},
+            {"id": 0, "name": "Zero"},
+            {"id": True, "name": "Boolean"},
+            {"id": "14", "name": "String ID"},
+            {"id": 14, "name": ""},
+            {"id": 15, "name": "   "},
+            {"id": 16, "name": long_name},
+            {"id": 17, "name": ["not", "a", "name"]},
+            "not an object",
+        ]
+        client, session, _, _ = self.make_client([json_response({"genres": raw_genres})])
+        expected = {
+            12: "Action",
+            13: "  Science Fiction  ",
+            -1: "Negative",
+            0: "Zero",
+            14: "",
+            15: "   ",
+            16: long_name,
+        }
+
+        self.assertEqual(self.file_repository(path).get(client, "movie", "en-US"), expected)
+
+        with open(path, encoding="utf-8") as stream:
+            self.assertEqual(
+                json.load(stream)["genres"]["movie/en-US"],
+                {"12": "Action", "13": "  Science Fiction  "},
+            )
+        offline_client, offline_session, _, _ = self.make_client([])
+        self.assertEqual(
+            self.file_repository(path).get(offline_client, "movie", "en-US"),
+            {12: "Action", 13: "  Science Fiction  "},
+        )
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(offline_session.calls, [])
+
+    def test_http_and_missing_genres_errors_create_no_file_or_negative_hit(self):
+        for index, response in enumerate(
+            (json_response({}, status_code=500), json_response({"results": []}))
+        ):
+            with self.subTest(response=response):
+                path = self.genre_path() + ".{0}".format(index)
+                repository = self.file_repository(path)
+                cache = repository._file_cache
+                client, session, _, _ = self.make_client([response])
+
+                with self.assertRaises(TMDBError):
+                    repository.get(client, "movie", "en-US")
+
+                self.assertFalse(os.path.exists(path))
+                self.assertEqual(repository._pending, set())
+                self.assertEqual(repository._values, {})
+                session.queue_response(json_response({"genres": [{"id": 18, "name": "Drama"}]}))
+                self.assertEqual(repository.get(client, "movie", "en-US"), {18: "Drama"})
+                self.assertTrue(os.path.exists(path))
+                self.assertEqual(repository._pending, set())
+                self.assertEqual(cache.get("movie", "en-US"), {"18": "Drama"})
+
+    def test_corrupt_current_file_is_not_merged_or_reloaded_after_warm_valid_baseline(self):
+        path = self.genre_path()
+        original_cache = GenreFileCache(path)
+        self.assertTrue(original_cache.store("tv", "en-US", {"35": "Comedy"}))
+        warm_atomic = AtomicJsonCache(path)
+        self.assertEqual(warm_atomic.load()["genres"]["tv/en-US"], {"35": "Comedy"})
+        corrupt = b'{"schema":1,"genres":{"movie/en-US":{"12":"Action"}},"private":"token"}'
+        with open(path, "wb") as stream:
+            stream.write(corrupt)
+
+        with patch.object(
+            AtomicJsonCache, "load", side_effect=AssertionError("warm load must not be used")
+        ):
+            for index in range(2):
+                client, session, _, _ = self.make_client(
+                    [json_response({"genres": [{"id": 18, "name": "private-genre-value"}]})]
+                )
+                repository = self.file_repository(path)
+                with self.assertLogs(level="WARNING") as logs:
+                    self.assertEqual(
+                        repository.get(client, "movie", "en-US"),
+                        {18: "private-genre-value"},
+                    )
+                self.assertEqual(len(session.calls), 1)
+                self.assertEqual(repository._pending, set())
+                with open(path, "rb") as stream:
+                    self.assertEqual(stream.read(), corrupt)
+                self.assertNotIn("private-genre-value", "\n".join(logs.output))
+                self.assertNotIn("token", "\n".join(logs.output))
+
+    def test_rejected_file_store_still_commits_current_memory_and_releases_pending(self):
+        path = self.genre_path()
+        cache = GenreFileCache(path)
+        cache.store = lambda media, language, mapping: False
+        repository = self.repository(cache)
+        client, session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "private-genre-value"}]})]
+        )
+
+        with self.assertLogs("yawsp_app.tmdb", level="WARNING") as logs:
+            first = repository.get(client, "movie", "en-US")
+
+        self.assertEqual(first, {18: "private-genre-value"})
+        self.assertEqual(repository._values[("movie", "en-US")], first)
+        self.assertEqual(repository._pending, set())
+        self.assertEqual(repository.get(client, "movie", "en-US"), first)
+        self.assertEqual(len(session.calls), 1)
+        self.assertNotIn("private-genre-value", "\n".join(logs.output))
+        self.assertNotIn(path, "\n".join(logs.output))
+
+        next_client, next_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "Drama"}]})]
+        )
+        self.assertEqual(self.file_repository(path).get(next_client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(len(next_session.calls), 1)
+
+    def test_unexpected_file_store_error_does_not_mask_valid_current_result(self):
+        path = self.genre_path()
+        cache = GenreFileCache(path)
+        original_store = cache.store
+
+        def failing_store(media, language, mapping):
+            raise OSError("secret-storage-path")
+
+        cache.store = failing_store
+        repository = self.repository(cache)
+        client, session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "Drama"}]})]
+        )
+        with self.assertLogs("yawsp_app.tmdb", level="WARNING") as logs:
+            self.assertEqual(repository.get(client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(repository._pending, set())
+        self.assertEqual(repository.get(client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(len(session.calls), 1)
+        self.assertNotIn("secret-storage-path", "\n".join(logs.output))
+
+        cache.store = original_store
+        next_client, next_session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "Drama"}]})]
+        )
+        self.assertEqual(self.file_repository(path).get(next_client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(len(next_session.calls), 1)
+
+    def test_unexpected_file_read_error_falls_back_and_can_commit_valid_response(self):
+        path = self.genre_path()
+        cache = GenreFileCache(path)
+
+        def failing_get(media, language):
+            raise OSError("secret-storage-path")
+
+        cache.get = failing_get
+        repository = self.repository(cache)
+        client, session, _, _ = self.make_client(
+            [json_response({"genres": [{"id": 18, "name": "Drama"}]})]
+        )
+        with self.assertLogs("yawsp_app.tmdb", level="WARNING") as logs:
+            self.assertEqual(repository.get(client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(repository._pending, set())
+        self.assertNotIn("secret-storage-path", "\n".join(logs.output))
+
+        offline_client, offline_session, _, _ = self.make_client([])
+        self.assertEqual(self.file_repository(path).get(offline_client, "movie", "en-US"), {18: "Drama"})
+        self.assertEqual(offline_session.calls, [])
 
     def test_concurrent_same_key_genre_lookup_has_one_request(self):
         repository = self.repository()
@@ -1406,6 +1883,28 @@ class GenreRepositoryTests(TMDBServiceTestCase):
 
 
 class BackgroundPrefetchTests(TMDBServiceTestCase):
+    def test_extracted_metadata_entrypoints_preserve_exact_domain_outcomes(self):
+        client, _, _, _ = self.make_client(
+            [
+                json_response(
+                    {
+                        "results": [
+                            {"site": "YouTube", "type": "Trailer", "key": "shared00000"}
+                        ]
+                    }
+                ),
+                json_response({"next_episode_to_air": None}),
+            ]
+        )
+        trailers = TrailerRepository(client, self.trailer_cache)
+        shows = ShowRepository(client, self.show_cache)
+
+        self.assertEqual(
+            execute_trailer_metadata(trailers, "movie", 5),
+            TrailerLookup("hit", "shared00000"),
+        )
+        self.assertEqual(execute_show_metadata(shows, 6), (None, True))
+
     def make_background(self, sessions, worker, settings=None, abort=None, max_pending=32):
         session_iter = iter(sessions)
         created = []
@@ -1433,13 +1932,13 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
             FakeSession(
                 [
                     json_response(
-                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "one"}]}
+                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "one00000000"}]}
                     ),
                     json_response({"id": 2, "results": []}),
                 ]
             ),
             FakeSession(
-                [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "three"}]})]
+                [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "three000000"}]})]
             ),
         ]
         worker = ManualWorker()
@@ -1453,11 +1952,11 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         worker.run_all()
 
         self.assertEqual(
-            self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "one"
+            self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "one00000000"
         )
         self.assertIsNone(self.read_cache(self.trailer_cache)["movie:2"]["youtube_id"])
         self.assertEqual(
-            self.read_cache(self.trailer_cache)["movie:3"]["youtube_id"], "three"
+            self.read_cache(self.trailer_cache)["movie:3"]["youtube_id"], "three000000"
         )
         self.assertTrue(all(session.closed for session in created))
         self.assertEqual(background.submit_trailers("movie", [1, 2, 3]), 0)
@@ -1553,7 +2052,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
                                 {
                                     "site": "YouTube",
                                     "type": "Trailer",
-                                    "key": "video-{0}".format(index),
+                                    "key": "video{0:06d}".format(index),
                                 }
                             ]
                         }
@@ -2421,7 +2920,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertFalse(worker_thread.is_alive())
         self.assertFalse(direct_thread.is_alive())
-        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video000042")])
         self.assertEqual(on_demand_session.calls, [])
         self.assertEqual(len(background._pending), 0)
         background.close(wait=False)
@@ -2510,7 +3009,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertFalse(worker_thread.is_alive())
         self.assertFalse(direct_thread.is_alive())
-        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video000042")])
         self.assertEqual(on_demand_session.calls, [])
         self.assertEqual(len(background._pending), 0)
         background.close(wait=False)
