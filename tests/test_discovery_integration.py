@@ -143,7 +143,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                     (
                         "video",
                         {
-                            "title": "Discovery title (2026)",
+                            "title": "Discovery title",
                             "mediatype": "movie",
                             "plot": "Synthetic discovery plot",
                             "year": 2026,

@@ -285,7 +285,7 @@ class DiscoveryUITests(unittest.TestCase):
                 self.assertEqual(
                     item.video_tag.calls,
                     [
-                        ("setTitle", item.label),
+                        ("setTitle", title),
                         ("setMediaType", "movie" if media == "movie" else "tvshow"),
                         ("setPlot", "A synthetic plot"),
                         ("setYear", year),
@@ -418,6 +418,7 @@ class DiscoveryUITests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["item"].label, "Localized film valid (2024)")
+        self.assertEqual(rows[0]["item"].video_tag.calls[0], ("setTitle", "Localized film valid"))
         self.assertEqual(rows[0]["item"].video_tag.calls[-1], ("setRating", 7.25))
         fallback = rows[1]["item"]
         self.assertEqual(fallback.label, "Unknown discovery title")

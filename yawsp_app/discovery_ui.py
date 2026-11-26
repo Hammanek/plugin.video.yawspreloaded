@@ -206,7 +206,7 @@ def discovery_list_item(runtime, record):
     apply_video_metadata(
         item,
         {
-            "title": record.label,
+            "title": record.title,
             "mediatype": "movie" if record.media == "movie" else "tvshow",
             "plot": record.plot,
             "year": record.year,

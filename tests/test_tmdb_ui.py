@@ -511,10 +511,11 @@ class TMDBUITests(unittest.TestCase):
 
         self.assertTrue(result.succeeded)
         movie = self.plugin.items[0]["listitem"]
+        self.assertEqual(movie.label, "Film (2026)")
         self.assertEqual(
             movie.video_tag.calls,
             [
-                ("setTitle", "Film (2026)"),
+                ("setTitle", "Film"),
                 ("setMediaType", "movie"),
                 ("setPlot", "Filmový popis"),
                 ("setYear", 2026),
@@ -550,10 +551,11 @@ class TMDBUITests(unittest.TestCase):
 
         self.assertTrue(result.succeeded)
         show = self.plugin.items[0]["listitem"]
+        self.assertEqual(show.label, "Seriál (2025)")
         self.assertEqual(
             show.video_tag.calls,
             [
-                ("setTitle", "Seriál (2025)"),
+                ("setTitle", "Seriál"),
                 ("setMediaType", "tvshow"),
                 ("setPlot", "Seriálový popis"),
                 ("setYear", 2025),

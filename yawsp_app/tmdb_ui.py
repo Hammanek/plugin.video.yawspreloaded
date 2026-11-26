@@ -829,7 +829,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 apply_video_metadata(
                     item,
                     {
-                        "title": label,
+                        "title": title,
                         "mediatype": "movie" if is_movie else "tvshow",
                         "plot": value.get("overview") or "",
                         "year": int(year) if year.isdigit() else 0,
