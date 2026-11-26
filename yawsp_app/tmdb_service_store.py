@@ -74,6 +74,12 @@ def _json_encode(document, limit):
     return encoded
 
 
+ABORT_RESULT_BYTES = len(
+    _json_encode(protocol.make_result("0" * 32, "aborted", "ABORTED"), MAX_RESULT_BYTES)
+)
+ABORT_RESERVE_BYTES = TOTAL_JOBS * ABORT_RESULT_BYTES
+
+
 def _reject_duplicates(pairs):
     document = {}
     for key, value in pairs:
@@ -622,6 +628,15 @@ class ServiceStateStore:
         if reread != document:
             raise protocol.ProtocolError("manifest reread differs from committed successor")
 
+    def _reconcile_result_cleanup(self, previous, committed):
+        remaining = {job["job_id"] for job in committed["jobs"]}
+        for job in previous["jobs"]:
+            if job["job_id"] in remaining:
+                continue
+            # Commit/reread is authoritative before any old result byte is removed.
+            _best_effort_unlink(self._temp_result_path(job["result_ref"]))
+            _best_effort_unlink(self._result_path(job["result_ref"]))
+
     def _transaction(self, mutation):
         with self._local:
             with self._locked():
@@ -629,6 +644,7 @@ class ServiceStateStore:
                 candidate = copy.deepcopy(document)
                 value = mutation(candidate)
                 self._write_manifest(candidate)
+                self._reconcile_result_cleanup(document, candidate)
                 return copy.deepcopy(value)
 
     def _read_transaction(self, reader):
@@ -844,7 +860,7 @@ class ServiceStateStore:
                             job["priority"] = True
                         row = self._row_joined(job)
                     else:
-                        if len(document["jobs"]) >= TOTAL_JOBS:
+                        if len(document["jobs"]) >= TOTAL_JOBS or not self._make_admission_room(document):
                             rows.append(self._row_backpressured(request, "BACKPRESSURED"))
                             rollback()
                             continue
@@ -981,8 +997,6 @@ class ServiceStateStore:
         reference["bytes"] = len(raw)
 
     def _evict(self, document, job):
-        _best_effort_unlink(self._temp_result_path(job["result_ref"]))
-        _best_effort_unlink(self._result_path(job["result_ref"]))
         document["jobs"].remove(job)
         document["tombstones"].append(
             {
@@ -1009,7 +1023,33 @@ class ServiceStateStore:
                 break
             self._evict(document, unwaited[0])
 
-    def _make_room(self, document, incoming_bytes, incoming_waited):
+    @staticmethod
+    def _aggregate_result_bytes(document):
+        return sum(
+            job["result_ref"]["bytes"]
+            for job in document["jobs"]
+            if job["state"] in _TERMINAL
+        )
+
+    @staticmethod
+    def _pending_abort_bytes(document, excluding=None):
+        return ABORT_RESULT_BYTES * sum(
+            job["state"] in _NONTERMINAL and job["job_id"] != excluding
+            for job in document["jobs"]
+        )
+
+    def _make_admission_room(self, document):
+        while self._aggregate_result_bytes(document) + self._pending_abort_bytes(document) + ABORT_RESULT_BYTES > MAX_AGGREGATE_RESULT_BYTES:
+            unwaited = sorted(
+                (job for job in document["jobs"] if job["state"] in _TERMINAL and not job["waiters"]),
+                key=lambda job: job["terminal_ordinal"],
+            )
+            if not unwaited:
+                return False
+            self._evict(document, unwaited[0])
+        return True
+
+    def _make_room(self, document, incoming_bytes, incoming_waited, incoming_job, aborting):
         while True:
             terminal = [job for job in document["jobs"] if job["state"] in _TERMINAL]
             unwaited = sorted(
@@ -1018,7 +1058,11 @@ class ServiceStateStore:
             )
             aggregate = sum(job["result_ref"]["bytes"] for job in terminal)
             count_fits = len(unwaited) + (0 if incoming_waited else 1) <= UNWAITED_TERMINALS
-            bytes_fit = aggregate + incoming_bytes <= MAX_AGGREGATE_RESULT_BYTES
+            if aborting:
+                reserve = self._pending_abort_bytes(document, excluding=incoming_job)
+            else:
+                reserve = ABORT_RESERVE_BYTES
+            bytes_fit = aggregate + incoming_bytes + reserve <= MAX_AGGREGATE_RESULT_BYTES
             if count_fits and bytes_fit:
                 return
             if not unwaited:
@@ -1027,7 +1071,8 @@ class ServiceStateStore:
 
     def _terminalize(self, document, job, result_document, promote):
         raw = _json_encode(result_document, protocol.MAX_RESULT_CANONICAL_BYTES)
-        self._make_room(document, len(raw), bool(job["waiters"]))
+        aborting = result_document["outcome"] == "aborted"
+        self._make_room(document, len(raw), bool(job["waiters"]), job["job_id"], aborting)
         self._publish_result(job, result_document)
         job["state"] = result_document["outcome"]
         job["reservation"] = False
@@ -1097,11 +1142,12 @@ class ServiceStateStore:
             if existing:
                 followup = min(existing, key=lambda item: item["ordinal"])
                 before = copy.deepcopy(document)
+                force = bool(request["force"] or followup["request"]["force"])
                 newer = copy.deepcopy(request)
                 if request["generation"] < followup["request"]["generation"]:
                     newer = copy.deepcopy(followup["request"])
                 newer["generation"] = max(newer["generation"], followup["request"]["generation"])
-                newer["force"] = bool(newer["force"] or followup["request"]["force"])
+                newer["force"] = force
                 newer = protocol.validate_job(newer)
                 followup["request"] = newer
                 followup["dedup_key"] = protocol.dedup_key(newer)
@@ -1118,7 +1164,9 @@ class ServiceStateStore:
                     collision["followup_of"] = job["job_id"]
                 return self._row_joined(collision)
             before = copy.deepcopy(document)
-            if len(document["jobs"]) >= TOTAL_JOBS:
+            if len(document["jobs"]) >= TOTAL_JOBS or not self._make_admission_room(document):
+                document.clear()
+                document.update(before)
                 return self._row_backpressured(request, "BACKPRESSURED")
             followup, code = self._append_job(
                 document, request, interactive=False, waiter_id=None, followup_of=job["job_id"]

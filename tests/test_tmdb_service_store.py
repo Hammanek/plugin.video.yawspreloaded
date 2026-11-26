@@ -21,6 +21,8 @@ OTHER_EPOCH = "b" * 32
 CLAIM_TOKEN = "c" * 32
 OTHER_TOKEN = "d" * 32
 WAITER = "0123456789abcdef0123456789abcdef"
+LARGE_RESULT_CHARS = 1048400
+RESERVED_ABORT_FIXTURE_BYTES = 16384
 
 
 def request(number):
@@ -82,8 +84,8 @@ class StoreTests(unittest.TestCase):
             instance.lease.release()
         self.temporary.cleanup()
 
-    def store(self):
-        instance = store_module.ServiceStateStore(self.root)
+    def store(self, root=None):
+        instance = store_module.ServiceStateStore(root or self.root)
         self.stores.append(instance)
         return instance
 
@@ -106,8 +108,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(instance.complete(claim, published), published)
         return claim
 
-    def manifest(self):
-        path = os.path.join(self.root, "tmdb_service_state", "manifest.json")
+    def manifest(self, root=None):
+        path = os.path.join(root or self.root, "tmdb_service_state", "manifest.json")
         with open(path, "r", encoding="utf-8") as handle:
             return json.load(handle)
 
@@ -560,15 +562,9 @@ class StoreTests(unittest.TestCase):
     def test_aggregate_bytes_gc_never_evicts_registered_unread_results(self):
         service = self.start()
         caller = self.store()
-        retained = []
-        for index in range(16):
-            row = self.submit_one(caller, request(index + 1), True, waiter(index + 1))
-            claim = service.claim_next(SERVICE_EPOCH, "%032x" % (index + 1))
-            service.complete(claim, result(row["job_id"], "x" * 1048400))
-            retained.append(row)
-        for row in retained:
-            self.assertEqual(len(caller.read_wait_result(row["job_id"], waiter(retained.index(row) + 1))["value"]["value"]), 1048400)
-        self.assertLess(sum(job["result_ref"]["bytes"] for job in self.manifest()["jobs"]), 16777216)
+        retained = self.fill_registered_near_capacity(service, caller)
+        self.assert_registered_results_intact(caller, retained)
+        self.assertLessEqual(sum(job["result_ref"]["bytes"] for job in self.manifest()["jobs"]), 16777216)
 
         extra = self.submit_one(caller, request(100))
         claim = service.claim_next(SERVICE_EPOCH, CLAIM_TOKEN)
@@ -580,6 +576,122 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(service.abort_claim(claim, "ABORTED"))
         self.assertLessEqual(sum(job["result_ref"]["bytes"] for job in self.manifest()["jobs"]), 16777216)
 
+    def fill_registered_near_capacity(self, service, caller):
+        retained = []
+        self.retained_lengths = {}
+        target = 16777216 - RESERVED_ABORT_FIXTURE_BYTES
+        index = 0
+        while True:
+            document = self.manifest()
+            aggregate = sum(job["result_ref"]["bytes"] for job in document["jobs"])
+            if aggregate >= target:
+                break
+            row = self.submit_one(caller, request(index + 1), True, waiter(index + 1))
+            claim = service.claim_next(SERVICE_EPOCH, "%032x" % (index + 1))
+            empty = result(row["job_id"], "")
+            envelope = len(json.dumps(empty, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            value_length = min(LARGE_RESULT_CHARS, target - aggregate - envelope)
+            self.assertGreater(value_length, 0)
+            published = result(row["job_id"], "x" * value_length)
+            service.complete(claim, published)
+            retained.append(row)
+            self.retained_lengths[row["job_id"]] = value_length
+            index += 1
+        return retained
+
+    def assert_registered_results_intact(self, caller, retained):
+        document = self.manifest()
+        job_ids = {job["job_id"] for job in document["jobs"]}
+        self.assertTrue({row["job_id"] for row in retained}.issubset(job_ids))
+        for index, row in enumerate(retained):
+            value = caller.read_wait_result(row["job_id"], waiter(index + 1))
+            self.assertEqual(len(value["value"]["value"]), self.retained_lengths[row["job_id"]])
+        aggregate = sum(job["result_ref"]["bytes"] for job in document["jobs"] if job["state"] in ("succeeded", "failed", "aborted"))
+        self.assertLessEqual(aggregate, 16777216)
+
+    def test_recovery_publishes_bounded_aborts_beside_saturated_registered_results(self):
+        service = self.start()
+        caller = self.store()
+        retained = self.fill_registered_near_capacity(service, caller)
+        old = [self.submit_one(caller, request(index + 1000)) for index in range(33)]
+        self.assertTrue(all(row["status"] == "accepted" for row in old))
+        caller.join(old[0]["request"], waiter(2000))
+        service.lease.release()
+
+        fresh = self.store()
+        self.assertTrue(fresh.lease.acquire())
+        fresh.recover(OTHER_EPOCH)
+        self.assertEqual(self.manifest()["service_state"], "starting")
+        self.assert_registered_results_intact(caller, retained)
+        aborted = caller.read_wait_result(old[0]["job_id"], waiter(2000))
+        self.assertEqual(aborted, protocol.make_result(old[0]["job_id"], "aborted", "ABORTED"))
+        fresh.set_ready(OTHER_EPOCH)
+        self.assertTrue(caller.service_ready())
+        self.assertEqual(self.submit_one(caller, request(2000))["status"], "accepted")
+
+    def test_stopping_publishes_bounded_aborts_beside_saturated_registered_results(self):
+        service = self.start()
+        caller = self.store()
+        retained = self.fill_registered_near_capacity(service, caller)
+        old = [self.submit_one(caller, request(index + 1000)) for index in range(33)]
+        self.assertTrue(all(row["status"] == "accepted" for row in old))
+        caller.join(old[0]["request"], waiter(2000))
+
+        service.set_stopping(SERVICE_EPOCH)
+        self.assertEqual(self.submit_one(caller, request(2000))["code"], "SHUTTING_DOWN")
+        self.assert_registered_results_intact(caller, retained)
+        aborted = caller.read_wait_result(old[0]["job_id"], waiter(2000))
+        self.assertEqual(aborted, protocol.make_result(old[0]["job_id"], "aborted", "ABORTED"))
+        document = self.manifest()
+        self.assertLessEqual(sum(job["result_ref"]["bytes"] for job in document["jobs"]), 16777216)
+
+    def assert_eviction_is_failure_atomic(self, fault):
+        root = os.path.join(self.root, fault)
+        service = self.store(root)
+        self.start(service)
+        caller = self.store(root)
+        retained = []
+        expected = {}
+        for index in range(32):
+            row = self.submit_one(caller, request(index + 1))
+            retained.append(row)
+            expected[row["job_id"]] = result(row["job_id"], index)
+            claim = service.claim_next(SERVICE_EPOCH, "%032x" % (index + 1))
+            service.complete(claim, expected[row["job_id"]])
+        incoming = self.submit_one(caller, request(1000))
+        claim = service.claim_next(SERVICE_EPOCH, CLAIM_TOKEN)
+        self.assertEqual(claim["job_id"], incoming["job_id"])
+        original_manifest = self.read_manifest_bytes(root)
+
+        if fault == "temp":
+            patcher = mock.patch.object(store_module, "_temp_file", side_effect=OSError("injected temp failure"))
+        else:
+            patcher = mock.patch.object(store_module.os, "fsync", side_effect=OSError("injected fsync failure"))
+        published = result(incoming["job_id"], "incoming")
+        with patcher:
+            with self.assertRaises(OSError):
+                service.complete(claim, published)
+        self.assertEqual(self.read_manifest_bytes(root), original_manifest)
+
+        for index, row in enumerate(retained):
+            joined = caller.join(row["request"], waiter(1000 + index))
+            self.assertEqual(joined["job_id"], row["job_id"])
+            self.assertEqual(caller.read_wait_result(row["job_id"], waiter(1000 + index)), expected[row["job_id"]])
+            caller.acknowledge(row["job_id"], waiter(1000 + index))
+        self.assertEqual(self.read_manifest_bytes(root), original_manifest)
+
+        with mock.patch.object(store_module, "_unlink", side_effect=OSError("post-commit cleanup failure")):
+            self.assertEqual(service.complete(claim, published), published)
+            self.assertEqual(service.complete(claim, published), published)
+        self.assertIn(incoming["job_id"], {job["job_id"] for job in self.manifest(root)["jobs"]})
+        self.assertIn(retained[0]["job_id"], {entry["job_id"] for entry in self.manifest(root)["tombstones"]})
+
+    def test_eviction_survives_incoming_temp_creation_failure(self):
+        self.assert_eviction_is_failure_atomic("temp")
+
+    def test_eviction_survives_incoming_fsync_failure(self):
+        self.assert_eviction_is_failure_atomic("fsync")
+
     def test_manifest_byte_bound_returns_per_key_backpressure(self):
         self.start()
         caller = self.store()
@@ -590,10 +702,104 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(rows[1]["status"], "accepted")
         self.assertLessEqual(len(self.read_manifest_bytes()), 262144)
 
-    def read_manifest_bytes(self):
-        path = os.path.join(self.root, "tmdb_service_state", "manifest.json")
+    def read_manifest_bytes(self, root=None):
+        path = os.path.join(root or self.root, "tmdb_service_state", "manifest.json")
         with open(path, "rb") as handle:
             return handle.read()
+
+    def test_manifest_lstat_mock_and_nofollow_flag_fail_closed_without_touching_bytes(self):
+        self.start()
+        caller = self.store()
+        path = os.path.join(self.root, "tmdb_service_state", "manifest.json")
+        original = self.read_manifest_bytes()
+        real_lstat = store_module.os.lstat
+        real_open = store_module.os.open
+        normalized = os.path.normcase(os.path.abspath(path))
+        opened = []
+
+        def is_target(candidate):
+            return os.path.normcase(os.path.abspath(candidate)) == normalized
+
+        def linked(candidate, *args, **kwargs):
+            if is_target(candidate):
+                return mock.Mock(st_mode=stat.S_IFLNK)
+            return real_lstat(candidate, *args, **kwargs)
+
+        def guarded_open(candidate, flags, *args, **kwargs):
+            if is_target(candidate):
+                opened.append(candidate)
+            return real_open(candidate, flags, *args, **kwargs)
+
+        with mock.patch.object(store_module.os, "lstat", side_effect=linked), mock.patch.object(store_module.os, "open", side_effect=guarded_open):
+            with self.assertRaises(protocol.ProtocolError):
+                caller.submit([request(1)])
+        self.assertEqual(opened, [])
+        self.assertEqual(self.read_manifest_bytes(), original)
+
+        nofollow = 1 << 24
+        flagged = []
+
+        def nofollow_open(candidate, flags, *args, **kwargs):
+            if flags & nofollow:
+                flagged.append(candidate)
+                flags &= ~nofollow
+            return real_open(candidate, flags, *args, **kwargs)
+
+        with mock.patch.object(store_module.os, "O_NOFOLLOW", nofollow, create=True), mock.patch.object(store_module.os, "open", side_effect=nofollow_open):
+            self.assertTrue(caller.service_ready())
+        self.assertTrue(any(is_target(candidate) for candidate in flagged))
+        self.assertEqual(self.read_manifest_bytes(), original)
+
+    def test_result_lstat_mock_and_nofollow_flag_fail_closed_without_touching_bytes(self):
+        service = self.start()
+        caller = self.store()
+        row = self.submit_one(caller, request(1), True, WAITER)
+        claim = service.claim_next(SERVICE_EPOCH, CLAIM_TOKEN)
+        published = result(row["job_id"], "safe")
+        service.complete(claim, published)
+        job = next(job for job in self.manifest()["jobs"] if job["job_id"] == row["job_id"])
+        path = os.path.join(self.root, "tmdb_service_state", job["result_ref"]["path"])
+        with open(path, "rb") as handle:
+            original = handle.read()
+        real_lstat = store_module.os.lstat
+        real_open = store_module.os.open
+        normalized = os.path.normcase(os.path.abspath(path))
+        opened = []
+
+        def is_target(candidate):
+            return os.path.normcase(os.path.abspath(candidate)) == normalized
+
+        def linked(candidate, *args, **kwargs):
+            if is_target(candidate):
+                return mock.Mock(st_mode=stat.S_IFLNK)
+            return real_lstat(candidate, *args, **kwargs)
+
+        def guarded_open(candidate, flags, *args, **kwargs):
+            if is_target(candidate):
+                opened.append(candidate)
+            return real_open(candidate, flags, *args, **kwargs)
+
+        with mock.patch.object(store_module.os, "lstat", side_effect=linked), mock.patch.object(store_module.os, "open", side_effect=guarded_open):
+            with self.assertRaises(protocol.ProtocolError):
+                caller.read_wait_result(row["job_id"], WAITER)
+        self.assertEqual(opened, [])
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), original)
+
+        nofollow = 1 << 24
+        flagged = []
+
+        def nofollow_open(candidate, flags, *args, **kwargs):
+            if flags & nofollow:
+                flagged.append(candidate)
+                flags &= ~nofollow
+            return real_open(candidate, flags, *args, **kwargs)
+
+        with mock.patch.object(store_module.os, "O_NOFOLLOW", nofollow, create=True), mock.patch.object(store_module.os, "open", side_effect=nofollow_open):
+            self.assertEqual(caller.read_wait_result(row["job_id"], WAITER), published)
+        self.assertTrue(any(is_target(candidate) for candidate in flagged))
+        with open(path, "rb") as handle:
+            self.assertEqual(handle.read(), original)
 
     def test_unsafe_manifest_reads_reject_trailing_duplicate_oversized_and_symlink_input(self):
         service = self.start()
@@ -738,6 +944,29 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["followup_of"], active_row["job_id"])
         self.assertEqual(sum(job["reservation"] for job in document["jobs"]), before_reservations)
+
+    def test_followup_generation_and_force_are_monotonic_in_both_orders(self):
+        cases = (
+            (3, False, 2, True, 3, True),
+            (2, False, 3, True, 3, True),
+            (3, True, 2, False, 3, True),
+            (2, True, 3, False, 3, True),
+            (3, False, 2, False, 3, False),
+            (2, True, 3, True, 3, True),
+        )
+        for index, (existing_generation, existing_force, new_generation, new_force, expected_generation, expected_force) in enumerate(cases):
+            with self.subTest(existing=(existing_generation, existing_force), new=(new_generation, new_force)):
+                root = os.path.join(self.root, "followup-%d" % index)
+                service = self.store(root)
+                self.start(service)
+                caller = self.store(root)
+                self.submit_one(caller, watchlist_request(1, False))
+                claim = service.claim_next(SERVICE_EPOCH, CLAIM_TOKEN)
+                created = service.ensure_followup(claim, watchlist_request(existing_generation, existing_force))
+                service.ensure_followup(claim, watchlist_request(new_generation, new_force))
+                followup = next(job for job in self.manifest(root)["jobs"] if job["job_id"] == created["job_id"])
+                self.assertEqual(followup["request"]["generation"], expected_generation)
+                self.assertEqual(followup["request"]["force"], expected_force)
 
     def test_abort_claim_uses_sanitized_code_and_backlog_owner_changes_atomically(self):
         service = self.start()
