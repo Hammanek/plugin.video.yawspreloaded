@@ -11,6 +11,7 @@ import requests
 
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.support.legacy_service_adapter import LegacyServiceAdapter
 from tests.test_metadata import RecordingInfoTag
 from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
@@ -355,6 +356,31 @@ class TMDBUITests(unittest.TestCase):
         )
 
     def build_handlers(self):
+        if not isinstance(self.background, LegacyServiceAdapter):
+            from yawsp_app.tmdb import GenreRepository
+            from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
+
+            legacy = self.background
+            if getattr(legacy, "snapshot_store", None) is None:
+                legacy.snapshot_store = WatchlistSnapshotStore(
+                    AtomicJsonCache(
+                        os.path.join(self.temporary_directory.name, "watchlist.json")
+                    )
+                )
+            if not hasattr(legacy, "genre_repository"):
+                legacy.genre_repository = GenreRepository()
+            self.background = LegacyServiceAdapter(
+                settings=ServiceSettings(self.addon),
+                session=getattr(self.client, "session", None),
+                trailer_cache=self.trailer_cache,
+                show_cache=self.show_cache,
+                snapshot_store=legacy.snapshot_store,
+                genre_repository=legacy.genre_repository,
+                locale_mapper=lambda: self.client.language,
+                clock=self.clock,
+                legacy=legacy,
+            )
+        self.background.client = self.client
         repositories = {
             "trailers": TrailerRepository(
                 self.client, self.trailer_cache, clock=self.clock
@@ -1025,7 +1051,7 @@ class TMDBUITests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         watchlist_calls = [call for call in self.client.calls if call[1] == path]
         self.assertEqual(len(watchlist_calls), 2)
         self.assertEqual([call[2]["page"] for call in watchlist_calls], [1, 2])
@@ -1315,9 +1341,6 @@ class TMDBUITests(unittest.TestCase):
         )
         self.assertEqual(self.background.watchlists, [])
         self.assertTrue(any(
-            call[0][0] == "Unable to persist watchlist snapshot" for call in self.ui_logger.calls
-        ))
-        self.assertTrue(any(
             call[0][0] == "TMDB listing failed: %s" for call in self.ui_logger.calls
         ))
         self.assertEqual(self.plugin.notifications[-1]["message"], "Error loading")
@@ -1398,7 +1421,7 @@ class TMDBUITests(unittest.TestCase):
             {"action": "tmdb_watchlist", "category": "movies"}
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         self.assertEqual(len(self.plugin.items), 2)
         self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
         self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Current account"))
@@ -1421,7 +1444,7 @@ class TMDBUITests(unittest.TestCase):
             {"action": "tmdb_watchlist", "category": "movies"}
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         self.assertEqual(len(self.plugin.items), 2)
         self.assertEqual(self.plugin.items[-1]["listitem"].label, "Refresh")
         self.assertTrue(self.plugin.items[0]["listitem"].label.startswith("Česky"))
@@ -1442,7 +1465,7 @@ class TMDBUITests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(self.client.account_calls, 1)
+        self.assertEqual(self.client.account_calls, 0)
         self.assertFalse(any("/genre/" in call[1] for call in self.client.calls))
         self.assertEqual(store.load(scope).results, [])
         self.plugin.items.clear()
@@ -1516,7 +1539,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.addon.open_settings_calls, 2)
         self.assertEqual(len(self.client.calls), 1)
 
-    def test_http_identity_invalidation_removes_old_account_snapshots(self):
+    def test_failed_http_list_preserves_old_complete_snapshot_bytes(self):
         store = self.enable_snapshots()
         old_scope = SnapshotScope("account-1", "movies", "en-US")
         store.save_complete(old_scope, [{"id": 1, "title": "Old identity"}], 0.0)
@@ -1535,7 +1558,7 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertFalse(result.succeeded)
-        self.assertIsNone(store.load(old_scope))
+        self.assertEqual(store.load(old_scope).results, [{"id": 1, "title": "Old identity"}])
 
     def test_successful_reauthentication_invalidates_the_previous_identity_snapshots(self):
         store = self.enable_snapshots()
@@ -1549,6 +1572,12 @@ class TMDBUITests(unittest.TestCase):
         self.assertIsNone(store.load(old_scope))
 
     def test_successful_watched_post_closes_response_then_resolves_before_refresh(self):
+        store = self.enable_snapshots()
+        store.save_complete(
+            SnapshotScope("account-1", "movies", "en-US"),
+            [{"id": 42, "title": "Remove"}, {"id": 2, "title": "Keep"}],
+            0.0,
+        )
         response = Response({"success": True}, 201)
         self.client.post_results = [response]
 
@@ -1567,7 +1596,9 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(
             payload, {"media_type": "movie", "media_id": 42, "watchlist": False}
         )
-        self.assertEqual(self.events, ["resolve", "Container.Refresh"])
+        self.assertEqual(
+            self.events, ["watchlist", "resolve", "Container.Refresh"]
+        )
 
     def test_false_watched_result_and_api_error_resolve_without_refresh(self):
         for result_value in (Response({"success": False}), TMDBError("write failed")):
@@ -1598,7 +1629,7 @@ class TMDBUITests(unittest.TestCase):
         )
 
         self.assertFalse(result.handled)
-        self.assertEqual(self.client.calls[0][0], "POST")
+        self.assertEqual(self.client.calls, [])
         self.assertEqual(self.events, ["resolve"])
 
     def test_czech_collation_and_unreleased_movie_filter_are_deterministic(self):

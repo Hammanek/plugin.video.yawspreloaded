@@ -169,7 +169,7 @@ def _binding(value):
     return value
 
 
-def _scope(value):
+def _scope(value, allow_empty_account=False):
     if type(value) is dict:
         if set(value) != {"account_id", "media", "language", "schema"}:
             raise ProtocolError("scope has unknown or missing fields")
@@ -185,7 +185,12 @@ def _scope(value):
             schema = value.schema
         except (AttributeError, TypeError) as error:
             raise ProtocolError("invalid snapshot scope") from error
-    account_id = _text(account_id, "scope account_id", strip=True)
+    account_id = _text(
+        account_id,
+        "scope account_id",
+        strip=True,
+        nonempty=not allow_empty_account,
+    )
     language = _text(language, "scope language", strip=True)
     if media not in ("movies", "tv") or type(media) is not str:
         raise ProtocolError("scope media must be movies or tv")
@@ -228,8 +233,8 @@ def _exact_fields(document, expected):
         raise ProtocolError("document has unknown or missing fields")
 
 
-def _validated_scope(value):
-    scope = _scope(value)
+def _validated_scope(value, allow_empty_account=False):
+    scope = _scope(value, allow_empty_account=allow_empty_account)
     if scope != value or type(value) is not dict:
         raise ProtocolError("scope document is not canonical")
     return scope
@@ -257,7 +262,11 @@ def watchlist_request(
 ):
     return {
         "operation": "watchlist.refresh",
-        "params": {"scope": _scope(scope)},
+        "params": {
+            "scope": _scope(
+                scope, allow_empty_account=allow_missing_account is True
+            )
+        },
         "generation": _nonnegative(generation, "generation"),
         "force": _boolean(force, "force"),
         "allow_missing_account": _boolean(
@@ -271,7 +280,7 @@ def watched_request(scope, media_id, session_binding):
     return {
         "operation": "watchlist.watched",
         "params": {
-            "scope": _scope(scope),
+            "scope": _scope(scope, allow_empty_account=True),
             "media_id": _identifier(media_id, normalize=True),
         },
         "session_binding": _binding(session_binding),
@@ -330,11 +339,11 @@ def _validate_params(operation, params):
         return {"show_id": _identifier(params["show_id"], "show_id")}
     if operation == "watchlist.refresh":
         _exact_fields(params, ("scope",))
-        return {"scope": _validated_scope(params["scope"])}
+        return {"scope": _validated_scope(params["scope"], allow_empty_account=True)}
     if operation == "watchlist.watched":
         _exact_fields(params, ("scope", "media_id"))
         return {
-            "scope": _validated_scope(params["scope"]),
+            "scope": _validated_scope(params["scope"], allow_empty_account=True),
             "media_id": _identifier(params["media_id"]),
         }
     if operation == "discovery.catalog":
@@ -394,6 +403,12 @@ def _validate_job_fields(document):
     if "session_binding" in document:
         _binding(document["session_binding"])
     params = document["params"]
+    if (
+        operation == "watchlist.refresh"
+        and not document["allow_missing_account"]
+        and not params.get("scope", {}).get("account_id")
+    ):
+        raise ProtocolError("scope account_id must not be empty")
     if _validate_params(operation, params) != params:
         raise ProtocolError("request parameters are not builder-canonical")
 

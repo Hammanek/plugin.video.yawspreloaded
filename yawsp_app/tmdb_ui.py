@@ -1,7 +1,7 @@
 """TMDB Kodi presentation; completion remains owned by the router adapters."""
 
-from contextlib import nullcontext
 from datetime import date
+import hashlib
 import io
 import math
 import os
@@ -13,7 +13,8 @@ try:
 except ImportError:  # pragma: no cover - retained for older Kodi interpreters
     from urllib import urlencode
 
-from yawsp_app.discovery_ui import build_discovery_handlers, versioned_catalog_path
+from yawsp_app import tmdb_service_protocol as protocol
+from yawsp_app.discovery_ui import build_discovery_handlers
 from yawsp_app.metadata import apply_video_metadata
 from yawsp_app.runtime import ActionResult, DirectoryResult
 from yawsp_app.search import czech_sort_key
@@ -21,17 +22,12 @@ from yawsp_app.tmdb import (
     GenreRepository,
     ShowRepository,
     TMDBError,
+    TMDBServiceUnavailableError,
     TrailerRepository,
     WATCHLIST_PREFETCH_LIMIT,
-    fetch_complete_watchlist,
-    public_tmdb_client,
-    resolve_watchlist_account,
-    watchlist_operation_client,
 )
-from yawsp_app.watchlist_snapshot import (
-    SnapshotPersistenceError,
-    SnapshotScope,
-)
+from yawsp_app.tmdb_service_store import IdentityTransactionAdapter
+from yawsp_app.watchlist_snapshot import SnapshotScope
 
 
 _IMAGE_URL = "https://image.tmdb.org/t/p/"
@@ -56,7 +52,9 @@ def _url(runtime, **params):
 
 def _cached_trailers(repository, media, media_ids):
     """Read cache once for immediate values and the matching freshness misses."""
-    reader = TrailerRepository(None, repository.cache, clock=repository.clock)
+    reader = TrailerRepository(
+        None, repository.cache, clock=repository.clock, _read_only=True
+    )
     values = {}
     missing = []
     with reader._lock:
@@ -76,7 +74,9 @@ def _cached_trailers(repository, media, media_ids):
 
 def _cached_shows(repository, show_ids):
     """Read displayable fresh/stale values and freshness misses in one pass."""
-    reader = ShowRepository(None, repository.cache, clock=repository.clock)
+    reader = ShowRepository(
+        None, repository.cache, clock=repository.clock, _read_only=True
+    )
     values = {}
     missing = []
     with reader._lock:
@@ -195,24 +195,6 @@ def _pending_session_id(client, request_token):
         response.close()
 
 
-def _set_watchlist(client, media, media_id, account_id=None):
-    account_id = account_id or client.get_account_id()
-    response = client.request(
-        "POST",
-        "/3/account/{0}/watchlist".format(account_id),
-        json_data={"media_type": media, "media_id": int(media_id), "watchlist": False},
-    )
-    try:
-        data = response.json()
-        return (
-            response.status_code in (200, 201)
-            and isinstance(data, dict)
-            and data.get("success") is True
-        )
-    finally:
-        response.close()
-
-
 def _detail_text(row, field):
     value = row.get(field)
     if value is not None and not isinstance(value, str):
@@ -306,25 +288,30 @@ def map_episodes_response(data):
 def build_tmdb_handlers(runtime, client_factory, repositories, background):
     """Build all TMDB actions without performing per-item synchronous lookups."""
     client = client_factory()
-    public_client = public_tmdb_client(client)
     trailer_repository = repositories["trailers"]
     show_repository = repositories["shows"]
     attach_repositories = getattr(background, "attach_repositories", None)
     if attach_repositories is not None:
         attach_repositories(trailer_repository, show_repository)
     snapshot_store = getattr(background, "snapshot_store", None)
-    identity_lock = getattr(background, "_lock", None)
+    identity_owner = getattr(background, "identity_lock", None)
+    if identity_owner is None:
+        identity_owner = getattr(background, "_lock", None)
+    identity_lock = IdentityTransactionAdapter(identity_owner)
     genre_repository = getattr(background, "genre_repository", None) or GenreRepository()
 
     def genres(media, language):
-        return genre_repository.get(client, media, language)
-
-    def public_genres(media, language):
-        return genre_repository.get(public_client, media, language)
+        """Render strict cache hits only; refresh completion owns genre writes."""
+        return genre_repository.get_cached(media, language)
 
     def language():
         mapper = getattr(client, "locale_mapper", None)
         return mapper() if mapper is not None else "en-US"
+
+    def session_binding(session_id=None):
+        if session_id is None:
+            session_id = runtime.get_setting("tmdb_access_token").strip()
+        return "v1:" + hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
     def valid_configuration():
         if not runtime.get_setting("tmdb_api_key").strip():
@@ -352,19 +339,24 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
         runtime.set_setting("tmdb_view_defaulted", "true")
 
     class DiscoveryClient:
-        """Adapt the fixed catalog paths to TMDBClient's versioned endpoints."""
+        """Consume detached public rows produced by discovery.catalog."""
 
-        locale_mapper = staticmethod(getattr(public_client, "locale_mapper", None))
+        locale_mapper = staticmethod(getattr(client, "locale_mapper", None))
 
         @staticmethod
-        def get(path):
-            return public_client.get(versioned_catalog_path(path))
+        def load_catalog(source_name):
+            value = background.run_operation(
+                protocol.catalog_request(source_name, language())
+            )
+            if set(value) != {"rows"} or not isinstance(value["rows"], list):
+                raise TMDBError("TMDB discovery service result is malformed")
+            return value["rows"]
 
     discovery_handlers = build_discovery_handlers(
         runtime,
         DiscoveryClient(),
         _url,
-        public_genres,
+        genres,
         set_default_view,
         valid_configuration,
     )
@@ -404,19 +396,28 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
                 session_id = _pending_session_id(client, request_token)
                 if session_id:
-                    # Identity belongs to the old session and must never leak into
-                    # the newly authorized account. The resolver commits under this
-                    # same owner lock; network polling above remains outside it.
-                    with identity_lock or nullcontext():
+                    with identity_lock:
+                        old_session = runtime.get_setting("tmdb_access_token").strip()
                         old_account_id = runtime.get_setting("tmdb_account_id").strip()
-                        client.invalidate_identity()
-                        if snapshot_store is not None and old_account_id:
-                            try:
-                                snapshot_store.invalidate_identity(old_account_id)
-                            except SnapshotPersistenceError:
-                                runtime.logger.exception(
-                                    "Unable to invalidate old watchlist identity"
-                                )
+                    if old_account_id:
+                        # The only snapshot invalidator waits outside every lock;
+                        # its request is valid only for the captured old session.
+                        background.run_operation(
+                            protocol.invalidate_identity_request(
+                                old_account_id, session_binding(old_session)
+                            )
+                        )
+                    with identity_lock:
+                        # Another QR/settings writer may have advanced identity
+                        # while invalidation waited. Never overwrite that winner.
+                        if (
+                            runtime.get_setting("tmdb_access_token").strip()
+                            != old_session
+                            or runtime.get_setting("tmdb_account_id").strip()
+                            != old_account_id
+                        ):
+                            raise TMDBError("TMDB identity changed during authorization")
+                        runtime.set_setting("tmdb_account_id", "")
                         runtime.set_setting("tmdb_access_token", session_id)
                     runtime.notify(runtime.localized(30405))
                     return ActionResult(handled=True)
@@ -439,7 +440,16 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def list_seasons(params):
         show_id = params["show_id"]
-        show = map_seasons_response(client.get("/3/tv/{0}".format(show_id)))
+        value = background.run_operation(
+            protocol.seasons_request(show_id, language(), session_binding())
+        )
+        show = map_seasons_response(
+            {
+                "name": value.get("title"),
+                "original_name": value.get("original_title"),
+                "seasons": value.get("seasons"),
+            }
+        )
         title = show["title"] or runtime.localized(30408)
         original_title = show["original_title"] or title
         runtime.set_category(title)
@@ -488,9 +498,12 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 runtime.addon_info("name"), runtime.localized(30410).format(season_number)
             )
         )
-        data = map_episodes_response(
-            client.get("/3/tv/{0}/season/{1}".format(show_id, season_number))
+        value = background.run_operation(
+            protocol.episodes_request(
+                show_id, season_number, language(), session_binding()
+            )
         )
+        data = map_episodes_response(value)
         today = runtime.today()
         for episode in data["episodes"]:
             episode_number = int(episode.get("episode_number"))
@@ -541,68 +554,28 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             runtime.notify(runtime.localized(30411))
             runtime.open_settings()
             return ActionResult(handled=False)
-        media = "movie" if params.get("category") == "movies" else "tv"
         try:
             session_id = runtime.get_setting("tmdb_access_token").strip()
             operation_language = language()
-            account_was_missing = not runtime.get_setting("tmdb_account_id").strip()
-
-            def account_resolution_valid(resolved_account):
-                return (
-                    runtime.get_setting("tmdb_access_token").strip() == session_id
-                    and runtime.get_setting("tmdb_account_id").strip()
-                    in ("", resolved_account)
-                    and language() == operation_language
-                )
-
-            account_id = resolve_watchlist_account(
-                client,
-                session_id,
-                operation_language,
-                account_resolution_valid,
-                identity_lock=identity_lock,
+            account_id = runtime.get_setting("tmdb_account_id").strip()
+            watchlist_media = (
+                "movies" if params.get("category") == "movies" else "tv"
             )
-
-            def operation_valid():
-                return (
-                    runtime.get_setting("tmdb_access_token").strip() == session_id
-                    and (
-                        runtime.get_setting("tmdb_account_id").strip() == account_id
-                        or (
-                            account_was_missing
-                            and not runtime.get_setting("tmdb_account_id").strip()
-                        )
-                    )
-                    and language() == operation_language
-                )
-
-            scope = SnapshotScope(
-                account_id,
-                "movies" if media == "movie" else "tv",
-                operation_language,
+            scope = (
+                SnapshotScope(account_id, watchlist_media, operation_language)
+                if account_id
+                else {
+                    "account_id": "",
+                    "media": watchlist_media,
+                    "language": operation_language,
+                    "schema": 1,
+                }
             )
-            if not operation_valid():
-                raise TMDBError("TMDB identity changed before watched operation")
-            operation_client = watchlist_operation_client(
-                client, scope, session_id, identity_lock=identity_lock
-            )
-            if not _set_watchlist(
-                operation_client, media, params["watched"], account_id=account_id
-            ):
-                runtime.notify(runtime.localized(30412))
-                return ActionResult(handled=False)
-            if snapshot_store is not None:
-                if not operation_valid():
-                    raise TMDBError("TMDB identity changed during watched operation")
-                try:
-                    snapshot_store.remove(scope, int(params["watched"]))
-                except (SnapshotPersistenceError, TypeError, ValueError):
-                    runtime.logger.exception("Unable to update watched snapshot")
-                background.submit_watchlist(
-                    scope,
-                    force=True,
-                    allow_missing_account=account_was_missing,
+            background.run_operation(
+                protocol.watched_request(
+                    scope, params["watched"], session_binding(session_id)
                 )
+            )
             runtime.notify(runtime.localized(30413))
             return ActionResult(handled=True, refresh=True)
         except Exception:
@@ -632,31 +605,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 scope = SnapshotScope(account_id, watchlist_media, operation_language)
                 refresh_state = snapshot_store.refresh_state(scope, runtime.clock())
                 snapshot = refresh_state.snapshot
-            if snapshot is None:
-                # A missing/incompatible identity always follows the current cold
-                # account path; another account's sole cache entry is not a key hint.
-                def account_resolution_valid(resolved_account):
-                    return (
-                        runtime.get_setting("tmdb_access_token").strip()
-                        == operation_session
-                        and runtime.get_setting("tmdb_account_id").strip()
-                        in ("", resolved_account)
-                        and language() == operation_language
-                    )
-
-                account_id = resolve_watchlist_account(
-                    client,
-                    operation_session,
-                    operation_language,
-                    account_resolution_valid,
-                    identity_lock=identity_lock,
-                )
-                scope = SnapshotScope(account_id, watchlist_media, operation_language)
-                if snapshot_store is not None:
-                    # Identity resolution may recover a scope whose snapshot was
-                    # saved before this process forgot the optional account ID.
-                    refresh_state = snapshot_store.refresh_state(scope, runtime.clock())
-                    snapshot = refresh_state.snapshot
+            # Missing accounts use an unresolved watchlist.refresh scope. The
+            # service performs /account, then returns the concrete commit scope;
+            # no account or list request is ever issued by this parent session.
 
             def operation_valid():
                 return (
@@ -688,55 +639,48 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             require_valid_operation()
             listing_error = None
             cached_render = snapshot is not None and not manual_refresh
+            warm_open = cached_render
             if cached_render:
                 results = list(snapshot.results)
             else:
-                expected_generation = (
-                    refresh_state.generation
-                    if snapshot_store is not None
-                    else None
-                )
-                operation_client = watchlist_operation_client(
-                    client,
-                    scope,
-                    operation_session,
-                    identity_lock=identity_lock,
-                )
-                refresh_error = None
-                try:
-                    results = fetch_complete_watchlist(
-                        operation_client, scope, operation_valid
+                if snapshot_store is None:
+                    raise TMDBServiceUnavailableError(
+                        "TMDB watchlist snapshot reader is unavailable"
                     )
+                refresh_error = None
+                requested_scope = scope or {
+                    "account_id": "",
+                    "media": watchlist_media,
+                    "language": operation_language,
+                    "schema": 1,
+                }
+                try:
+                    value = background.run_watchlist(
+                        protocol.watchlist_request(
+                            requested_scope,
+                            refresh_state.generation if refresh_state else 0,
+                            manual_refresh,
+                            account_was_missing,
+                            session_binding(operation_session),
+                        )
+                    )
+                    scope = SnapshotScope(**value["scope"])
+                    account_id = scope.account_id
                     require_valid_operation()
+                    committed = snapshot_store.load(scope)
+                    if committed is None or committed.revision != value["revision"]:
+                        raise TMDBError(
+                            "TMDB watchlist service revision did not commit"
+                        )
+                    snapshot = committed
+                    results = list(committed.results)
                 except TMDBError as error:
                     refresh_error = error
 
-                if refresh_error is None and snapshot_store is not None:
-                    try:
-                        saved = snapshot_store.save_complete(
-                            scope,
-                            results,
-                            runtime.clock(),
-                            expected_generation=expected_generation,
-                        )
-                    except SnapshotPersistenceError as error:
-                        runtime.logger.exception("Unable to persist watchlist snapshot")
-                        if manual_refresh:
-                            refresh_error = error
-                        # Existing cold listings may still render complete data when
-                        # only its warm reuse cannot be persisted.
-                    else:
-                        if saved is None:
-                            refresh_error = TMDBError(
-                                "Watchlist changed during manual refresh"
-                                if manual_refresh
-                                else "Watchlist changed during cold listing"
-                            )
-
                 if refresh_error is not None:
                     fallback = (
-                        snapshot_store.load(scope)
-                        if manual_refresh and snapshot_store is not None
+                        ((scope is not None and snapshot_store.load(scope)) or snapshot)
+                        if manual_refresh
                         else None
                     )
                     if fallback is not None and cached_fallback_valid():
@@ -745,12 +689,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                         listing_error = refresh_error
                         cached_render = True
                         report_listing_error(refresh_error)
-                    elif isinstance(refresh_error, TMDBError):
-                        raise refresh_error
                     else:
-                        raise TMDBError(
-                            "Unable to save manual watchlist refresh"
-                        ) from refresh_error
+                        raise refresh_error
 
             if cached_render:
                 runtime.set_category(
@@ -792,6 +732,9 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
             # Genuine complete empty results need no locale/genre request.
             genre_map = genres(media, operation_language) if results else {}
+            genre_refresh_due = bool(results) and genre_map is None
+            if genre_map is None:
+                genre_map = {}
             media_ids = [value["id"] for value in results]
             visible_ids = media_ids[:WATCHLIST_PREFETCH_LIMIT]
             visible_id_set = set(visible_ids)
@@ -927,14 +870,16 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                     set_default_view(params)
                 except Exception:
                     runtime.logger.exception("Unable to set TMDB default view")
-                if snapshot is not None and not manual_refresh:
-                    # Ordinary snapshots retain their throttled background refresh.
+                if warm_open:
+                    # Ordinary warm snapshots retain their throttled background refresh.
                     # Manual completion already fetched or retained authoritative data.
                     try:
                         background.submit_watchlist(
                             scope,
                             allow_missing_account=account_was_missing,
-                            refresh_due=refresh_state.refresh_due,
+                            refresh_due=(
+                                refresh_state.refresh_due or genre_refresh_due
+                            ),
                             generation=refresh_state.generation,
                         )
                     except Exception:
@@ -958,15 +903,8 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 succeeded=listing_error is None, post_complete=post_complete
             )
         except TMDBError as error:
-            if (
-                snapshot_store is not None
-                and account_id
-                and not runtime.get_setting("tmdb_account_id").strip()
-            ):
-                try:
-                    snapshot_store.invalidate_identity(account_id)
-                except SnapshotPersistenceError:
-                    runtime.logger.exception("Unable to invalidate watchlist identity")
+            # Snapshot invalidation belongs only to the service's explicit
+            # identity.invalidate operation; failed list/genre bytes stay intact.
             report_listing_error(error)
             return DirectoryResult(succeeded=False)
 

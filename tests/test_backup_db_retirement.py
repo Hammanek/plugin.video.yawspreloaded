@@ -95,7 +95,7 @@ class BackupDBRetirementTests(unittest.TestCase):
             "argv",
             ["plugin://plugin.video.yawspreloaded/", "17", ""],
         ), mock.patch.object(
-            production_router, "BackgroundPrefetch"
+            production_router, "TMDBServiceClient"
         ), mock.patch.object(
             production_router.requests, "Session"
         ) as session_type, mock.patch.object(

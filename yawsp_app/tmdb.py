@@ -647,6 +647,25 @@ class GenreRepository:
         self._values = {}
         self._pending = set()
 
+    def get_cached(self, media, language):
+        """Return only a persisted/process-memory hit; never perform transport or writes."""
+        key = (media, language)
+        file_cache = self._file_cache
+        if media in ("movie", "tv") and language in (
+            "en-US",
+            "cs-CZ",
+            "sk-SK",
+        ):
+            if file_cache is not None:
+                persisted = file_cache.get(media, language)
+                if persisted is not None:
+                    return {
+                        int(identifier): name for identifier, name in persisted.items()
+                    }
+        with self._condition:
+            values = self._values.get(key)
+            return dict(values) if values is not None else None
+
     def get(self, client, media, language):
         key = (media, language)
         file_cache = self._file_cache

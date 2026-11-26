@@ -161,6 +161,34 @@ def _normalize_record(runtime, url_builder, source, value, genre_map):
     )
 
 
+def _normalize_service_record(runtime, url_builder, value):
+    """Build native navigation from one already detached service row."""
+    if not isinstance(value, dict):
+        return None
+    title = _text(value.get("title")) or runtime.localized(30408)
+    original_title = _text(value.get("original_title")) or title
+    search_url = url_builder(runtime, action="search", what=title, sort="largest")
+    original_search_url = url_builder(
+        runtime, action="search", what=original_title, sort="largest"
+    )
+    artwork = value.get("art") if isinstance(value.get("art"), dict) else {}
+    raw_genres = value.get("genres")
+    genres = raw_genres if isinstance(raw_genres, (list, tuple)) else ()
+    return DiscoveryRecord(
+        media=value.get("media"),
+        media_id=int(value.get("media_id")),
+        title=title,
+        original_title=original_title,
+        year=int(value.get("year") or 0),
+        genres=tuple(genres),
+        rating=_rating(value.get("rating")),
+        plot=_text(value.get("plot")),
+        art=MappingProxyType(dict(artwork)),
+        search_url=search_url,
+        original_search_url=original_search_url,
+    )
+
+
 def discovery_list_item(runtime, record):
     """Build one native row using Kodi's current InfoTag metadata adapter."""
     item = runtime.list_item(label=record.label)
@@ -206,6 +234,19 @@ def build_discovery_handlers(
     def load_category(source_name):
         source = CATALOG_SOURCES[source_name]
         try:
+            service_loader = getattr(client, "load_catalog", None)
+            if service_loader is not None:
+                rows = service_loader(source_name)
+                if not isinstance(rows, list):
+                    raise TMDBError("TMDB discovery service result is not a row array")
+                return tuple(
+                    record
+                    for record in (
+                        _normalize_service_record(runtime, url_builder, value)
+                        for value in rows
+                    )
+                    if record is not None
+                )
             data = client.get(source.path)
             if not isinstance(data, dict) or not isinstance(data.get("results"), list):
                 raise TMDBError("TMDB discovery response has no results array")

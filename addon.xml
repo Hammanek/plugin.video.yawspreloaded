@@ -8,6 +8,7 @@
     <extension point="xbmc.python.pluginsource" library="main.py">
         <provides>video</provides>
     </extension>
+    <extension point="xbmc.service" library="service.py"/>
     <extension point="xbmc.addon.metadata">
         <summary>Yet Another Webshare Plugin Reloaded</summary>
         <platform>all</platform>

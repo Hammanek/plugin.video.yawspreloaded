@@ -5,7 +5,6 @@ queue executor, parent transport callback, Kodi import, or UI responsibilities.
 """
 
 import copy
-from contextlib import nullcontext
 import hashlib
 import logging
 import secrets
@@ -34,8 +33,11 @@ from yawsp_app.tmdb import (
     resolve_watchlist_account,
     watchlist_operation_client,
 )
+from yawsp_app.tmdb_service_store import IdentityTransactionAdapter
 from yawsp_app.tmdb_ui import map_episodes_response, map_seasons_response
 from yawsp_app.watchlist_snapshot import SnapshotScope
+
+_IdentityContext = IdentityTransactionAdapter
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,31 +137,6 @@ class ServiceMetadataEngine:
             self._closed = True
 
 
-class _IdentityContext:
-    """Adapt the store's real OS identity transaction to TMDB's lock interface."""
-
-    def __init__(self, owner):
-        self.owner = owner
-        self.manager = None
-
-    def __enter__(self):
-        if self.owner is None:
-            self.manager = nullcontext()
-        elif hasattr(self.owner, "identity_transaction"):
-            self.manager = self.owner.identity_transaction()
-        elif hasattr(self.owner, "__enter__"):
-            self.manager = self.owner
-        else:
-            self.manager = self.owner()
-        return self.manager.__enter__()
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        try:
-            return self.manager.__exit__(exc_type, exc_value, traceback)
-        finally:
-            self.manager = None
-
-
 class ServiceWatchlistEngine:
     """Service-only complete snapshots, watched mutations, and scoped invalidation."""
 
@@ -172,8 +149,10 @@ class ServiceWatchlistEngine:
         session,
         abort,
         logger,
+        genre_repository=None,
     ):
         self.settings = settings
+        self.genre_repository = genre_repository
         self.snapshot_store = snapshot_store
         self.locale_mapper = locale_mapper
         self.identity_lock = identity_lock
@@ -299,9 +278,54 @@ class ServiceWatchlistEngine:
             raise TMDBError("TMDB watchlist engine already has an active claim")
         self._claim = copy.deepcopy(claim)
 
+    def _concrete_scope(self, request, allow_missing=False):
+        raw_scope = request["params"]["scope"]
+        if raw_scope["account_id"]:
+            requested = SnapshotScope(**raw_scope)
+        else:
+            if request["operation"] == "watchlist.refresh" and not allow_missing:
+                raise TMDBError("TMDB account scope is required")
+            requested = None
+        if requested is not None:
+            return request, requested
+
+        with self._identity():
+            session_id = self._setting(self.settings, "tmdb_access_token")
+            valid = (
+                bool(session_id)
+                and self._binding(session_id) == request["session_binding"]
+                and not self._setting(self.settings, "tmdb_account_id")
+                and self.locale_mapper() == raw_scope["language"]
+            )
+        if not valid:
+            raise TMDBError("TMDB identity changed before account resolution")
+
+        def resolution_valid(resolved_account):
+            return (
+                bool(resolved_account)
+                and self._setting(self.settings, "tmdb_access_token") == session_id
+                and self._setting(self.settings, "tmdb_account_id")
+                in ("", resolved_account)
+                and self.locale_mapper() == raw_scope["language"]
+            )
+
+        account_id = resolve_watchlist_account(
+            self._client,
+            session_id,
+            raw_scope["language"],
+            resolution_valid,
+            identity_lock=self._identity(),
+        )
+        concrete = SnapshotScope(
+            account_id, raw_scope["media"], raw_scope["language"], raw_scope["schema"]
+        )
+        request = copy.deepcopy(request)
+        request["params"]["scope"] = dict(concrete.__dict__)
+        return request, concrete
+
     def _refresh(self, request):
-        scope = SnapshotScope(**request["params"]["scope"])
         allow_missing = request["allow_missing_account"]
+        request, scope = self._concrete_scope(request, allow_missing)
         session_id, account_was_missing = self._capture(
             request, scope, allow_missing
         )
@@ -334,6 +358,15 @@ class ServiceWatchlistEngine:
         )
         try:
             results = fetch_complete_watchlist(client, scope, operation_valid=valid)
+            if results and self.genre_repository is not None:
+                # Complete the exact shared media/language mapping before the
+                # nonnegative snapshot commit. Public requests cannot invalidate
+                # or carry the captured personal session.
+                self.genre_repository.get(
+                    public_tmdb_client(client),
+                    "movie" if scope.media == "movies" else "tv",
+                    scope.language,
+                )
             with self._identity():
                 # Validation, generation-checked save and any ordinary watched
                 # continuation share one identity -> snapshot -> manifest order.
@@ -351,11 +384,13 @@ class ServiceWatchlistEngine:
                     raise TMDBError("TMDB watchlist generation changed during refresh")
                 return self._value(scope, saved.revision, saved.generation)
         except Exception:
-            self._invalidate_if_cleared(scope)
+            # A failed list/genre refresh never partially replaces or tombstones
+            # the previous complete bytes. Explicit identity.invalidate owns
+            # scoped cleanup; settings-level 401 fencing remains in TMDBClient.
             raise
 
     def _watched(self, request):
-        scope = SnapshotScope(**request["params"]["scope"])
+        request, scope = self._concrete_scope(request)
         session_id, _account_was_missing = self._capture(request, scope)
         client = watchlist_operation_client(
             self._client,

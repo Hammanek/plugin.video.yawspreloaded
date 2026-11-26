@@ -752,46 +752,30 @@ class WatchlistServiceTests(unittest.TestCase):
         self.assertEqual(current.results, [dict(MOVIE, id=7, title="QR invalidation")])
         self.assertEqual((current.revision, current.generation), (3, 1))
 
-    def test_delayed_old_401_cannot_invalidate_same_account_qr_snapshot(self):
-        self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
-        original_invalidate = self.snapshots.invalidate_identity
-        invalidate_entered = threading.Event()
-        release_invalidate = threading.Event()
-        replacement_attempted = threading.Event()
-        replacement_finished = threading.Event()
-        racing = False
-
-        def invalidate_with_barrier(account_id):
-            nonlocal racing
-            if racing:
-                return original_invalidate(account_id)
-            racing = True
-            invalidate_entered.set()
-            self.assertTrue(release_invalidate.wait(5), "401 invalidation barrier")
-            return original_invalidate(account_id)
-
-        self.snapshots.invalidate_identity = invalidate_with_barrier
+    def test_failed_old_401_preserves_snapshot_bytes_until_qr_replaces_them(self):
+        original = self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
+        previous = Path(self.cache.path).read_bytes()
         session = FakeSession([FakeResponse(json_data={}, status_code=401)])
-        outcome = self.run_async(
-            lambda: self.engine(session).execute(self.refresh_request())
-        )
-        self.assertTrue(invalidate_entered.wait(5))
-        replacement = self.start_qr_replacement_save(
-            replacement_attempted,
-            replacement_finished,
-            [dict(MOVIE, id=7, title="QR after 401")],
-        )
-        self.assertTrue(replacement_attempted.wait(5))
-        replacement_finished.wait(1)
-        release_invalidate.set()
-        self.threads[0].join(5)
-        self.threads[1].join(5)
 
-        self.assertEqual(outcome[0][0], "error")
-        self.assertEqual(replacement[0][0], "value")
+        with self.assertRaises(TMDBError):
+            self.engine(session).execute(self.refresh_request())
+
+        self.assertEqual(Path(self.cache.path).read_bytes(), previous)
+        self.assertEqual(self.snapshots.load(self.scope), original)
+        generation = self.snapshots.generation(self.scope)
+        self.settings.set("tmdb_access_token", "qr-session")
+        self.settings.set("tmdb_account_id", "42")
+        replacement = self.snapshots.save_complete(
+            self.scope,
+            [dict(MOVIE, id=7, title="QR after 401")],
+            300.0,
+            expected_generation=generation,
+            increment_generation=True,
+        )
         current = self.snapshots.load(self.scope)
         self.assertEqual(current.results, [dict(MOVIE, id=7, title="QR after 401")])
-        self.assertEqual((current.revision, current.generation), (3, 1))
+        self.assertEqual((current.revision, current.generation), (2, 1))
+        self.assertEqual(replacement.revision, 2)
         self.assertEqual(self.settings.get("tmdb_access_token"), "qr-session")
 
     def test_two_watched_results_keep_revision_and_generation_from_one_commit(self):

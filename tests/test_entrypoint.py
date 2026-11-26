@@ -9,6 +9,7 @@ from unittest import mock
 
 from tests.support.http_stubs import FakeResponse, FakeSession
 from tests.support.kodi_stubs import AddonRecorder, KodiRecorder
+from tests.support.legacy_service_adapter import LegacyServiceAdapter
 from tests.support.vfs_stubs import RecordingVFS
 from tests.test_runtime import RecordingLogger
 from tests.test_tmdb import ManualWorker, json_response
@@ -206,7 +207,16 @@ def production_tmdb_invocation(responses, language="en"):
         session_type.return_value = session
         production_router.close()
         owner = production_router._get_owner()
-        owner.background.worker = ManualWorker()
+        owner.background = LegacyServiceAdapter(
+            settings=owner.settings,
+            session=session,
+            trailer_cache=owner.trailer_cache,
+            show_cache=owner.show_cache,
+            snapshot_store=owner.snapshot_store,
+            genre_repository=owner.genre_repository,
+            locale_mapper=owner.language,
+            worker=ManualWorker(),
+        )
         try:
             yield owner, session, addon, sys.modules["xbmcplugin"]._recorder
         finally:
@@ -337,7 +347,7 @@ class EntrypointTests(unittest.TestCase):
     def test_real_owner_supplies_one_profile_genre_file_cache_without_startup_io(self):
         with tempfile.TemporaryDirectory() as profile, install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", ""]
-        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+        ), mock.patch.object(production_router, "TMDBServiceClient"), mock.patch.object(
             production_router, "DownloadJobManager"
         ):
             translate = lambda value: profile
@@ -355,10 +365,10 @@ class EntrypointTests(unittest.TestCase):
             finally:
                 production_router.close()
 
-    def test_real_kodi_adapters_share_one_default_executor_and_map_language(self):
+    def test_real_kodi_adapters_share_service_client_and_map_language(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=settings"]
-        ), mock.patch.object(production_router, "BackgroundPrefetch") as background_type, mock.patch.object(
+        ), mock.patch.object(production_router, "TMDBServiceClient") as background_type, mock.patch.object(
             production_router, "DownloadJobManager"
         ) as download_jobs_type:
             background = background_type.return_value
@@ -417,9 +427,10 @@ class EntrypointTests(unittest.TestCase):
                 background_type.call_args.kwargs["snapshot_store"], owner.snapshot_store
             )
             self.assertIs(
-                background_type.call_args.kwargs["genre_repository"],
-                owner.genre_repository,
+                background_type.call_args.kwargs["store"],
+                owner.service_store,
             )
+            self.assertIs(background.genre_repository, owner.genre_repository)
             production_router.close()
             background.close.assert_called_once_with(wait=False)
             download_jobs.close.assert_called_once_with(wait=False)
@@ -427,7 +438,7 @@ class EntrypointTests(unittest.TestCase):
     def test_production_watched_without_api_key_is_one_clean_action_completion(self):
         with install_kodi_stubs(), mock.patch.object(
             sys, "argv", ["plugin://plugin.video.yawspreloaded/", "17", "?action=tmdb_watchlist"]
-        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+        ), mock.patch.object(production_router, "TMDBServiceClient"):
             production_router.close()
             owner = production_router._get_owner()
             logger = RecordingLogger()
@@ -451,7 +462,7 @@ class EntrypointTests(unittest.TestCase):
             sys,
             "argv",
             ["plugin://plugin.video.yawspreloaded/", "17", "?action=download"],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"), mock.patch.object(
+        ), mock.patch.object(production_router, "TMDBServiceClient"), mock.patch.object(
             production_router.requests, "Session"
         ) as session_type, mock.patch.object(production_router, "WebshareClient") as client_type:
             ui_session = FakeSession()
@@ -556,7 +567,7 @@ class EntrypointTests(unittest.TestCase):
             sys,
             "argv",
             ["plugin://first.invalid/", "17", ""],
-        ), mock.patch.object(production_router, "BackgroundPrefetch"):
+        ), mock.patch.object(production_router, "TMDBServiceClient"):
             production_router.close()
             owner = production_router._get_owner()
 
@@ -864,13 +875,16 @@ class EntrypointTests(unittest.TestCase):
             production_router.close()
             owner = production_router._get_owner()
             try:
-                metadata = owner.background.session_factory()
-                download = owner.download_jobs._session_factory()
-                following_download = owner.download_jobs._session_factory()
+                self.assertIsInstance(owner.background, production_router.TMDBServiceClient)
+                self.assertFalse(hasattr(owner.background, "session_factory"))
+                self.assertFalse(hasattr(owner.background, "worker"))
+                workers = (
+                    owner.download_jobs._session_factory(),
+                    owner.download_jobs._session_factory(),
+                )
                 try:
-                    workers = (metadata, download, following_download)
                     self.assertTrue(all(session is not owner.session for session in workers))
-                    self.assertEqual(len({id(session) for session in workers}), 3)
+                    self.assertEqual(len({id(session) for session in workers}), 2)
                     for session in workers:
                         self.assertEqual(
                             session.headers["User-Agent"],
@@ -1106,6 +1120,12 @@ class EntrypointTests(unittest.TestCase):
                     addon.getSetting("tmdb_access_token"),
                 )
 
+                if "watched=" in recovery_query:
+                    owner.snapshot_store.save_complete(
+                        SnapshotScope("account-2", "movies", "en-US"),
+                        [{"id": 42, "title": "Remove current"}],
+                        100.0,
+                    )
                 second_result = production_router.router(recovery_query)
 
             mixed_requests = [

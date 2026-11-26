@@ -25,12 +25,13 @@ from yawsp_app.runtime import (
     completion_for,
 )
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     GenreRepository,
     ShowRepository,
     TMDBClient,
     TrailerRepository,
 )
+from yawsp_app.tmdb_service_client import TMDBServiceClient
+from yawsp_app.tmdb_service_store import IdentityTransactionAdapter, ServiceStateStore
 from yawsp_app.tmdb_ui import build_tmdb_handlers, kodi_language
 from yawsp_app.watchlist_snapshot import WatchlistSnapshotStore
 from yawsp_app.webshare import WebshareClient
@@ -108,7 +109,7 @@ class _PluginAdapter:
 
 
 class _ProductionOwner:
-    """Own the default executor/session for the add-on process, not one route."""
+    """Own invocation-local auth/Webshare, media jobs, and service waiters."""
 
     def __init__(self):
         # These imports are deliberately lazy: importing the compatibility
@@ -185,21 +186,27 @@ class _ProductionOwner:
         )
 
         def worker_session_factory():
+            # DownloadJobManager alone retains its independent media transport.
             session = requests.Session()
             session.headers.update(self.session.headers)
             return session
 
-        self.background = BackgroundPrefetch(
+        self.service_store = ServiceStateStore(self.profile)
+        self.background = TMDBServiceClient(
+            store=self.service_store,
             settings=self.settings,
             trailer_cache=self.trailer_cache,
             show_cache=self.show_cache,
             locale_mapper=self.language,
-            session_factory=worker_session_factory,
-            abort=self.monitor.abortRequested,
-            logger=_LOGGER,
             snapshot_store=self.snapshot_store,
-            genre_repository=self.genre_repository,
+            abort=self.monitor.abortRequested,
+            wait_for_abort=self.monitor.waitForAbort,
+            logger=_LOGGER,
         )
+        # The UI binds the same real OS identity transaction as the native
+        # service; TMDBServiceClient._lock protects waiters only.
+        self.background.identity_lock = self.service_store
+        self.background.genre_repository = self.genre_repository
         self.download_jobs = DownloadJobManager(
             session_factory=worker_session_factory,
             abort=self.monitor.abortRequested,
@@ -238,7 +245,7 @@ class _ProductionOwner:
         (runtime or self.runtime).notify(message)
 
     def handlers(self, runtime=None):
-        """Create per-open repositories so persisted worker data is re-read."""
+        """Create per-open read-only repositories and explicit-auth clients."""
         runtime = runtime or self.runtime
         webshare_client = WebshareClient(self.session, self.settings)
         tmdb_client = TMDBClient(
@@ -247,7 +254,7 @@ class _ProductionOwner:
             locale_mapper=self.language,
             abort=self.monitor.abortRequested,
             logger=_LOGGER,
-            identity_lock=self.background._lock,
+            identity_lock=IdentityTransactionAdapter(self.service_store),
         )
         webshare = build_webshare_handlers(
             runtime,

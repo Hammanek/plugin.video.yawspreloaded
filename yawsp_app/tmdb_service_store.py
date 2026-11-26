@@ -580,6 +580,42 @@ def _validate_manifest(document, quarantine=False):
     return document
 
 
+class IdentityTransactionAdapter:
+    """Enter a fresh real OS identity transaction for one invocation."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self._local = threading.local()
+
+    def __enter__(self):
+        depth = getattr(self._local, "depth", 0)
+        if depth:
+            self._local.depth = depth + 1
+            return self._local.entered
+        if self.owner is None:
+            manager = contextlib.nullcontext()
+        elif hasattr(self.owner, "identity_transaction"):
+            manager = self.owner.identity_transaction()
+        elif hasattr(self.owner, "__enter__"):
+            manager = self.owner
+        else:
+            manager = self.owner()
+        self._local.manager = manager
+        self._local.entered = manager.__enter__()
+        self._local.depth = 1
+        return self._local.entered
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        depth = self._local.depth - 1
+        self._local.depth = depth
+        if depth:
+            return False
+        manager = self._local.manager
+        self._local.manager = None
+        self._local.entered = None
+        return manager.__exit__(exc_type, exc_value, traceback)
+
+
 class ServiceStateStore:
     """All persistent operations are serialized by the profile transaction lock."""
 
