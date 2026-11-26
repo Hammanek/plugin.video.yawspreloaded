@@ -1761,7 +1761,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(
             episode.video_tag.calls,
             [
-                ("setTitle", expected_label),
+                ("setTitle", "Díl"),
                 ("setMediaType", "episode"),
                 ("setPlot", "Děj dílu"),
                 ("setRating", 8.5),

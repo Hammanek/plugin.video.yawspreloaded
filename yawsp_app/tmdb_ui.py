@@ -533,7 +533,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             if episode.get("still_path"):
                 item.setArt({"thumb": _IMAGE_URL + "w300" + episode["still_path"]})
             info = {
-                "title": label,
+                "title": title,
                 "mediatype": "episode",
                 "plot": episode.get("overview") or "",
                 "season": season_number,
