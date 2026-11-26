@@ -521,6 +521,77 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.waits, [0.05])
         self.assertFalse(os.path.exists(self.show_cache.path))
 
+    def _assert_retry_binding_survives_identity_replacement(self, original, replacement):
+        settings = Settings()
+        settings.set("tmdb_access_token", original)
+        original_get = settings.get
+        identity_reads = [0]
+
+        def replace_after_retry_identity_read(key):
+            value = original_get(key)
+            if key == "tmdb_access_token":
+                identity_reads[0] += 1
+                if identity_reads[0] == 3:
+                    settings.set("tmdb_access_token", replacement)
+            return value
+
+        settings.get = replace_after_retry_identity_read
+
+        def factory(session):
+            return ServiceMetadataEngine(
+                settings,
+                self.trailer_cache,
+                self.show_cache,
+                lambda: "en-US",
+                session,
+                self.abort.is_set,
+                logging.getLogger("test.service.runner.metadata"),
+                clock=self.clock,
+                sleeper=self.clock.sleep,
+            )
+
+        session = FakeSession([
+            response({}, status_code=500),
+            response({}, status_code=401),
+            response({"next_episode_to_air": None}),
+        ])
+        runner, _ = self.make_runner(session, metadata_factory=factory)
+        rows = self.submit([protocol.show_request(1), protocol.show_request(2)])
+
+        with self.assertLogs("test.service.runner", level="ERROR"):
+            runner.run_once()
+
+        first, second = [self.result_document(row["job_id"]) for row in rows]
+        self.assertEqual(first["outcome"], "succeeded")
+        self.assertEqual(second["outcome"], "succeeded")
+        self.assertEqual(settings.get("tmdb_access_token"), replacement)
+        self.assertEqual(
+            [call["url"] for call in session.calls],
+            [
+                "https://api.themoviedb.org/3/tv/1",
+                "https://api.themoviedb.org/3/tv/1",
+                "https://api.themoviedb.org/3/tv/2",
+            ],
+        )
+        self.assertEqual(
+            [call["kwargs"]["params"].get("session_id") for call in session.calls],
+            [original or None, original or None, replacement or None],
+        )
+
+    def test_retry_session_is_frozen_atomically_after_live_identity_comparison(self):
+        self._assert_retry_binding_survives_identity_replacement(
+            "session-1", "session-2"
+        )
+
+    def test_empty_retry_session_cannot_capture_new_qr_replacement(self):
+        self._assert_retry_binding_survives_identity_replacement("", "session-2")
+
+    def test_logout_during_retry_cannot_be_rebound_to_anonymous_metadata(self):
+        self._assert_retry_binding_survives_identity_replacement("session-1", "")
+
+    def test_unchanged_empty_retry_session_still_permits_one_bounded_retry(self):
+        self._assert_retry_binding_survives_identity_replacement("", "")
+
     def test_transient_failure_retries_once_then_publishes_correlated_success(self):
         url = "https://api.themoviedb.org/3/movie/42/videos"
         session = DynamicMetadataSession(failures={url: 1})
@@ -539,6 +610,25 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(session.attempts[url], 2)
         self.assertEqual(self.waits, [0.05])
+        self.assertEqual(
+            self.trailer_cache.load()["movie:42"]["youtube_id"],
+            "video000042",
+        )
+
+    def test_show_transient_retry_persists_success_in_canonical_cache(self):
+        url = "https://api.themoviedb.org/3/tv/42"
+        session = DynamicMetadataSession(failures={url: 1})
+        runner, _ = self.make_runner(session)
+        row = self.caller.join(protocol.show_request(42), WAITER)
+
+        with self.assertLogs("test.service.runner.metadata", level="ERROR"):
+            runner.run_once()
+
+        document = self.caller.read_wait_result(row["job_id"], WAITER)
+        self.assertEqual(TMDBServiceClient._decode_show(document["value"]), (None, True))
+        self.assertEqual(session.attempts[url], 2)
+        self.assertIn("42", self.show_cache.load())
+        self.assertIsNone(self.show_cache.load()["42"]["next"])
 
     def test_post_terminal_cleanup_fault_neither_rejects_nor_repeats_terminal(self):
         session = DynamicMetadataSession()
@@ -604,6 +694,9 @@ class RunnerTests(unittest.TestCase):
 
             class Engine:
                 logger = real.logger
+
+                def current_session_id(self):
+                    return real.current_session_id()
 
                 def execute(self, request):
                     if request["operation"] == "metadata.show" and request["params"]["show_id"] == 1:
@@ -796,6 +889,9 @@ class RunnerTests(unittest.TestCase):
             class Engine:
                 logger = real.logger
 
+                def current_session_id(self):
+                    return real.current_session_id()
+
                 def execute(self, request):
                     if request["operation"] == "metadata.show" and request["params"]["show_id"] == 2:
                         raise FatalMetadata()
@@ -845,6 +941,9 @@ class RunnerTests(unittest.TestCase):
 
             class Engine:
                 logger = real.logger
+
+                def current_session_id(self):
+                    return real.current_session_id()
 
                 def execute(self, request):
                     if request["operation"] == "metadata.trailer" and request["params"]["media_id"] == 1:

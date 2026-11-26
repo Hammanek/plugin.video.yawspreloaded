@@ -1478,8 +1478,9 @@ class EntrypointTests(unittest.TestCase):
 
             stale_calls = [call for call in session.calls if call["url"].endswith(stale_url)]
             self.assertEqual(len(stale_calls), expected_stale_calls)
-            self.assertEqual(
-                stale_calls[0]["kwargs"]["params"].get("session_id"), "session-1"
+            self.assertTrue(
+                all(call["kwargs"]["params"].get("session_id") == "session-1"
+                    for call in stale_calls)
             )
             self.assertTrue(unauthorized_responses)
             self.assertTrue(all(response.closed for response in unauthorized_responses))
@@ -1501,7 +1502,7 @@ class EntrypointTests(unittest.TestCase):
             return owner.service_store.runner.run_once
 
         self._assert_production_stale_generic_401(
-            "/3/movie/42/videos", prepare, expected_stale_calls=2
+            "/3/movie/42/videos", prepare, expected_stale_calls=1
         )
 
     def test_production_main_ui_stale_401_cannot_clear_new_qr_session(self):

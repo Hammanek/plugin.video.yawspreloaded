@@ -290,7 +290,7 @@ class _PosixFileLock:
             operation = self._fcntl.LOCK_EX
             if not blocking:
                 operation |= self._fcntl.LOCK_NB
-            self._fcntl.lockf(descriptor, operation)
+            self._fcntl.flock(descriptor, operation)
         except OSError:
             os.close(descriptor)
             if blocking:
@@ -310,7 +310,7 @@ class _PosixFileLock:
         self._descriptor = None
         self.acquired = False
         try:
-            self._fcntl.lockf(descriptor, self._fcntl.LOCK_UN)
+            self._fcntl.flock(descriptor, self._fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
 

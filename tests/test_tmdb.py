@@ -495,6 +495,35 @@ class ClientTests(TMDBServiceTestCase):
         self.assertEqual(settings.get("tmdb_access_token"), "")
         self.assertEqual(settings.get("tmdb_account_id"), "")
 
+    def test_identity_change_between_retries_uses_capture_before_another_http(self):
+        settings = MemorySettings(tmdb_access_token="session-1")
+        second = json_response({}, status_code=401)
+        original_status = second.raise_for_status
+
+        def replace_identity_before_error_handling():
+            settings.set("tmdb_access_token", "session-2")
+            original_status()
+
+        second.raise_for_status = replace_identity_before_error_handling
+        first = json_response({}, status_code=429)
+        original_close = first.close
+
+        def replace_identity_before_next_attempt():
+            settings.set("tmdb_access_token", "session-2")
+            original_close()
+
+        first.close = replace_identity_before_next_attempt
+        client, session, _, _ = self.make_client(
+            [first, second], settings=settings
+        )
+
+        with self.assertRaises(TMDBError):
+            client.get("/3/example")
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(second.raise_for_status_calls, 0)
+        self.assertEqual(settings.get("tmdb_access_token"), "session-2")
+
     def test_stale_http_401_preserves_replacement_session_and_account_identity(self):
         settings = MemorySettings()
         response = json_response({}, status_code=401)

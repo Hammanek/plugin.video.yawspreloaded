@@ -69,6 +69,8 @@ class ServiceMetadataEngine:
     ):
         self.logger = logger or _LOGGER
         self.abort = abort or (lambda: False)
+        self.settings = settings
+        self.identity_lock = identity_lock
         self._closed = False
         client = TMDBClient(
             session,
@@ -80,6 +82,7 @@ class ServiceMetadataEngine:
             logger=self.logger,
             identity_lock=_IdentityContext(identity_lock),
         )
+        self._client = client
         self._repositories = {
             "trailer": TrailerRepository(
                 client,
@@ -97,8 +100,38 @@ class ServiceMetadataEngine:
             ),
         }
 
+    def current_session_id(self):
+        """Read the bound session only inside the caller's real identity transaction."""
+        with _IdentityContext(self.identity_lock):
+            return str(self.settings.get("tmdb_access_token") or "").strip()
+
     def execute(self, request):
         """Return a detached protocol value for one validated metadata request."""
+        return self._execute(request, self._repositories)
+
+    def execute_retry(self, request, bound_session):
+        """Compare and freeze the original identity before releasing its lock."""
+        if self._closed:
+            raise TMDBError("TMDB metadata engine is closed")
+        with _IdentityContext(self.identity_lock):
+            current_session = str(self.settings.get("tmdb_access_token") or "").strip()
+            if current_session != bound_session:
+                raise TMDBError("TMDB identity changed before metadata retry")
+            client = self._client.bind_session(bound_session)
+        previous_clients = {
+            family: repository.client
+            for family, repository in self._repositories.items()
+        }
+        for repository in self._repositories.values():
+            repository.client = client
+        try:
+            # Runner execution is serial; keep one authoritative deferred-save state.
+            return self._execute(request, self._repositories)
+        finally:
+            for family, client_to_restore in previous_clients.items():
+                self._repositories[family].client = client_to_restore
+
+    def _execute(self, request, repositories):
         if self._closed:
             raise TMDBError("TMDB metadata engine is closed")
         request = protocol.validate_job(request)
@@ -106,12 +139,12 @@ class ServiceMetadataEngine:
         if operation == "metadata.trailer":
             params = request["params"]
             lookup = execute_trailer_metadata(
-                self._repositories["trailer"], params["media"], params["media_id"]
+                repositories["trailer"], params["media"], params["media_id"]
             )
             return {"status": lookup.status, "youtube_id": lookup.youtube_id}
         if operation == "metadata.show":
             value, succeeded = execute_show_metadata(
-                self._repositories["show"], request["params"]["show_id"]
+                repositories["show"], request["params"]["show_id"]
             )
             return {"value": copy.deepcopy(value), "succeeded": succeeded}
         raise protocol.ProtocolError("metadata engine received another operation family")
@@ -703,10 +736,16 @@ class ServiceRunner:
             delay = min(0.25, max(0.0, claim["retry_at"] - time.time()))
             if delay:
                 self._wait(delay)
+        # This metadata retry belongs to the claim's original credential scope.
+        # Do not let a QR replacement become authority for the second attempt.
+        bound_session = engine.current_session_id()
         while True:
             if self.abort():
                 raise _OperationAborted()
-            value = engine.execute(request)
+            if attempts:
+                value = engine.execute_retry(request, bound_session)
+            else:
+                value = engine.execute(request)
             if self.abort():
                 raise _OperationAborted()
             # A completed result is validated through the same closed codec as

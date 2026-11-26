@@ -75,6 +75,39 @@ class PosixLockDouble:
             raise OSError("injected POSIX lock failure")
         self.locked = True
 
+    def flock(self, fd, operation):
+        self.lockf(fd, operation)
+
+
+class PosixRecordDouble(PosixLockDouble):
+    """Compare legacy process-record ownership with OFD-safe lock ownership."""
+
+    def __init__(self):
+        super().__init__()
+        self.owner_fd = None
+
+    def lockf(self, fd, operation):
+        self.calls.append((fd, operation))
+        if operation & self.LOCK_UN:
+            self.owner_fd = None
+            return
+        if self.owner_fd is not None:
+            # This simulates losing the process-owned lifetime on a contender.
+            self.owner_fd = None
+            raise BlockingIOError()
+        self.owner_fd = fd
+
+    def flock(self, fd, operation):
+        self.calls.append((fd, operation))
+        if operation & self.LOCK_UN:
+            if self.owner_fd == fd:
+                self.owner_fd = None
+            return
+        if self.owner_fd is not None and self.owner_fd != fd:
+            raise BlockingIOError()
+        self.owner_fd = fd
+        self.locked = True
+
 
 class StoreTests(unittest.TestCase):
     def setUp(self):
@@ -1286,7 +1319,7 @@ class StoreTests(unittest.TestCase):
 class PosixAdapterContractTests(unittest.TestCase):
     """Static adapter tests only; no live POSIX locking behavior is claimed."""
 
-    def test_posix_adapter_uses_nonblocking_and_blocking_lockf_and_unlocks(self):
+    def test_posix_adapter_uses_nonblocking_and_blocking_flock_and_unlocks(self):
         module = PosixLockDouble()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -1317,6 +1350,19 @@ class PosixAdapterContractTests(unittest.TestCase):
         self.assertFalse(lock.acquire(blocking=False))
         self.assertFalse(lock.acquired)
         lock.release()
+
+    def test_failed_contender_cannot_clear_posix_lease_owner(self):
+        module = PosixRecordDouble()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = os.path.join(temporary, "lease.lock")
+            owner = store_module._PosixFileLock(path, fcntl_module=module)
+            contender = store_module._PosixFileLock(path, fcntl_module=module)
+            self.addCleanup(owner.release)
+            self.assertTrue(owner.acquire(blocking=False))
+            self.assertFalse(contender.acquire(blocking=False))
+            self.assertEqual(module.owner_fd, owner._descriptor)
+            owner.release()
+            self.assertIsNone(module.owner_fd)
 
 
 if __name__ == "__main__":

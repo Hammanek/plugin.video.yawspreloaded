@@ -72,6 +72,11 @@ class OfflineWorkflowTests(unittest.TestCase):
                 reference = use.rsplit("@", 1)[1]
                 self.assertRegex(reference, r"^[0-9a-f]{40}$")
 
+    def test_matrix_keeps_python_38_on_a_supported_ubuntu_runner(self):
+        matrix = top_level_section(self.text, "jobs")
+        runner = [line.strip() for line in matrix if line.strip().startswith("runs-on:")]
+        self.assertEqual(["runs-on: ubuntu-22.04"], runner)
+
     def test_checkout_does_not_persist_credentials(self):
         checkout_index = next(index for index, line in enumerate(self.lines) if CHECKOUT in line)
         next_step = next(
@@ -91,7 +96,7 @@ class OfflineWorkflowTests(unittest.TestCase):
         ]
         self.assertEqual(
             [
-                "python -m pip install requests==2.32.3",
+                "python -m pip install requests==2.32.3 Unidecode==1.1.1",
                 "python -B -m unittest discover -s tests -v",
                 "python -B scripts/verify_release.py",
             ],

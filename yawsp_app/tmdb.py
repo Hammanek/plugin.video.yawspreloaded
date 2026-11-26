@@ -1,6 +1,7 @@
 """TMDB transport, read-only/read-write repositories, and serial domain helpers."""
 
 from contextlib import nullcontext
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -153,6 +154,13 @@ class TMDBClient:
         self.abort = abort or (lambda: False)
         self.logger = logger or _LOGGER
         self.identity_lock = identity_lock
+        self._bound_session_id = None
+
+    def bind_session(self, session_id):
+        """Freeze one operation's credential without changing its live settings."""
+        bound = copy.copy(self)
+        bound._bound_session_id = str(session_id or "").strip()
+        return bound
 
     def _setting(self, key):
         value = self.settings.get(key)
@@ -235,13 +243,22 @@ class TMDBClient:
         api_key = self._setting("tmdb_api_key")
         if api_key:
             query["api_key"] = api_key
-        session_id = self._setting("tmdb_access_token")
+        session_id = (
+            self._setting("tmdb_access_token")
+            if self._bound_session_id is None
+            else self._bound_session_id
+        )
         if session_id:
             query["session_id"] = session_id
 
         for attempt in range(_MAX_ATTEMPTS):
             if self.abort():
                 raise TMDBAbortError("TMDB request aborted")
+            if attempt and session_id:
+                # The retry belongs to the original request, never to a QR replacement.
+                with self.identity_lock or nullcontext():
+                    if self._setting("tmdb_access_token") != session_id:
+                        raise TMDBError("TMDB identity changed before retry")
             try:
                 response = self.session.request(
                     method,
