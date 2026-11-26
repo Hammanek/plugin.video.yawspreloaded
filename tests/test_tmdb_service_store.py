@@ -1,6 +1,7 @@
 """Hostile ownership, admission and persistence contracts for the TMDB store."""
 
 import contextlib
+import copy
 import hashlib
 import json
 import logging
@@ -332,6 +333,83 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(rows[2]["status"], "accepted")
         self.assertEqual(fits, [2])
         self.assertLessEqual(len(self.read_manifest_bytes()), 262144)
+
+    def test_exact_manifest_collision_boundaries_use_canonical_job_deltas(self):
+        cases = (
+            ("new-waiter-priority", False, False, 33),
+            ("existing-waiter-priority", True, False, 35),
+            ("terminal-collision", False, True, 35),
+        )
+
+        def prepare(root, language, existing_waiter, terminal, incoming_waiter):
+            service = self.store(root)
+            self.start(service)
+            caller = self.store(root)
+            request_value = protocol.catalog_request("popular_movies", language)
+            row = caller.submit([request_value])[0]
+            if existing_waiter or terminal:
+                joined = caller.join(request_value, WAITER)
+                self.assertEqual(joined["job_id"], row["job_id"])
+            if terminal:
+                claim = service.claim_next(SERVICE_EPOCH, CLAIM_TOKEN)
+                service.complete(claim, result(row["job_id"]))
+            document = self.manifest(root)
+            projected = copy.deepcopy(document)
+            job = next(job for job in projected["jobs"] if job["job_id"] == row["job_id"])
+            if incoming_waiter:
+                job["waiters"].append("f" * 32)
+            if not terminal:
+                job["priority"] = True
+            delta = len(store_module._json_encode(projected, store_module.MAX_MANIFEST_BYTES + 1024)) - len(
+                store_module._json_encode(document, store_module.MAX_MANIFEST_BYTES)
+            )
+            return service, row, document, delta
+
+        for name, existing_waiter, terminal, expected_delta in cases:
+            for overflow in (False, True):
+                with self.subTest(case=name, overflow=overflow):
+                    preliminary_root = os.path.join(
+                        self.root, "%s-%s-preliminary" % (name, overflow)
+                    )
+                    service, row, document, delta = prepare(
+                        preliminary_root,
+                        "x" if not (existing_waiter or terminal) else "x",
+                        existing_waiter,
+                        terminal,
+                        True,
+                    )
+                    self.assertEqual(delta, expected_delta)
+                    target = 262144 + int(overflow)
+                    language_length = target - delta - len(
+                        store_module._json_encode(document, store_module.MAX_MANIFEST_BYTES)
+                    ) + 1
+                    root = os.path.join(self.root, "%s-%s" % (name, overflow))
+                    service, row, before, actual_delta = prepare(
+                        root,
+                        "x" * language_length,
+                        existing_waiter,
+                        terminal,
+                        True,
+                    )
+                    previous_bytes = self.read_manifest_bytes(root)
+                    self.assertEqual(len(previous_bytes) + actual_delta, target)
+                    collision_request = protocol.catalog_request(
+                        "popular_movies", "x" * language_length
+                    )
+                    joined = caller_join = self.store(root).join(
+                        collision_request, "f" * 32
+                    )
+                    if overflow:
+                        self.assertEqual(caller_join["status"], "backpressured")
+                        self.assertEqual(caller_join["code"], "BACKPRESSURED")
+                        self.assertEqual(self.read_manifest_bytes(root), previous_bytes)
+                    else:
+                        self.assertEqual(caller_join["status"], "joined")
+                        self.assertEqual(caller_join["job_id"], row["job_id"])
+                        self.assertEqual(len(self.read_manifest_bytes(root)), 262144)
+                        current = self.manifest(root)
+                        job = next(job for job in current["jobs"] if job["job_id"] == row["job_id"])
+                        self.assertIn("f" * 32, job["waiters"])
 
     def test_overlapping_batches_preserve_per_key_ownership(self):
         self.start()

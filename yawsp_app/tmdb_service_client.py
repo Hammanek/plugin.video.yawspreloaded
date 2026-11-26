@@ -215,6 +215,7 @@ class TMDBServiceClient:
         return self.abort()
 
     def _read_result(self, job_id, waiter_id):
+        authoritative_read_required = True
         try:
             while True:
                 with self._lock:
@@ -224,16 +225,20 @@ class TMDBServiceClient:
                     raise TMDBAbortError("TMDB operation aborted")
                 try:
                     candidate_probe = getattr(self.store, "result_candidate", None)
-                    if candidate_probe is not None and not self._store_call(
-                        candidate_probe, job_id
+                    if (
+                        not authoritative_read_required
+                        and candidate_probe is not None
+                        and not self._store_call(candidate_probe, job_id)
                     ):
                         document = None
                     else:
-                        # A candidate merely triggers the authoritative locked
-                        # manifest/result/digest/waiter read. It proves no success.
+                        # The first authoritative read distinguishes a genuine
+                        # nonterminal job from unknown/expired state. A candidate
+                        # merely triggers later locked result/waiter/digest reads.
                         document = self._store_call(
                             self.store.read_wait_result, job_id, waiter_id
                         )
+                        authoritative_read_required = False
                 except protocol.ProtocolError as error:
                     with self._lock:
                         closed = self._closed

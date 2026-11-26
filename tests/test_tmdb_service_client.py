@@ -764,8 +764,12 @@ class RealStoreTests(unittest.TestCase):
         release = threading.Event()
         self.addCleanup(release.set)
         original_read = caller.read_wait_result
+        read_calls = []
 
         def blocked_read(job_id, waiter_id):
+            read_calls.append((job_id, waiter_id))
+            if len(read_calls) == 1:
+                return original_read(job_id, waiter_id)
             terminal_read.set()
             release.wait(5)
             return original_read(job_id, waiter_id)
@@ -809,6 +813,55 @@ class RealStoreTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], TMDBAbortError)
         self.assertEqual(acknowledgements, [(job_id, job["waiters"][0])])
+
+    def test_unknown_job_returns_typed_expiry_without_an_absent_path_poll(self):
+        unexpected_waits = []
+
+        def unexpected_wait(seconds):
+            unexpected_waits.append(seconds)
+            raise AssertionError("unknown job would wait indefinitely")
+
+        client = self.make_client(wait_for_abort=unexpected_wait)
+        unknown = "f" * 32
+        result = client._read_result(unknown, WAITER_ID)
+        self.assertEqual(result["job_id"], unknown)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["error"]["code"], "RESULT_EXPIRED")
+        self.assertEqual(unexpected_waits, [])
+
+    def test_real_tombstone_returns_typed_expiry_without_an_absent_path_poll(self):
+        unexpected_waits = []
+
+        def unexpected_wait(seconds):
+            unexpected_waits.append(seconds)
+            raise AssertionError("tombstone would wait indefinitely")
+
+        client = self.make_client(wait_for_abort=unexpected_wait)
+        caller = client.store
+        waiter_id = self.next_identifier(16)
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+        row = caller.join(request, waiter_id)
+        claim = self.service.claim_next(EPOCH, CLAIM)
+        first_result = protocol.make_result(
+            row["job_id"], "succeeded", {"handled": True}
+        )
+        self.service.complete(claim, first_result)
+        caller.acknowledge(row["job_id"], waiter_id)
+        for index in range(32):
+            other = caller.submit(
+                [protocol.trailer_request("movie", index + 2)]
+            )[0]
+            next_claim = self.service.claim_next(EPOCH, "%032x" % (index + 100))
+            self.service.complete(
+                next_claim,
+                protocol.make_result(
+                    other["job_id"], "succeeded", {"status": "error", "youtube_id": None}
+                ),
+            )
+        result = client._read_result(row["job_id"], waiter_id)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["error"]["code"], "RESULT_EXPIRED")
+        self.assertEqual(unexpected_waits, [])
 
     def test_absent_result_wait_slices_use_path_probes_not_manifest_reads(self):
         class TrackedStore(ServiceStateStore):
@@ -867,8 +920,8 @@ class RealStoreTests(unittest.TestCase):
         for event in ready:
             self.assertTrue(event.wait(5))
 
-        self.assertEqual([caller.loads for caller in callers], [1, 1])
-        self.assertEqual([caller.read_transactions for caller in callers], [0, 0])
+        self.assertEqual([caller.loads for caller in callers], [2, 2])
+        self.assertEqual([caller.read_transactions for caller in callers], [1, 1])
         self.assertEqual([len(items) for items in waits], [5, 5])
         self.assertTrue(all(seconds == 0.05 for items in waits for seconds in items))
 
@@ -882,11 +935,11 @@ class RealStoreTests(unittest.TestCase):
         self.assertEqual(outputs, [{"handled": True}, {"handled": True}])
         self.assertEqual(
             [caller.loads for caller in callers],
-            [3, 3],
-            "one admission, one terminal read and one ACK load per caller",
+            [4, 4],
+            "admission, initial nonterminal read, terminal read and ACK per caller",
         )
-        self.assertEqual([caller.read_transactions for caller in callers], [1, 1])
-        self.assertGreaterEqual(min(caller.probes for caller in callers), 6)
+        self.assertEqual([caller.read_transactions for caller in callers], [2, 2])
+        self.assertEqual([caller.probes for caller in callers], [5, 5])
 
     def test_close_detaches_only_its_waiter_and_never_joins_or_stops_service(self):
         entered = threading.Event()

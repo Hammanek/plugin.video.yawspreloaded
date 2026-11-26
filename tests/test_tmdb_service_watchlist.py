@@ -314,29 +314,23 @@ class WatchlistServiceTests(unittest.TestCase):
         continuation = next(
             job for job in self.manifest()["jobs"] if job["job_id"] == newer["job_id"]
         )
-        self.assertEqual(continuation["state"], "queued")
+        self.assertEqual(continuation["state"], "succeeded")
         self.assertEqual(continuation["request"]["generation"], 1)
         self.assertTrue(continuation["request"]["force"])
         self.assertEqual(
             len([job for job in self.manifest()["jobs"] if job["followup_of"] == old_row["job_id"]]),
             1,
         )
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 2)
 
         self.identity.complete = original_complete
-        active = next(job for job in self.manifest()["jobs"] if job["state"] == "active")
-        self.identity.abort_claim(
-            {
-                "job_id": active["job_id"],
-                "service_epoch": active["service_epoch"],
-                "claim_token": active["claim_token"],
-            },
-            "FAILED",
-        )
-        self.assertTrue(runner.run_once())
         self.assertEqual(len(session.calls), 2)
         self.assertFalse(self.nonterminal())
+        self.assertFalse(runner.run_once())
         self.assertEqual(self.snapshots.load(self.scope).results, [KEEP])
+        followup_result = self.result_document(newer["job_id"])
+        self.assertEqual(followup_result["outcome"], "succeeded")
+        self.assertEqual(followup_result["value"]["generation"], 1)
 
     def test_successful_watched_removes_latest_rows_returns_revision_and_one_followup(self):
         self.snapshots.save_complete(self.scope, [MOVIE, KEEP], 100.0)

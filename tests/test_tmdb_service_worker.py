@@ -596,6 +596,139 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] in ("queued", "backlog", "active")])
         self.assertFalse(runner.run_once())
 
+    def poison_first_metadata_factory(self):
+        real_factory = self.metadata_factory
+
+        def factory(session):
+            real = real_factory(session)
+
+            class Engine:
+                logger = real.logger
+
+                def execute(self, request):
+                    if request["operation"] == "metadata.show" and request["params"]["show_id"] == 1:
+                        raise RuntimeError("first operation poison")
+                    return real.execute(request)
+
+                def flush(self):
+                    return real.flush()
+
+                def close(self):
+                    return real.close()
+
+            return Engine()
+
+        return factory
+
+    def test_failed_abort_temp_fault_reconciles_terminal_and_next_job(self):
+        session = DynamicMetadataSession()
+        runner, _ = self.make_runner(
+            session, metadata_factory=self.poison_first_metadata_factory()
+        )
+        first = self.caller.join(protocol.show_request(1), WAITER)
+        second = self.caller.join(protocol.show_request(2), OTHER_WAITER)
+        original_temp = store_module._temp_file
+        attempts = []
+
+        def fail_first_result_temp(path):
+            if os.path.basename(os.path.dirname(path)) == "results" and not attempts:
+                attempts.append(path)
+                raise OSError("first failed terminal publication denied")
+            return original_temp(path)
+
+        with self.assertLogs("test.service.runner", level="ERROR"):
+            with mock.patch.object(store_module, "_temp_file", side_effect=fail_first_result_temp):
+                self.assertTrue(runner.run_once())
+
+        self.assertEqual(len(attempts), 1)
+        result = self.caller.read_wait_result(first["job_id"], WAITER)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["error"]["code"], "FAILED")
+        self.assertEqual(
+            self.caller.read_wait_result(second["job_id"], OTHER_WAITER)["outcome"],
+            "succeeded",
+        )
+        self.assertEqual(len(session.calls), 1, self.manifest())
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] in ("queued", "backlog", "active")])
+        self.assertFalse(runner.run_once())
+
+    def test_aborted_temp_fault_reconciles_abort_and_promotes_next_job(self):
+        session = DynamicMetadataSession()
+        runner, _ = self.make_runner(session)
+        first = self.caller.join(protocol.show_request(1), WAITER)
+        second = self.caller.join(protocol.show_request(2), OTHER_WAITER)
+        session_request = session.request
+
+        def abort_after_first(method, url, **kwargs):
+            result = session_request(method, url, **kwargs)
+            if url.endswith("/tv/1"):
+                self.abort.set()
+            return result
+
+        session.request = abort_after_first
+        original_abort = self.store.abort_claim
+        original_temp = store_module._temp_file
+        attempts = []
+
+        def fail_first_abort_temp(claim, code):
+            if not attempts:
+                attempts.append(code)
+                self.abort.clear()
+
+                def denied(path):
+                    if os.path.basename(os.path.dirname(path)) == "results":
+                        raise OSError("first abort terminal publication denied")
+                    return original_temp(path)
+
+                with mock.patch.object(store_module, "_temp_file", side_effect=denied):
+                    return original_abort(claim, code)
+            return original_abort(claim, code)
+
+        self.store.abort_claim = fail_first_abort_temp
+        self.assertTrue(runner.run_once())
+
+        self.assertEqual(attempts, ["ABORTED"])
+        result = self.caller.read_wait_result(first["job_id"], WAITER)
+        self.assertEqual(result["outcome"], "aborted")
+        self.assertEqual(result["error"]["code"], "ABORTED")
+        self.assertEqual(
+            self.caller.read_wait_result(second["job_id"], OTHER_WAITER)["outcome"],
+            "succeeded",
+            self.manifest(),
+        )
+        self.assertEqual(len(session.calls), 2)
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] in ("queued", "backlog", "active")])
+        self.assertFalse(runner.run_once())
+
+    def test_committed_abort_terminal_is_preserved_during_reconciliation(self):
+        session = DynamicMetadataSession()
+        runner, _ = self.make_runner(
+            session, metadata_factory=self.poison_first_metadata_factory()
+        )
+        row = self.caller.join(protocol.show_request(1), WAITER)
+        original_abort = self.store.abort_claim
+        original_reconcile = self.store.reconcile_completion
+        reconciliations = []
+
+        def committed_then_cleanup_error(claim, code):
+            published = original_abort(claim, code)
+            raise OSError("postcommit error terminal cleanup failed")
+
+        def count_reconciliation(claim, code="BACKPRESSURED"):
+            reconciliations.append(claim["job_id"])
+            return original_reconcile(claim, code)
+
+        self.store.abort_claim = committed_then_cleanup_error
+        self.store.reconcile_completion = count_reconciliation
+        with self.assertLogs("test.service.runner", level="ERROR"):
+            self.assertTrue(runner.run_once())
+
+        self.assertEqual(reconciliations, [row["job_id"]])
+        result = self.caller.read_wait_result(row["job_id"], WAITER)
+        self.assertEqual(result["outcome"], "failed")
+        self.assertEqual(result["error"]["code"], "FAILED")
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] == "active"])
+
     def test_saturated_pinned_results_reconcile_runner_and_next_job(self):
         session = DynamicMetadataSession()
         runner, _ = self.make_runner(session)

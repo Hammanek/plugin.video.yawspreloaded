@@ -995,6 +995,9 @@ class ServiceStateStore:
                     key = protocol.dedup_key(request)
                     collision = self._collision(document, key)
                     if collision is not None:
+                        collision_bytes_before = len(
+                            _json_encode(collision, MAX_MANIFEST_BYTES)
+                        )
                         old_waiter_count = len(collision["waiters"])
                         old_priority = collision["priority"]
                         if waiter_id is not None and waiter_id not in collision["waiters"]:
@@ -1004,12 +1007,13 @@ class ServiceStateStore:
                                 continue
                             collision["waiters"].append(waiter_id)
                             waiter_count += 1
-                            manifest_bytes += 34
                         if waiter_id is not None and collision["state"] in _NONTERMINAL:
-                            if not collision["priority"]:
-                                collision["priority"] = True
-                                manifest_bytes += 1
+                            collision["priority"] = True
                         row = self._row_joined(collision)
+                        manifest_bytes += (
+                            len(_json_encode(collision, MAX_MANIFEST_BYTES))
+                            - collision_bytes_before
+                        )
                     else:
                         collision = None
                         if len(document["jobs"]) >= TOTAL_JOBS or not admission_room():
@@ -1283,12 +1287,12 @@ class ServiceStateStore:
         _best_effort_unlink(os.path.join(self.results_dir, job_id + ".tmp"))
         return completed
 
-    def reconcile_completion(self, claim):
+    def reconcile_completion(self, claim, code="BACKPRESSURED"):
         """Resolve only the current fenced active claim after publication failure.
 
         If a former completion already committed, its result remains authoritative.
-        Otherwise one bounded typed BACKPRESSURED terminal releases the reservation
-        using the same exact pending-abort budget as owner recovery.
+        Otherwise one bounded typed terminal releases the reservation using the
+        same exact pending-abort budget as owner recovery.
         """
 
         def mutate(document):
@@ -1305,7 +1309,8 @@ class ServiceStateStore:
                 return self._read_result(job)
             if job["state"] != "active":
                 raise protocol.ProtocolError("only an active claim can be reconciled")
-            failed = protocol.make_result(job_id, "failed", "BACKPRESSURED")
+            outcome = "aborted" if code == "ABORTED" else "failed"
+            failed = protocol.make_result(job_id, outcome, code)
             self._terminalize(
                 document, job, failed, promote=True, bounded_recovery=True
             )
