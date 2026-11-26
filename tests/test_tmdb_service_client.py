@@ -87,6 +87,10 @@ class ScriptedStore:
         if self.acknowledge_error is not None:
             raise self.acknowledge_error
 
+    def reconcile_waiter(self, waiter_id):
+        self.calls.append(("reconcile", waiter_id))
+        return None
+
 
 class ClientTests(unittest.TestCase):
     def setUp(self):
@@ -199,7 +203,7 @@ class ClientTests(unittest.TestCase):
                 with self.assertRaises(error_type):
                     client.run_operation(request)
                 self.assertEqual(
-                    [call[0] for call in store.calls], ["join"]
+                    [call[0] for call in store.calls], ["join", "reconcile"]
                 )
 
     def test_abort_is_registered_before_first_wait_slice_and_acknowledged(self):
@@ -254,14 +258,14 @@ class ClientTests(unittest.TestCase):
             client.run_shared(
                 ("trailer", "movie", 1), self.forbidden_operation
             )
-        self.assertEqual([call[0] for call in store.calls], ["join"])
+        self.assertEqual([call[0] for call in store.calls], ["join", "reconcile"])
 
         interactive = protocol.catalog_request("popular_movies", "cs-CZ")
         store = ScriptedStore(interactive)
         store.join_error = OSError("offline")
         with self.assertRaises(TMDBServiceUnavailableError):
             self.make_client(store).run_operation(interactive)
-        self.assertEqual([call[0] for call in store.calls], ["join"])
+        self.assertEqual([call[0] for call in store.calls], ["join", "reconcile"])
 
     def test_trailer_failure_keeps_legacy_error_result_without_cache_write(self):
         request = protocol.trailer_request("movie", 7)
@@ -637,11 +641,14 @@ class RealStoreTests(unittest.TestCase):
         self.service.recover(EPOCH)
         self.service.set_ready(EPOCH)
         self.clients = []
+        self.extra_services = []
         self.identifiers = itertools.count(1)
 
     def tearDown(self):
         for client in self.clients:
             client.close()
+        for service in self.extra_services:
+            service.lease.release()
         self.service.lease.release()
         self.temporary.cleanup()
 
@@ -991,6 +998,173 @@ class RealStoreTests(unittest.TestCase):
         self.assertFalse(remaining.is_alive())
         self.assertEqual(remaining_results, [{"handled": True}])
         self.assertNotIn(foreign_waiter, self.manifest()["jobs"][0]["waiters"])
+
+    def test_committed_join_system_exit_reconciles_waiter_and_preserves_result(self):
+        caller = ServiceStateStore(self.root)
+        original_join = caller.join
+        joins = []
+        exit_error = SystemExit(23)
+
+        def committed_exit(request, waiter_id):
+            row = original_join(request, waiter_id)
+            joins.append((row["job_id"], waiter_id))
+            raise exit_error
+
+        caller.join = committed_exit
+        client = self.make_client(caller=caller)
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+
+        with self.assertRaises(SystemExit) as caught:
+            client.run_operation(request)
+
+        self.assertIs(caught.exception, exit_error)
+        self.assertEqual(len(joins), 1)
+        current = self.manifest()
+        self.assertEqual(len(current["jobs"]), 1)
+        self.assertEqual(current["jobs"][0]["waiters"], [])
+        self.assertEqual(client._waiters, {})
+
+        job_id = self.complete_value({"handled": True})
+        self.assertEqual(job_id, joins[0][0])
+        self.assertEqual(self.manifest()["jobs"][0]["state"], "succeeded")
+
+    def test_committed_join_malformed_row_reconciles_waiter_without_another_job(self):
+        caller = ServiceStateStore(self.root)
+        original_join = caller.join
+
+        def malformed_committed_row(request, waiter_id):
+            row = original_join(request, waiter_id)
+            row["reservation"] = "not-boolean"
+            return row
+
+        caller.join = malformed_committed_row
+        client = self.make_client(caller=caller)
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+
+        with self.assertRaises(protocol.ProtocolError):
+            client.run_operation(request)
+
+        current = self.manifest()
+        self.assertEqual(len(current["jobs"]), 1)
+        self.assertEqual(current["jobs"][0]["waiters"], [])
+        self.assertEqual(client._waiters, {})
+        self.assertEqual(self.complete_value({"handled": True}), current["jobs"][0]["job_id"])
+
+    def test_join_system_exit_survives_reconcile_failure_until_close_retries(self):
+        caller = ServiceStateStore(self.root)
+        original_join = caller.join
+        original_reconcile = caller.reconcile_waiter
+        joins = []
+        reconciliations = []
+        exit_error = SystemExit(24)
+
+        def committed_exit(request, waiter_id):
+            row = original_join(request, waiter_id)
+            joins.append((row["job_id"], waiter_id))
+            raise exit_error
+
+        def flaky_reconcile(waiter_id):
+            reconciliations.append(waiter_id)
+            if len(reconciliations) == 1:
+                raise OSError("injected reconcile failure")
+            return original_reconcile(waiter_id)
+
+        caller.join = committed_exit
+        caller.reconcile_waiter = flaky_reconcile
+        client = self.make_client(caller=caller)
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+
+        with self.assertLogs("yawsp_app.tmdb_service_client", level="WARNING"):
+            with self.assertRaises(SystemExit) as caught:
+                client.run_operation(request)
+
+        self.assertIs(caught.exception, exit_error)
+        waiter_id = joins[0][1]
+        self.assertEqual(self.manifest()["jobs"][0]["waiters"], [waiter_id])
+        self.assertIn(waiter_id, client._waiters)
+        self.assertIsNone(client._waiters[waiter_id]["job_id"])
+
+        client.close()
+        client.close()
+
+        self.assertEqual(joins, [(joins[0][0], waiter_id)])
+        self.assertEqual(reconciliations, [waiter_id, waiter_id])
+        self.assertEqual(self.manifest()["jobs"][0]["waiters"], [])
+        self.assertEqual(client._waiters, {})
+
+    def test_failed_ack_retains_result_and_waiter_for_idempotent_close_repair(self):
+        for failure, committed in (
+            (OSError("injected ACK failure"), False),
+            (SystemExit(25), False),
+            (SystemExit(26), True),
+        ):
+            with self.subTest(failure=type(failure).__name__, committed=committed):
+                root = os.path.join(self.root, "%s-%s" % (type(failure).__name__, committed))
+                service = ServiceStateStore(root)
+                self.extra_services.append(service)
+                self.assertTrue(service.lease.acquire())
+                service.recover(EPOCH)
+                service.set_ready(EPOCH)
+                caller = ServiceStateStore(root)
+                original_acknowledge = caller.acknowledge
+                acknowledgements = []
+
+                def flaky_acknowledge(job_id, waiter_id):
+                    acknowledgements.append((job_id, waiter_id))
+                    if committed:
+                        original_acknowledge(job_id, waiter_id)
+                    if len(acknowledgements) == 1:
+                        raise failure
+                    return original_acknowledge(job_id, waiter_id)
+
+                caller.acknowledge = flaky_acknowledge
+                cache = AtomicJsonCache(os.path.join(root, "cache.json"))
+                client = TMDBServiceClient(
+                    caller,
+                    Settings(),
+                    cache,
+                    cache,
+                    locale_mapper=lambda: "cs-CZ",
+                    id_factory=self.next_identifier,
+                )
+                self.clients.append(client)
+                request = protocol.catalog_request("popular_movies", "cs-CZ")
+                job_id, waiter_id = client._register(request)
+                claim = service.claim_next(EPOCH, CLAIM)
+                expected = protocol.make_result(job_id, "succeeded", {"handled": True})
+                service.complete(claim, expected)
+
+                if isinstance(failure, OSError):
+                    with self.assertLogs("yawsp_app.tmdb_service_client", level="WARNING"):
+                        self.assertEqual(client._read_result(job_id, waiter_id), expected)
+                else:
+                    with self.assertRaises(SystemExit) as caught:
+                        client._read_result(job_id, waiter_id)
+                    self.assertIs(caught.exception, failure)
+                self.assertEqual(self.manifest_for(root)["jobs"][0]["state"], "succeeded")
+                if not committed:
+                    self.assertEqual(
+                        caller.read_wait_result(job_id, waiter_id), expected
+                    )
+                    self.assertEqual(
+                        self.manifest_for(root)["jobs"][0]["waiters"], [waiter_id]
+                    )
+                self.assertIn(waiter_id, client._waiters)
+
+                client.close()
+                client.close()
+
+                self.assertEqual(len(acknowledgements), 2)
+                self.assertEqual(self.manifest_for(root)["jobs"][0]["waiters"], [])
+                self.assertEqual(client._waiters, {})
+                self.assertIsNone(service.claim_next(EPOCH, CLAIM))
+
+    def manifest_for(self, root):
+        with open(
+            os.path.join(root, "tmdb_service_state", "manifest.json"),
+            encoding="utf-8",
+        ) as handle:
+            return json.load(handle)
 
     @staticmethod
     def capture_error(client, request, errors):

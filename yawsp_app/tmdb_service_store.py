@@ -1016,7 +1016,9 @@ class ServiceStateStore:
                         )
                     else:
                         collision = None
-                        if len(document["jobs"]) >= TOTAL_JOBS or not admission_room():
+                        if (
+                            waiter_id is not None and waiter_count >= TOTAL_WAITERS
+                        ) or len(document["jobs"]) >= TOTAL_JOBS or not admission_room():
                             rollback()
                             rows.append(self._row_backpressured(request, "BACKPRESSURED"))
                             continue
@@ -1490,6 +1492,26 @@ class ServiceStateStore:
                 job["waiters"].remove(waiter_id)
             self._collect(document)
             return None
+
+        return self._transaction(mutate)
+
+    def reconcile_waiter(self, waiter_id):
+        """Detach exactly one durable registration without a known job ID."""
+
+        _job_id(waiter_id)
+
+        def mutate(document):
+            matches = [
+                job for job in document["jobs"] if waiter_id in job["waiters"]
+            ]
+            if not matches:
+                return None
+            if len(matches) != 1:
+                raise protocol.ProtocolError("waiter registration is ambiguous")
+            job = matches[0]
+            job["waiters"].remove(waiter_id)
+            self._collect(document)
+            return job["job_id"]
 
         return self._transaction(mutate)
 

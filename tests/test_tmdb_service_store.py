@@ -714,6 +714,78 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(len(pinned), 1)
         self.assertEqual(caller.read_wait_result(row["job_id"], waiter(1)), result(row["job_id"]))
 
+    def test_waiter_capacity_precheck_rejects_only_new_keys_without_touching_siblings(self):
+        self.start()
+        caller = self.store()
+        original = self.submit_one(caller, request(1))
+        for number in range(127):
+            self.assertEqual(
+                caller.join(request(1), waiter(number + 1))["job_id"],
+                original["job_id"],
+            )
+        before = self.manifest()
+
+        rows = caller.submit(
+            [request(2), request(3), request(2)], True, waiter(128)
+        )
+
+        self.assertEqual(
+            [row["status"] for row in rows],
+            ["accepted", "backpressured", "joined"],
+        )
+        self.assertEqual(rows[1]["code"], "BACKPRESSURED")
+        self.assertEqual(rows[0]["job_id"], rows[2]["job_id"])
+        current = self.manifest()
+        self.assertEqual(len(current["jobs"]), 2)
+        self.assertEqual(current["next_ordinal"], before["next_ordinal"] + 1)
+        self.assertEqual(sum(len(job["waiters"]) for job in current["jobs"]), 128)
+
+        rejected = caller.join(request(4), waiter(129))
+        self.assertEqual(
+            rejected,
+            {
+                "status": "backpressured",
+                "request": request(4),
+                "code": "BACKPRESSURED",
+            },
+        )
+        self.assertEqual(self.manifest(), current)
+        same_key = caller.join(request(1), waiter(129))
+        self.assertEqual(same_key["status"], "backpressured")
+        self.assertEqual(same_key["code"], "BACKPRESSURED")
+        self.assertEqual(self.manifest(), current)
+
+    def test_reconcile_waiter_is_exact_idempotent_and_preserves_other_claims(self):
+        self.start()
+        caller = self.store()
+        target = self.submit_one(caller, request(1), True, waiter(1))
+        other = self.submit_one(caller, request(2), True, waiter(2))
+
+        self.assertIsNone(caller.reconcile_waiter(waiter(3)))
+        self.assertEqual(caller.reconcile_waiter(waiter(1)), target["job_id"])
+        self.assertIsNone(caller.reconcile_waiter(waiter(1)))
+
+        current = self.manifest()
+        target_job = next(job for job in current["jobs"] if job["job_id"] == target["job_id"])
+        other_job = next(job for job in current["jobs"] if job["job_id"] == other["job_id"])
+        self.assertEqual(target_job["waiters"], [])
+        self.assertEqual(other_job["waiters"], [waiter(2)])
+        self.assertEqual(caller.reconcile_waiter(waiter(2)), other["job_id"])
+        self.assertEqual(self.manifest()["jobs"][1]["waiters"], [])
+
+    def test_reconcile_waiter_ambiguity_changes_no_job_or_waiter(self):
+        self.start()
+        caller = self.store()
+        rows = caller.submit([request(1), request(2)], True, waiter(1))
+        self.assertEqual([row["status"] for row in rows], ["accepted", "accepted"])
+        before = self.manifest()
+
+        with self.assertRaises(protocol.ProtocolError):
+            caller.reconcile_waiter(waiter(1))
+
+        self.assertEqual(self.manifest(), before)
+        self.assertEqual([len(job["waiters"]) for job in before["jobs"]], [1, 1])
+
     def test_unwaited_terminal_and_tombstone_bounds_are_oldest_first(self):
         service = self.start()
         caller = self.store()

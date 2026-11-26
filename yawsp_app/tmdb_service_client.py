@@ -170,16 +170,30 @@ class TMDBServiceClient:
             if self._closed:
                 raise TMDBAbortError("TMDB operation aborted")
             waiter_id = self._new_waiter_id()
-            self._waiters[waiter_id] = {"job_id": None, "acknowledged": False}
+            self._waiters[waiter_id] = {
+                "job_id": None,
+                "acknowledged": False,
+                "joining": True,
+            }
         try:
             row = self._store_call(self.store.join, request, waiter_id)
             job_id = self._row_job(row, request)
         except BaseException:
             with self._lock:
-                self._waiters.pop(waiter_id, None)
+                self._waiters[waiter_id]["joining"] = False
+            try:
+                # A committed join may be followed by a validation error or any
+                # BaseException. Reconcile by waiter ID without losing the first
+                # exception or inventing a replacement request.
+                self._acknowledge(waiter_id)
+            except BaseException:
+                self.logger.warning(
+                    "Unable to reconcile TMDB service waiter", exc_info=True
+                )
             raise
         with self._lock:
             self._waiters[waiter_id]["job_id"] = job_id
+            self._waiters[waiter_id]["joining"] = False
             closed = self._closed
         if closed:
             self._acknowledge(waiter_id)
@@ -192,18 +206,29 @@ class TMDBServiceClient:
             if record is None or record["acknowledged"]:
                 return
             job_id = record["job_id"]
-            if job_id is None:
+            if job_id is None and record["joining"]:
                 # close() cannot ACK before join reveals the exact job ID. Keep
                 # this pending handoff registered without joining its invocation.
                 return
-            record["acknowledged"] = True
-            self._waiters.pop(waiter_id, None)
         try:
-            self.store.acknowledge(job_id, waiter_id)
+            if job_id is None:
+                matched_job_id = self.store.reconcile_waiter(waiter_id)
+            else:
+                self.store.acknowledge(job_id, waiter_id)
+                matched_job_id = job_id
         except Exception:
             # ACK is reconciliation after the validated outcome. Its failure can
             # neither revoke a valid result nor authorize another submission.
             self.logger.warning("Unable to acknowledge TMDB service waiter", exc_info=True)
+            return
+        with self._lock:
+            record = self._waiters.get(waiter_id)
+            if record is None:
+                return
+            if matched_job_id is not None:
+                record["job_id"] = matched_job_id
+            record["acknowledged"] = True
+            self._waiters.pop(waiter_id, None)
 
     def _wait_slice(self):
         if self.abort():
