@@ -172,6 +172,95 @@ class RequestBuilderTests(unittest.TestCase):
                 with self.assertRaises(protocol.ProtocolError):
                     build()
 
+    def test_builders_reject_nonfinite_identity_numerics(self):
+        def builds(value):
+            account_scope = {
+                "account_id": value,
+                "media": "movies",
+                "language": "cs-CZ",
+                "schema": 1,
+            }
+            language_scope = {
+                "account_id": "42",
+                "media": "tv",
+                "language": value,
+                "schema": 1,
+            }
+            return (
+                (
+                    "catalog language",
+                    lambda: protocol.catalog_request("popular_movies", value),
+                ),
+                (
+                    "seasons language",
+                    lambda: protocol.seasons_request(42, value, BINDING),
+                ),
+                (
+                    "episodes language",
+                    lambda: protocol.episodes_request(42, 1, value, BINDING),
+                ),
+                (
+                    "watchlist account",
+                    lambda: protocol.watchlist_request(
+                        account_scope, 0, False, False, BINDING
+                    ),
+                ),
+                (
+                    "watched account",
+                    lambda: protocol.watched_request(account_scope, 42, BINDING),
+                ),
+                (
+                    "watchlist language",
+                    lambda: protocol.watchlist_request(
+                        language_scope, 0, False, False, BINDING
+                    ),
+                ),
+                (
+                    "watched language",
+                    lambda: protocol.watched_request(language_scope, 42, BINDING),
+                ),
+                (
+                    "identity account",
+                    lambda: protocol.invalidate_identity_request(value, BINDING),
+                ),
+            )
+
+        for value in (float("nan"), float("inf"), float("-inf")):
+            for name, build in builds(value):
+                with self.subTest(path=name, value=value):
+                    with self.assertRaises(protocol.ProtocolError):
+                        build()
+
+    def test_builders_preserve_finite_numeric_identity_normalization(self):
+        scope = {
+            "account_id": 1.5,
+            "media": "movies",
+            "language": 2.5,
+            "schema": 1,
+        }
+        self.assertEqual(
+            protocol.catalog_request("popular_movies", 1.5)["params"]["language"],
+            "1.5",
+        )
+        self.assertEqual(
+            protocol.seasons_request(42, 1.5, BINDING)["params"]["language"],
+            "1.5",
+        )
+        self.assertEqual(
+            protocol.episodes_request(42, 1, 1.5, BINDING)["params"]["language"],
+            "1.5",
+        )
+        for request in (
+            protocol.watchlist_request(scope, 0, False, False, BINDING),
+            protocol.watched_request(scope, 42, BINDING),
+        ):
+            self.assertEqual(request["params"]["scope"]["account_id"], "1.5")
+            self.assertEqual(request["params"]["scope"]["language"], "2.5")
+        self.assertEqual(
+            protocol.invalidate_identity_request(1.5, BINDING)["params"]["account_id"],
+            "1.5",
+        )
+
 
 class DedupAndJobCodecTests(unittest.TestCase):
     def test_dedup_key_uses_canonical_prefixed_utf8_json(self):

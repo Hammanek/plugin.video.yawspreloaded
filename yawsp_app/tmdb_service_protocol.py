@@ -122,6 +122,8 @@ def _text(value, name, strip=False, nonempty=True):
     if strip:
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             raise ProtocolError(name + " must be text")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ProtocolError(name + " numeric value must be finite")
         value = str(value).strip()
     if type(value) is not str:
         raise ProtocolError(name + " must be text")
@@ -183,12 +185,8 @@ def _scope(value):
             schema = value.schema
         except (AttributeError, TypeError) as error:
             raise ProtocolError("invalid snapshot scope") from error
-    if isinstance(account_id, bool) or not isinstance(account_id, (str, int, float)):
-        raise ProtocolError("scope account_id must be text")
-    if isinstance(language, bool) or not isinstance(language, (str, int, float)):
-        raise ProtocolError("scope language must be text")
-    account_id = _text(str(account_id).strip(), "scope account_id")
-    language = _text(str(language).strip(), "scope language")
+    account_id = _text(account_id, "scope account_id", strip=True)
+    language = _text(language, "scope language", strip=True)
     if media not in ("movies", "tv") or type(media) is not str:
         raise ProtocolError("scope media must be movies or tv")
     if type(schema) is not int or schema != SCHEMA_VERSION:
