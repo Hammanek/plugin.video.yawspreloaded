@@ -212,6 +212,50 @@ def _set_watchlist(client, media, media_id, account_id=None):
         response.close()
 
 
+def map_seasons_response(show):
+    """Extract detached season values without Kodi objects or navigation URLs."""
+    values = show.get("seasons", [])
+    if not isinstance(values, list):
+        raise TMDBError("TMDB season response has no seasons array")
+    title = show.get("name") or show.get("original_name") or ""
+    return {
+        "title": title,
+        "original_title": show.get("original_name") or title,
+        "seasons": [
+            {
+                "season_number": season.get("season_number", 0),
+                "episode_count": season.get("episode_count", 0),
+                "poster_path": season.get("poster_path"),
+            }
+            for season in values
+        ],
+    }
+
+
+def map_episodes_response(data):
+    """Extract detached native episode inputs while retaining UI formatting."""
+    values = data.get("episodes", [])
+    if not isinstance(values, list):
+        raise TMDBError("TMDB episode response has no episodes array")
+    return {
+        "episodes": [
+            {
+                key: episode.get(key)
+                for key in (
+                    "episode_number",
+                    "name",
+                    "air_date",
+                    "overview",
+                    "vote_average",
+                    "runtime",
+                    "still_path",
+                )
+            }
+            for episode in values
+        ]
+    }
+
+
 def build_tmdb_handlers(runtime, client_factory, repositories, background):
     """Build all TMDB actions without performing per-item synchronous lookups."""
     client = client_factory()
@@ -348,12 +392,12 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def list_seasons(params):
         show_id = params["show_id"]
-        show = client.get("/3/tv/{0}".format(show_id))
-        title = show.get("name") or show.get("original_name") or runtime.localized(30408)
-        original_title = show.get("original_name") or title
+        show = map_seasons_response(client.get("/3/tv/{0}".format(show_id)))
+        title = show["title"] or runtime.localized(30408)
+        original_title = show["original_title"] or title
         runtime.set_category(title)
         for season in sorted(
-            show.get("seasons", []), key=lambda value: value.get("season_number", 0)
+            show["seasons"], key=lambda value: value.get("season_number", 0)
         ):
             season_number = season.get("season_number", 0)
             episode_count = season.get("episode_count", 0)
@@ -397,9 +441,11 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
                 runtime.addon_info("name"), runtime.localized(30410).format(season_number)
             )
         )
-        data = client.get("/3/tv/{0}/season/{1}".format(show_id, season_number))
+        data = map_episodes_response(
+            client.get("/3/tv/{0}/season/{1}".format(show_id, season_number))
+        )
         today = runtime.today()
-        for episode in data.get("episodes", []):
+        for episode in data["episodes"]:
             episode_number = int(episode.get("episode_number"))
             title = episode.get("name") or runtime.localized(30408)
             air_date = episode.get("air_date")

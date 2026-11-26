@@ -656,34 +656,6 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(self.result_document(rows[0]["job_id"])["outcome"], "aborted")
         self.assertEqual(self.result_document(rows[1]["job_id"])["outcome"], "aborted")
 
-    def test_later_operation_families_are_typed_unavailable_without_callbacks_or_http(self):
-        session = DynamicMetadataSession()
-        operation_calls = []
-
-        def forbidden_operation_factory(_session):
-            operation_calls.append(True)
-            raise AssertionError("parent operation callback must never execute")
-
-        runner, constructor = self.make_runner(
-            session, operation_factory=forbidden_operation_factory
-        )
-        rows = self.submit(
-            [
-                protocol.catalog_request("popular_movies", "en-US"),
-                protocol.seasons_request(42, "en-US", "v1:" + "a" * 64),
-            ]
-        )
-
-        self.assertTrue(runner.run_once())
-
-        self.assertEqual(operation_calls, [])
-        constructor.assert_not_called()
-        self.assertEqual(session.calls, [])
-        for row in rows:
-            document = self.result_document(row["job_id"])
-            self.assertEqual(document["outcome"], "failed")
-            self.assertEqual(document["error"]["code"], "UNAVAILABLE")
-
     def test_domain_results_decode_through_reviewed_client_shapes(self):
         session = DynamicMetadataSession()
         runner, _ = self.make_runner(session)

@@ -86,7 +86,8 @@ def _image(size, path):
     return _IMAGE_URL + size + path if path else ""
 
 
-def _normalize_record(runtime, url_builder, source, value, genre_map):
+def map_discovery_record(source, value, genre_map, unknown_title=""):
+    """Return only detached response values; navigation stays in the parent."""
     if not isinstance(value, dict):
         return None
     media_id = _media_id(value.get("id"))
@@ -97,7 +98,7 @@ def _normalize_record(runtime, url_builder, source, value, genre_map):
     original_title = _text(
         value.get("original_title") if is_movie else value.get("original_name")
     )
-    title = title or original_title or runtime.localized(30408)
+    title = title or original_title or unknown_title
     original_title = original_title or title
     date_value = value.get("release_date") if is_movie else value.get("first_air_date")
     raw_genres = value.get("genre_ids")
@@ -117,24 +118,41 @@ def _normalize_record(runtime, url_builder, source, value, genre_map):
         )
         if url
     }
+    return {
+        "media": source.media,
+        "media_id": media_id,
+        "title": title,
+        "original_title": original_title,
+        "year": _year(date_value),
+        "genres": genre_values,
+        "rating": _rating(value.get("vote_average")),
+        "plot": _text(value.get("overview")),
+        "art": artwork,
+    }
+
+
+def _normalize_record(runtime, url_builder, source, value, genre_map):
+    values = map_discovery_record(
+        source, value, genre_map, runtime.localized(30408)
+    )
+    if values is None:
+        return None
     search_url = url_builder(
-        runtime, action="search", what=title, sort="largest"
+        runtime, action="search", what=values["title"], sort="largest"
     )
     original_search_url = url_builder(
-        runtime, action="search", what=original_title, sort="largest"
+        runtime, action="search", what=values["original_title"], sort="largest"
     )
     return DiscoveryRecord(
-        media=source.media,
-        media_id=media_id,
-        title=title,
-        original_title=original_title,
-        year=_year(date_value),
-        genres=tuple(genre_values),
-        rating=_rating(value.get("vote_average")),
-        plot=_text(value.get("overview")),
-        art=MappingProxyType(artwork),
+        genres=tuple(values["genres"]),
+        art=MappingProxyType(values["art"]),
         search_url=search_url,
         original_search_url=original_search_url,
+        **{
+            key: item
+            for key, item in values.items()
+            if key not in ("genres", "art")
+        },
     )
 
 

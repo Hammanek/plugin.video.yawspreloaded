@@ -14,6 +14,7 @@ import time
 import requests
 
 from yawsp_app import tmdb_service_protocol as protocol
+from yawsp_app.discovery_ui import CATALOG_SOURCES, map_discovery_record
 from yawsp_app.tmdb import (
     _METADATA_RETRY_BACKOFF,
     ShowRepository,
@@ -25,9 +26,11 @@ from yawsp_app.tmdb import (
     execute_trailer_metadata,
     execute_watched_removal,
     fetch_complete_watchlist,
+    public_tmdb_client,
     resolve_watchlist_account,
     watchlist_operation_client,
 )
+from yawsp_app.tmdb_ui import map_episodes_response, map_seasons_response
 from yawsp_app.watchlist_snapshot import SnapshotScope
 
 
@@ -36,6 +39,9 @@ _IDLE_WAIT = 0.05
 _METADATA_OPERATIONS = frozenset(("metadata.trailer", "metadata.show"))
 _WATCHLIST_OPERATIONS = frozenset(
     ("watchlist.refresh", "watchlist.watched", "identity.invalidate")
+)
+_PUBLIC_OPERATIONS = frozenset(
+    ("discovery.catalog", "details.seasons", "details.episodes")
 )
 
 
@@ -422,6 +428,134 @@ class ServiceWatchlistEngine:
         self._closed = True
 
 
+class ServiceOperationEngine:
+    """Sessionless public catalogs and identity-bound serial TV detail reads."""
+
+    def __init__(
+        self,
+        settings,
+        genre_repository,
+        locale_mapper,
+        identity_lock,
+        session,
+        abort,
+        logger,
+    ):
+        self.settings = settings
+        self.genre_repository = genre_repository
+        self.locale_mapper = locale_mapper
+        self.identity_lock = identity_lock
+        self.session = session
+        self.abort = abort or (lambda: False)
+        self.logger = logger or _LOGGER
+        self._closed = False
+
+    def _client(self, language, public=False):
+        client = TMDBClient(
+            self.session,
+            self.settings,
+            lambda: language if language is not None else self.locale_mapper(),
+            abort=self.abort,
+            logger=self.logger,
+            identity_lock=_IdentityContext(self.identity_lock),
+        )
+        return public_tmdb_client(client) if public else client
+
+    @staticmethod
+    def _normalization_error():
+        return TMDBError("TMDB operation response could not be normalized")
+
+    def _catalog(self, request):
+        params = request["params"]
+        source = CATALOG_SOURCES[params["source"]]
+        client = self._client(params["language"], public=True)
+        data = client.get(source.path)
+        values = data.get("results")
+        if not isinstance(values, list):
+            raise TMDBError("TMDB discovery response has no results array")
+        if not values:
+            return {"rows": []}
+        genre_map = self.genre_repository.get(
+            client, source.media, params["language"]
+        )
+        try:
+            return {
+                "rows": [
+                    row
+                    for row in (
+                        map_discovery_record(source, value, genre_map)
+                        for value in values
+                    )
+                    if row is not None
+                ]
+            }
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as error:
+            raise self._normalization_error() from error
+
+    def _seasons(self, request):
+        params = request["params"]
+        try:
+            return map_seasons_response(
+                self._client(params["language"]).get(
+                    "/3/tv/{0}".format(params["show_id"])
+                )
+            )
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as error:
+            raise self._normalization_error() from error
+
+    def _episodes(self, request):
+        params = request["params"]
+        try:
+            return map_episodes_response(
+                self._client(params["language"]).get(
+                    "/3/tv/{0}/season/{1}".format(
+                        params["show_id"], params["season"]
+                    )
+                )
+            )
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            OverflowError,
+        ) as error:
+            raise self._normalization_error() from error
+
+    def execute(self, request):
+        """Return only bounded detached values for one validated named request."""
+        if self._closed:
+            raise TMDBError("TMDB operation engine is closed")
+        request = protocol.validate_job(request)
+        operation = request["operation"]
+        if operation == "discovery.catalog":
+            return self._catalog(request)
+        if operation == "details.seasons":
+            return self._seasons(request)
+        if operation == "details.episodes":
+            return self._episodes(request)
+        raise protocol.ProtocolError("operation engine received another operation family")
+
+    def flush(self):
+        """GenreRepository commits each successful response synchronously."""
+
+    def close(self):
+        """The runner owns the shared session and every HTTP response is closed."""
+        self._closed = True
+
+
 class _OperationAborted(Exception):
     """Internal control flow; never serialized as an arbitrary exception."""
 
@@ -441,9 +575,8 @@ class ServiceRunner:
     ):
         self.store = store
         self.metadata_engine_factory = metadata_engine_factory
-        # Task 4 intentionally rejects these later operation families below.
-        # Their factories are accepted now so Tasks 5/6 can supply real
-        # service-local engines without changing this composition interface.
+        # Domain ownership stays separate: identity invalidation belongs only
+        # to the watchlist engine; public/detail reads use the operation engine.
         self.watchlist_engine_factory = watchlist_engine_factory
         self.operation_engine_factory = operation_engine_factory
         self.abort = abort or (lambda: False)
@@ -484,7 +617,12 @@ class ServiceRunner:
             raise _OperationAborted()
 
     def _ensure_engines(self, operation):
-        family = "metadata" if operation in _METADATA_OPERATIONS else "watchlist"
+        if operation in _METADATA_OPERATIONS:
+            family = "metadata"
+        elif operation in _WATCHLIST_OPERATIONS:
+            family = "watchlist"
+        else:
+            family = "operation"
         engine = self._engines.get(family)
         if engine is not None:
             return engine
@@ -494,8 +632,10 @@ class ServiceRunner:
             self._session = requests.Session()
         if family == "metadata":
             engine = self.metadata_engine_factory(self._session)
-        else:
+        elif family == "watchlist":
             engine = self.watchlist_engine_factory(self._session)
+        else:
+            engine = self.operation_engine_factory(self._session)
         self._engines[family] = engine
         return engine
 
@@ -569,18 +709,29 @@ class ServiceRunner:
     def _execute_claim(self, claim):
         request = claim["request"]
         operation = request["operation"]
-        if operation not in _METADATA_OPERATIONS | _WATCHLIST_OPERATIONS:
-            # Later families cannot invoke a parent callback or accidentally
-            # construct HTTP while their real engines are not yet implemented.
+        if operation not in (
+            _METADATA_OPERATIONS | _WATCHLIST_OPERATIONS | _PUBLIC_OPERATIONS
+        ):
             self._abort_claim(claim, "UNAVAILABLE")
             return
-        family = "metadata" if operation in _METADATA_OPERATIONS else "watchlist"
+        if operation in _METADATA_OPERATIONS:
+            family = "metadata"
+        elif operation in _WATCHLIST_OPERATIONS:
+            family = "watchlist"
+        else:
+            family = "operation"
         try:
             engine = self._ensure_engines(operation)
             if family == "metadata":
                 value = self._execute_metadata(claim, engine)
-            else:
+            elif family == "watchlist":
                 value = self._execute_watchlist(claim, engine)
+            else:
+                if self.abort():
+                    raise _OperationAborted()
+                value = engine.execute(request)
+                if self.abort():
+                    raise _OperationAborted()
             document = protocol.make_result(claim["job_id"], "succeeded", value)
         except _OperationAborted:
             self._abort_claim(claim, "ABORTED")
