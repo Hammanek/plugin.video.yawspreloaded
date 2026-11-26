@@ -350,16 +350,17 @@ class _Repository:
 
     def _save_success(self, key):
         """Persist immediately on demand, or checkpoint a worker after eight successes."""
-        if self._read_only:
-            return
-        self._save_pending = True
-        self._dirty_entries[key] = self._entries[key]
-        if not self._defer_save:
-            self._flush()
-            return
-        self._changes_since_flush += 1
-        if self._changes_since_flush >= 8:
-            self._flush()
+        with self._lock:
+            if self._read_only:
+                return
+            self._save_pending = True
+            self._dirty_entries[key] = self._entries[key]
+            if not self._defer_save:
+                self._flush()
+                return
+            self._changes_since_flush += 1
+            if self._changes_since_flush >= 8:
+                self._flush()
 
     @staticmethod
     def _prefer_deferred_entry(candidate, current):
@@ -371,7 +372,7 @@ class _Repository:
 
     def _flush(self):
         with self._lock:
-            if not self._save_pending:
+            if self._read_only or not self._save_pending:
                 return
             if self._defer_save:
                 saved = self.cache.save_merged(

@@ -315,6 +315,88 @@ class ClientTests(unittest.TestCase):
             (None, False),
         )
 
+    def test_shared_metadata_results_require_exact_domain_shapes(self):
+        malformed = (
+            (("trailer", "movie", 7), None),
+            (("trailer", "movie", 7), {}),
+            (("trailer", "movie", 7), {"status": "hit", "youtube_id": None}),
+            (
+                ("trailer", "movie", 7),
+                {"status": "missing", "youtube_id": "unexpected"},
+            ),
+            (("trailer", "movie", 7), {"status": "other", "youtube_id": None}),
+            (("trailer", "movie", 7), {"status": "hit"}),
+            (
+                ("trailer", "movie", 7),
+                {"status": "hit", "youtube_id": "video", "extra": True},
+            ),
+            (("show", 7), None),
+            (("show", 7), {}),
+            (("show", 7), {"unrelated": True}),
+            (("show", 7), {"value": None}),
+            (("show", 7), {"succeeded": True}),
+            (("show", 7), {"value": None, "succeeded": "yes"}),
+            (("show", 7), {"value": None, "succeeded": 1}),
+            (("show", 7), {"value": [], "succeeded": True}),
+            (("show", 7), {"value": "episode", "succeeded": False}),
+            (
+                ("show", 7),
+                {"value": None, "succeeded": False, "extra": True},
+            ),
+        )
+        for key, value in malformed:
+            with self.subTest(key=key, value=value):
+                request = (
+                    protocol.trailer_request(key[1], key[2])
+                    if key[0] == "trailer"
+                    else protocol.show_request(key[1])
+                )
+                store = ScriptedStore(
+                    request,
+                    result={
+                        "job_id": JOB_ID,
+                        "outcome": "succeeded",
+                        "value": value,
+                    },
+                )
+                client = self.make_client(store)
+                with self.assertRaises(protocol.ProtocolError):
+                    client.run_shared(key, self.forbidden_operation)
+                self.assertEqual(
+                    [call[0] for call in store.calls],
+                    ["join", "read", "acknowledge"],
+                )
+
+        legitimate = (
+            (("trailer", "movie", 7), {"status": "hit", "youtube_id": "video"}),
+            (("trailer", "movie", 7), {"status": "missing", "youtube_id": None}),
+            (("trailer", "movie", 7), {"status": "error", "youtube_id": None}),
+            (("show", 7), {"value": None, "succeeded": True}),
+            (("show", 7), {"value": None, "succeeded": False}),
+        )
+        for key, value in legitimate:
+            with self.subTest(key=key, value=value):
+                request = (
+                    protocol.trailer_request(key[1], key[2])
+                    if key[0] == "trailer"
+                    else protocol.show_request(key[1])
+                )
+                store = ScriptedStore(
+                    request,
+                    result=protocol.make_result(JOB_ID, "succeeded", value),
+                )
+                expected = (
+                    TrailerLookup(value["status"], value["youtube_id"])
+                    if key[0] == "trailer"
+                    else (None, value["succeeded"])
+                )
+                self.assertEqual(
+                    self.make_client(store).run_shared(
+                        key, self.forbidden_operation
+                    ),
+                    expected,
+                )
+
     def test_background_submission_counts_accepted_collisions_without_waiting(self):
         request = protocol.trailer_request("movie", 1)
         store = ScriptedStore(request)
@@ -401,6 +483,48 @@ class ClientTests(unittest.TestCase):
         self.assertEqual([call[0] for call in store.calls], ["join", "acknowledge"])
         self.assertEqual(store.calls[-1], ("acknowledge", JOB_ID, WAITER_ID))
 
+    def test_close_does_not_translate_unrelated_read_protocol_failure(self):
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+        entered = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        failure = protocol.ProtocolError("unrelated terminal schema failure")
+
+        class BlockingFailureStore(ScriptedStore):
+            def read_wait_result(self, job_id, waiter_id):
+                self.calls.append(("read", job_id, waiter_id))
+                entered.set()
+                release.wait(5)
+                raise failure
+
+        store = BlockingFailureStore(request)
+        client = self.make_client(store)
+        errors = []
+
+        def invoke():
+            try:
+                client.run_operation(request)
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        invocation = threading.Thread(target=invoke)
+        invocation.start()
+        self.assertTrue(entered.wait(5))
+        client.close()
+        release.set()
+        invocation.join(5)
+        self.assertFalse(invocation.is_alive())
+        self.assertEqual(errors, [failure])
+        self.assertIs(errors[0], failure)
+        self.assertEqual(
+            store.calls,
+            [
+                ("join", request, WAITER_ID),
+                ("read", JOB_ID, WAITER_ID),
+                ("acknowledge", JOB_ID, WAITER_ID),
+            ],
+        )
+
     def test_run_watchlist_returns_only_scope_and_revision(self):
         request = protocol.watchlist_request(SCOPE, 4, True, False, SESSION_BINDING)
         value = {"scope": SCOPE, "revision": 9, "generation": 5}
@@ -412,6 +536,62 @@ class ClientTests(unittest.TestCase):
             self.make_client(store).run_watchlist(request),
             {"scope": SCOPE, "revision": 9},
         )
+
+    def test_attach_discards_pending_immediate_and_deferred_writes(self):
+        class PendingCache:
+            def __init__(self):
+                self.saves = []
+                self.merges = []
+
+            def load(self):
+                return {}
+
+            def save(self, mapping):
+                self.saves.append(copy.deepcopy(mapping))
+                return False
+
+            def save_merged(self, updates, prefer_update=None):
+                self.merges.append(copy.deepcopy(updates))
+                return False
+
+        for deferred in (False, True):
+            with self.subTest(deferred=deferred):
+                cache = PendingCache()
+                repository = TrailerRepository(
+                    None, cache, _defer_save=deferred
+                )
+                key = "movie:1"
+                entry = {"ts": 1.0, "youtube_id": "pending"}
+                repository._entries = {key: entry}
+                repository._save_success(key)
+                self.assertTrue(repository._save_pending)
+                self.assertEqual(len(cache.saves), 0 if deferred else 1)
+                self.assertEqual(cache.merges, [])
+                calls_before_attach = (len(cache.saves), len(cache.merges))
+                client = self.make_client(
+                    ScriptedStore(protocol.trailer_request("movie", 2))
+                )
+
+                client.attach_repositories(
+                    repository, ShowRepository(None, self.show_cache)
+                )
+                repository._save_success(key)
+                repository._flush()
+
+                self.assertEqual(
+                    (len(cache.saves), len(cache.merges)), calls_before_attach
+                )
+                self.assertFalse(repository._save_pending)
+                self.assertEqual(repository._dirty_entries, {})
+                self.assertEqual(repository._changes_since_flush, 0)
+                self.assertEqual(repository._entries, {key: entry})
+
+                repository._save_pending = True
+                repository._dirty_entries[key] = entry
+                repository._flush()
+                self.assertEqual(
+                    (len(cache.saves), len(cache.merges)), calls_before_attach
+                )
 
     def test_read_only_legacy_cache_conversion_performs_zero_writes(self):
         original = {"movie:1": "legacy-valid", "movie:2": None}
@@ -455,8 +635,9 @@ class RealStoreTests(unittest.TestCase):
         self.service.lease.release()
         self.temporary.cleanup()
 
-    def make_client(self, wait_for_abort=None):
-        caller = ServiceStateStore(self.root)
+    def make_client(self, wait_for_abort=None, caller=None):
+        if caller is None:
+            caller = ServiceStateStore(self.root)
         cache = AtomicJsonCache(os.path.join(self.root, "cache.json"))
         client = TMDBServiceClient(
             caller,
@@ -565,6 +746,59 @@ class RealStoreTests(unittest.TestCase):
         self.assertEqual(client.run_operation(request), value)
         self.assertEqual(len(self.manifest()["jobs"]), 1)
         self.assertEqual(self.manifest()["jobs"][0]["job_id"], job_id)
+
+    def test_close_during_blocked_terminal_read_maps_detach_race_to_abort(self):
+        caller = ServiceStateStore(self.root)
+        first_read = threading.Event()
+        terminal_read = threading.Event()
+        release = threading.Event()
+        self.addCleanup(release.set)
+        read_calls = []
+        original_read = caller.read_wait_result
+
+        def blocked_read(job_id, waiter_id):
+            read_calls.append((job_id, waiter_id))
+            if len(read_calls) == 1:
+                result = original_read(job_id, waiter_id)
+                first_read.set()
+                return result
+            terminal_read.set()
+            release.wait(5)
+            return original_read(job_id, waiter_id)
+
+        caller.read_wait_result = blocked_read
+        acknowledgements = []
+        original_acknowledge = caller.acknowledge
+
+        def record_acknowledgement(job_id, waiter_id):
+            acknowledgements.append((job_id, waiter_id))
+            return original_acknowledge(job_id, waiter_id)
+
+        caller.acknowledge = record_acknowledgement
+        client = self.make_client(caller=caller)
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+        errors = []
+        invocation = threading.Thread(
+            target=lambda: self.capture_error(client, request, errors)
+        )
+        invocation.start()
+        job = self.wait_for_waiters(1)
+        self.assertTrue(first_read.wait(5))
+        job_id = self.complete_value({"handled": True})
+        self.assertTrue(terminal_read.wait(5))
+
+        client.close(wait=True)
+
+        current = self.manifest()["jobs"][0]
+        self.assertEqual(current["job_id"], job_id)
+        self.assertEqual(current["waiters"], [])
+        self.assertTrue(invocation.is_alive(), "close joined a blocked terminal read")
+        release.set()
+        invocation.join(5)
+        self.assertFalse(invocation.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], TMDBAbortError)
+        self.assertEqual(acknowledgements, [(job_id, job["waiters"][0])])
 
     def test_close_detaches_only_its_waiter_and_never_joins_or_stops_service(self):
         entered = threading.Event()

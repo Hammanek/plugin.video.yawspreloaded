@@ -221,9 +221,18 @@ class TMDBServiceClient:
                         raise TMDBAbortError("TMDB operation aborted")
                 if self.abort():
                     raise TMDBAbortError("TMDB operation aborted")
-                document = self._store_call(
-                    self.store.read_wait_result, job_id, waiter_id
-                )
+                try:
+                    document = self._store_call(
+                        self.store.read_wait_result, job_id, waiter_id
+                    )
+                except protocol.ProtocolError as error:
+                    with self._lock:
+                        closed = self._closed
+                    if closed and str(error) == (
+                        "waiter is not registered for this terminal result"
+                    ):
+                        raise TMDBAbortError("TMDB operation aborted") from None
+                    raise
                 if document is None:
                     if self._wait_slice():
                         raise TMDBAbortError("TMDB operation aborted")
@@ -256,13 +265,46 @@ class TMDBServiceClient:
             raise protocol.ProtocolError("session binding must be scalar text") from error
         return "v1:" + digest
 
+    @staticmethod
+    def _decode_trailer(value):
+        if type(value) is not dict or set(value) != {"status", "youtube_id"}:
+            raise protocol.ProtocolError("trailer service result has invalid fields")
+        status = value["status"]
+        youtube_id = value["youtube_id"]
+        if status == "hit":
+            if type(youtube_id) is not str or not youtube_id.strip():
+                raise protocol.ProtocolError("trailer hit requires a YouTube ID")
+        elif status in ("missing", "error"):
+            if youtube_id is not None:
+                raise protocol.ProtocolError(
+                    "missing/error trailer result cannot have a YouTube ID"
+                )
+        else:
+            raise protocol.ProtocolError("unknown trailer result status")
+        return TrailerLookup(status, youtube_id)
+
+    @staticmethod
+    def _decode_show(value):
+        if type(value) is not dict or set(value) != {"value", "succeeded"}:
+            raise protocol.ProtocolError("show service result has invalid fields")
+        if type(value["succeeded"]) is not bool:
+            raise protocol.ProtocolError("show succeeded must be boolean")
+        episode = value["value"]
+        if episode is not None and type(episode) is not dict:
+            raise protocol.ProtocolError("show value must be an object or null")
+        return copy.deepcopy(episode), value["succeeded"]
+
     def attach_repositories(self, trailer_repository, show_repository):
         """Route lookups through the service and make both parent caches read-only."""
         self._trailer_repository = trailer_repository
         self._show_repository = show_repository
         for repository in (trailer_repository, show_repository):
-            repository._coordinator = self
-            repository._read_only = True
+            with repository._lock:
+                repository._coordinator = self
+                repository._read_only = True
+                repository._save_pending = False
+                repository._dirty_entries.clear()
+                repository._changes_since_flush = 0
 
     def run_shared(self, key, operation):
         """Decode a metadata result; *operation* is deliberately never invoked."""
@@ -284,8 +326,8 @@ class TMDBServiceClient:
         try:
             value = self._execute(request)
             if family == "trailer":
-                return TrailerLookup(value["status"], value["youtube_id"])
-            return copy.deepcopy(value["value"]), value["succeeded"]
+                return self._decode_trailer(value)
+            return self._decode_show(value)
         except TMDBError:
             if family == "trailer":
                 self.logger.exception("TMDB trailer service lookup failed")
