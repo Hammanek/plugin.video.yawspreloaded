@@ -28,6 +28,8 @@ from yawsp_app.tmdb import (
     TMDBError,
     TrailerLookup,
     TrailerRepository,
+    execute_show_metadata,
+    execute_trailer_metadata,
 )
 
 
@@ -1876,6 +1878,28 @@ class GenreRepositoryTests(TMDBServiceTestCase):
 
 
 class BackgroundPrefetchTests(TMDBServiceTestCase):
+    def test_extracted_metadata_entrypoints_preserve_exact_domain_outcomes(self):
+        client, _, _, _ = self.make_client(
+            [
+                json_response(
+                    {
+                        "results": [
+                            {"site": "YouTube", "type": "Trailer", "key": "shared"}
+                        ]
+                    }
+                ),
+                json_response({"next_episode_to_air": None}),
+            ]
+        )
+        trailers = TrailerRepository(client, self.trailer_cache)
+        shows = ShowRepository(client, self.show_cache)
+
+        self.assertEqual(
+            execute_trailer_metadata(trailers, "movie", 5),
+            TrailerLookup("hit", "shared"),
+        )
+        self.assertEqual(execute_show_metadata(shows, 6), (None, True))
+
     def make_background(self, sessions, worker, settings=None, abort=None, max_pending=32):
         session_iter = iter(sessions)
         created = []

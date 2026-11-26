@@ -628,6 +628,16 @@ class ShowRepository(_Repository):
             return next_episode, True
 
 
+def execute_trailer_metadata(repository, media, media_id):
+    """Execute the stable trailer domain operation without a queue closure."""
+    return repository._lookup(str(media).strip(), int(media_id))
+
+
+def execute_show_metadata(repository, show_id):
+    """Return the public next-episode value and its genuine-success flag."""
+    return repository._next_episode(int(show_id))
+
+
 class GenreRepository:
     """Share process-local genre mappings and optionally sequential public files."""
 
@@ -1408,15 +1418,15 @@ class BackgroundPrefetch:
                 if family == "trailer":
                     result = self._run_reserved(
                         key,
-                        lambda media=media, media_id=media_id: repositories[
-                            "trailer"
-                        ]._lookup(media, media_id),
+                        lambda media=media, media_id=media_id: execute_trailer_metadata(
+                            repositories["trailer"], media, media_id
+                        ),
                     )
                 else:
                     result = self._run_reserved(
                         key,
-                        lambda media_id=media_id: repositories["show"]._next_episode(
-                            media_id
+                        lambda media_id=media_id: execute_show_metadata(
+                            repositories["show"], media_id
                         ),
                     )
                 if result is _CANCELLED:
