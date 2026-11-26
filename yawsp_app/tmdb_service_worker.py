@@ -5,6 +5,8 @@ queue executor, parent transport callback, Kodi import, or UI responsibilities.
 """
 
 import copy
+from contextlib import nullcontext
+import hashlib
 import logging
 import secrets
 import time
@@ -21,12 +23,20 @@ from yawsp_app.tmdb import (
     TrailerRepository,
     execute_show_metadata,
     execute_trailer_metadata,
+    execute_watched_removal,
+    fetch_complete_watchlist,
+    resolve_watchlist_account,
+    watchlist_operation_client,
 )
+from yawsp_app.watchlist_snapshot import SnapshotScope
 
 
 _LOGGER = logging.getLogger(__name__)
 _IDLE_WAIT = 0.05
 _METADATA_OPERATIONS = frozenset(("metadata.trailer", "metadata.show"))
+_WATCHLIST_OPERATIONS = frozenset(
+    ("watchlist.refresh", "watchlist.watched", "identity.invalidate")
+)
 
 
 class ServiceMetadataEngine:
@@ -115,6 +125,279 @@ class ServiceMetadataEngine:
             self._closed = True
 
 
+class _IdentityContext:
+    """Adapt the store's real OS identity transaction to TMDB's lock interface."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.manager = None
+
+    def __enter__(self):
+        if self.owner is None:
+            self.manager = nullcontext()
+        elif hasattr(self.owner, "identity_transaction"):
+            self.manager = self.owner.identity_transaction()
+        elif hasattr(self.owner, "__enter__"):
+            self.manager = self.owner
+        else:
+            self.manager = self.owner()
+        return self.manager.__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return self.manager.__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.manager = None
+
+
+class ServiceWatchlistEngine:
+    """Service-only complete snapshots, watched mutations, and scoped invalidation."""
+
+    def __init__(
+        self,
+        settings,
+        snapshot_store,
+        locale_mapper,
+        identity_lock,
+        session,
+        abort,
+        logger,
+    ):
+        self.settings = settings
+        self.snapshot_store = snapshot_store
+        self.locale_mapper = locale_mapper
+        self.identity_lock = identity_lock
+        self.session = session
+        self.abort = abort or (lambda: False)
+        self.logger = logger or _LOGGER
+        self._claim = None
+        self._closed = False
+        self._client = TMDBClient(
+            session,
+            settings,
+            locale_mapper,
+            abort=self.abort,
+            logger=self.logger,
+            identity_lock=_IdentityContext(identity_lock),
+        )
+
+    def _identity(self):
+        return _IdentityContext(self.identity_lock)
+
+    @staticmethod
+    def _setting(settings, key):
+        return str(settings.get(key) or "").strip()
+
+    @staticmethod
+    def _binding(session_id):
+        try:
+            digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+        except UnicodeError as error:
+            raise TMDBError("TMDB session binding is invalid") from error
+        return "v1:" + digest
+
+    def _capture(self, request, scope, allow_missing=False):
+        with self._identity():
+            session_id = self._setting(self.settings, "tmdb_access_token")
+            account_id = self._setting(self.settings, "tmdb_account_id")
+            valid = (
+                bool(session_id)
+                and self._binding(session_id) == request["session_binding"]
+                and (
+                    account_id == scope.account_id
+                    or (allow_missing and not account_id)
+                )
+                and self.locale_mapper() == scope.language
+            )
+        if not valid:
+            raise TMDBError("TMDB identity changed before watchlist operation")
+        return session_id, not account_id
+
+    def _valid_operation(self, scope, session_id, allow_missing=False):
+        def valid():
+            with self._identity():
+                account_id = self._setting(self.settings, "tmdb_account_id")
+                return (
+                    self._setting(self.settings, "tmdb_access_token") == session_id
+                    and (
+                        account_id == scope.account_id
+                        or (allow_missing and not account_id)
+                    )
+                    and self.locale_mapper() == scope.language
+                )
+
+        return valid
+
+    @staticmethod
+    def _require_valid(valid):
+        if not valid():
+            raise TMDBError("TMDB identity changed during watchlist operation")
+
+    def _invalidate_if_cleared(self, scope):
+        # The scoped operation client clears only a still-current raw 401 token.
+        # Recheck under the same OS lock before tombstoning just that old account.
+        with self._identity():
+            cleared = not (
+                self._setting(self.settings, "tmdb_access_token")
+                or self._setting(self.settings, "tmdb_account_id")
+            )
+        if cleared:
+            self.snapshot_store.invalidate_identity(scope.account_id)
+
+    def _ensure_refresh(self, request, generation):
+        if self._claim is None:
+            return None
+        scope = request["params"]["scope"]
+        followup = protocol.watchlist_request(
+            scope,
+            generation,
+            True,
+            request["allow_missing_account"],
+            request["session_binding"],
+        )
+        row = self.identity_lock.ensure_followup(self._claim, followup)
+        if type(row) is not dict or row.get("status") not in ("accepted", "joined"):
+            raise TMDBError("TMDB watchlist continuation could not be reserved")
+        return row
+
+    @staticmethod
+    def _value(scope, revision, generation):
+        return {
+            "scope": {
+                "account_id": scope.account_id,
+                "media": scope.media,
+                "language": scope.language,
+                "schema": scope.schema,
+            },
+            "revision": revision,
+            "generation": generation,
+        }
+
+    def bind_claim(self, claim):
+        """Bind only the runner's current fenced claim to durable continuations."""
+        if claim is not None and self._claim is not None:
+            raise TMDBError("TMDB watchlist engine already has an active claim")
+        self._claim = copy.deepcopy(claim)
+
+    def _refresh(self, request):
+        scope = SnapshotScope(**request["params"]["scope"])
+        allow_missing = request["allow_missing_account"]
+        session_id, account_was_missing = self._capture(
+            request, scope, allow_missing
+        )
+        valid = self._valid_operation(scope, session_id, allow_missing)
+        self._require_valid(valid)
+        if account_was_missing:
+            def resolution_valid(resolved_account):
+                return (
+                    resolved_account == scope.account_id
+                    and self._setting(self.settings, "tmdb_access_token") == session_id
+                    and self._setting(self.settings, "tmdb_account_id") in ("", scope.account_id)
+                    and self.locale_mapper() == scope.language
+                )
+
+            resolved = resolve_watchlist_account(
+                self._client,
+                session_id,
+                scope.language,
+                resolution_valid,
+                identity_lock=self._identity(),
+            )
+            if resolved != scope.account_id:
+                raise TMDBError("TMDB account resolution returned another account")
+            self._require_valid(valid)
+        client = watchlist_operation_client(
+            self._client,
+            scope,
+            session_id,
+            identity_lock=self._identity(),
+        )
+        try:
+            results = fetch_complete_watchlist(client, scope, operation_valid=valid)
+            self._require_valid(valid)
+            saved = self.snapshot_store.save_complete(
+                scope,
+                results,
+                time.time(),
+                expected_generation=request["generation"],
+            )
+            if saved is None:
+                self._ensure_refresh(request, self.snapshot_store.generation(scope))
+                raise TMDBError("TMDB watchlist generation changed during refresh")
+            return self._value(scope, saved.revision, saved.generation)
+        except Exception:
+            self._invalidate_if_cleared(scope)
+            raise
+
+    def _watched(self, request):
+        scope = SnapshotScope(**request["params"]["scope"])
+        session_id, _account_was_missing = self._capture(request, scope)
+        valid = self._valid_operation(scope, session_id)
+        client = watchlist_operation_client(
+            self._client,
+            scope,
+            session_id,
+            identity_lock=self._identity(),
+        )
+        try:
+            if not execute_watched_removal(
+                client, scope, request["params"]["media_id"]
+            ):
+                raise TMDBError("TMDB watched operation was not accepted")
+            self._require_valid(valid)
+            self.snapshot_store.remove(scope, request["params"]["media_id"])
+            generation = self.snapshot_store.generation(scope)
+            self._ensure_refresh(
+                protocol.watchlist_request(
+                    request["params"]["scope"],
+                    generation,
+                    True,
+                    False,
+                    request["session_binding"],
+                ),
+                generation,
+            )
+            latest = self.snapshot_store.load(scope)
+            if latest is None:
+                raise TMDBError("TMDB watched snapshot is not complete")
+            return self._value(scope, latest.revision, generation)
+        except Exception:
+            self._invalidate_if_cleared(scope)
+            raise
+
+    def _invalidate(self, request):
+        account_id = request["params"]["account_id"]
+        with self._identity():
+            session_id = self._setting(self.settings, "tmdb_access_token")
+            current_account = self._setting(self.settings, "tmdb_account_id")
+            matches = self._binding(session_id) == request["session_binding"] and (
+                not current_account or current_account == account_id
+            )
+        if not matches:
+            return {"invalidated": False}
+        return {"invalidated": self.snapshot_store.invalidate_identity(account_id)}
+
+    def execute(self, request):
+        """Execute one closed descriptor without holding identity locks over HTTP."""
+        if self._closed:
+            raise TMDBError("TMDB watchlist engine is closed")
+        request = protocol.validate_job(request)
+        operation = request["operation"]
+        if operation == "watchlist.refresh":
+            return self._refresh(request)
+        if operation == "watchlist.watched":
+            return self._watched(request)
+        if operation == "identity.invalidate":
+            return self._invalidate(request)
+        raise protocol.ProtocolError("watchlist engine received another operation family")
+
+    def flush(self):
+        """Snapshot mutations commit synchronously; there is no deferred cache."""
+
+    def close(self):
+        self._closed = True
+
+
 class _OperationAborted(Exception):
     """Internal control flow; never serialized as an arbitrary exception."""
 
@@ -147,7 +430,7 @@ class ServiceRunner:
         self._stopping = False
         self._closed = False
         self._session = None
-        self._engines = []
+        self._engines = {}
 
     def _ensure_started(self):
         if self._started:
@@ -176,13 +459,21 @@ class ServiceRunner:
         if self.abort():
             raise _OperationAborted()
 
-    def _ensure_engines(self):
+    def _ensure_engines(self, operation):
+        family = "metadata" if operation in _METADATA_OPERATIONS else "watchlist"
+        engine = self._engines.get(family)
+        if engine is not None:
+            return engine
         if self._session is None:
             # The only Requests session is constructed here, inside a draining
             # service invocation.  No caller-supplied transport is accepted.
             self._session = requests.Session()
-        if not self._engines:
-            self._engines.append(self.metadata_engine_factory(self._session))
+        if family == "metadata":
+            engine = self.metadata_engine_factory(self._session)
+        else:
+            engine = self.watchlist_engine_factory(self._session)
+        self._engines[family] = engine
+        return engine
 
     @staticmethod
     def _valid_metadata_success(request, value):
@@ -239,18 +530,33 @@ class ServiceRunner:
         except Exception:
             self.logger.error("Unable to reconcile final TMDB service error")
 
+    def _execute_watchlist(self, claim, engine):
+        engine.bind_claim(claim)
+        try:
+            if self.abort():
+                raise _OperationAborted()
+            value = engine.execute(claim["request"])
+            if self.abort():
+                raise _OperationAborted()
+            return value
+        finally:
+            engine.bind_claim(None)
+
     def _execute_claim(self, claim):
         request = claim["request"]
         operation = request["operation"]
-        if operation not in _METADATA_OPERATIONS:
+        if operation not in _METADATA_OPERATIONS | _WATCHLIST_OPERATIONS:
             # Later families cannot invoke a parent callback or accidentally
             # construct HTTP while their real engines are not yet implemented.
             self._abort_claim(claim, "UNAVAILABLE")
             return
+        family = "metadata" if operation in _METADATA_OPERATIONS else "watchlist"
         try:
-            self._ensure_engines()
-            engine = self._engines[0]
-            value = self._execute_metadata(claim, engine)
+            engine = self._ensure_engines(operation)
+            if family == "metadata":
+                value = self._execute_metadata(claim, engine)
+            else:
+                value = self._execute_watchlist(claim, engine)
             document = protocol.make_result(claim["job_id"], "succeeded", value)
         except _OperationAborted:
             self._abort_claim(claim, "ABORTED")
@@ -259,11 +565,11 @@ class ServiceRunner:
             # Domain repositories normally convert transport/validation errors
             # into typed values. This branch isolates implementation poison and
             # never logs arbitrary exception text or nested request details.
-            self.logger.error("TMDB metadata service operation failed")
+            self.logger.error("TMDB %s service operation failed", family)
             self._abort_claim(claim, "FAILED")
             return
         except BaseException:
-            self.logger.error("TMDB metadata service operation is unwinding")
+            self.logger.error("TMDB %s service operation is unwinding", family)
             code = "ABORTED" if self.abort() else "FAILED"
             self._abort_claim(claim, code)
             raise
@@ -271,12 +577,12 @@ class ServiceRunner:
 
     def _finish_cycle(self):
         try:
-            for engine in self._engines:
+            for engine in self._engines.values():
                 try:
                     engine.flush()
                 except Exception:
                     self.logger.error("Unable to flush final TMDB service metadata")
-            for engine in self._engines:
+            for engine in self._engines.values():
                 try:
                     engine.close()
                 except Exception:
@@ -284,7 +590,7 @@ class ServiceRunner:
         finally:
             session = self._session
             self._session = None
-            self._engines = []
+            self._engines = {}
             if session is not None:
                 try:
                     session.close()

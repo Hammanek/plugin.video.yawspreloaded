@@ -836,6 +836,31 @@ def watchlist_operation_client(client, scope, session_id, identity_lock=None):
     )
 
 
+def execute_watched_removal(client, scope, media_id):
+    """Post the existing watched mutation and validate its handled API success."""
+    response = client.request(
+        "POST",
+        "/3/account/{0}/watchlist".format(scope.account_id),
+        json_data={
+            "media_type": "movie" if scope.media == "movies" else "tv",
+            "media_id": int(media_id),
+            "watchlist": False,
+        },
+    )
+    try:
+        try:
+            data = response.json()
+        except (TypeError, ValueError) as error:
+            raise TMDBError("TMDB watched response is malformed") from error
+        return (
+            response.status_code in (200, 201)
+            and isinstance(data, dict)
+            and data.get("success") is True
+        )
+    finally:
+        response.close()
+
+
 class _PendingLookup:
     """One reservation's result, shared with any concurrent on-demand caller."""
 
