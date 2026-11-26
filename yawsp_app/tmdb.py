@@ -41,6 +41,26 @@ class TMDBAbortError(TMDBError):
     """The caller's abort predicate interrupted TMDB work."""
 
 
+class TMDBServiceError(TMDBError):
+    """A fixed, typed failure at the native TMDB service boundary."""
+
+
+class TMDBServiceUnavailableError(TMDBServiceError):
+    """The native TMDB service is unavailable."""
+
+
+class TMDBServiceBackpressuredError(TMDBServiceError):
+    """The native TMDB service rejected work at a bounded limit."""
+
+
+class TMDBServiceShuttingDownError(TMDBServiceError):
+    """The native TMDB service is stopping or this invocation is closed."""
+
+
+class TMDBServiceResultExpiredError(TMDBServiceError):
+    """The requested native service result is no longer retained."""
+
+
 def _sanitize_requests_error(error):
     """Retain the direct cause type while keeping nested request details out of logs."""
     error.args = ()
@@ -297,7 +317,15 @@ def fetch_complete_watchlist(client, scope, operation_valid=None):
 
 
 class _Repository:
-    def __init__(self, client, cache, clock=time.time, logger=None, _defer_save=False):
+    def __init__(
+        self,
+        client,
+        cache,
+        clock=time.time,
+        logger=None,
+        _defer_save=False,
+        _read_only=False,
+    ):
         self.client = client
         self.cache = cache
         self.clock = clock
@@ -305,6 +333,7 @@ class _Repository:
         self._entries = None
         self._lock = threading.RLock()
         self._defer_save = _defer_save
+        self._read_only = _read_only
         self._coordinator = None
         self._save_pending = False
         self._dirty_entries = {}
@@ -321,6 +350,8 @@ class _Repository:
 
     def _save_success(self, key):
         """Persist immediately on demand, or checkpoint a worker after eight successes."""
+        if self._read_only:
+            return
         self._save_pending = True
         self._dirty_entries[key] = self._entries[key]
         if not self._defer_save:
@@ -377,9 +408,8 @@ class TrailerRepository(_Repository):
             elif isinstance(raw, str) and raw.strip():
                 self._entries[key] = {"ts": self.clock(), "youtube_id": raw.strip()}
                 migrated = True
-        if migrated:
-            # Persist once so migration time, and therefore the seven-day TTL,
-            # does not restart whenever a new repository opens the old cache.
+        if migrated and not self._read_only:
+            # Only a service-owned repository may migrate legacy cache bytes.
             self.cache.save(self._entries)
 
     def _entry(self, key):
@@ -564,6 +594,15 @@ class ShowRepository(_Repository):
             ("show", normalized_id),
             lambda: self._next_episode(normalized_id),
         )[0]
+
+    def _service_failure(self, show_id):
+        """Keep the legacy display fallback when the parent service call fails."""
+        key = self._key(show_id)
+        self.logger.exception("TMDB show detail failed for %s", key)
+        with self._lock:
+            self._load()
+            cached = self._entry(key)
+            return (cached["next"] if cached is not None else None), False
 
     def _next_episode(self, show_id):
         """Return the display value and whether fresh/successful data supplied it."""
