@@ -17,8 +17,8 @@ from tests.test_runtime import RecordingLogger
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.runtime import ActionRunner, KodiRuntime
 from yawsp_app.watchlist_snapshot import SnapshotPersistenceError, SnapshotScope
+from tests.support.background_prefetch import BackgroundPrefetch
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     ShowRepository,
     TMDBClient,
     TMDBError,

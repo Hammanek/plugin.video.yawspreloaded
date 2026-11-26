@@ -3,7 +3,11 @@ import unittest
 import xml.etree.ElementTree as ET
 from urllib.parse import parse_qs, urlsplit
 
-from tests.test_entrypoint import json_response, production_tmdb_invocation
+from tests.test_entrypoint import (
+    json_response,
+    production_tmdb_invocation,
+    service_jobs,
+)
 from yawsp_app import router as production_router
 from yawsp_app import tmdb_ui as production_tmdb_ui
 
@@ -49,7 +53,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                 {"action": "tmdb_discovery"},
             )
             self.assertEqual(session.calls, [])
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
 
     def test_missing_source_selects_four_categories_without_http(self):
@@ -80,7 +84,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(all(row["isFolder"] for row in recorder.items))
             self.assertEqual(session.calls, [])
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(
                 recorder.end_of_directory_calls,
                 [
@@ -178,7 +182,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                     {"language": "en-US", "api_key": "offline-api-key"},
                 )
                 self.assertNotIn("session_id", call["kwargs"]["params"])
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertTrue(recorder.end_of_directory_calls[-1]["succeeded"])
             self.assertEqual(recorder.builtin_commands, ["Container.SetViewMode(54)"])
@@ -226,7 +230,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
                 ],
             )
             self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertEqual(recorder.builtin_commands, ["Container.SetViewMode(54)"])
             self.assertEqual(addon.getSetting("tmdb_view_defaulted"), "true")
@@ -270,7 +274,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(original_identity, ("session-1", "account-1"))
             self.assertFalse(any("/account" in call["url"] for call in session.calls))
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             public_log = "\n".join(logged.output)
             for secret in ("offline-api-key", "session-1", "account-1"):
                 self.assertNotIn(secret, public_log)
@@ -289,7 +293,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(session.calls, [])
             self.assertEqual(addon.open_settings_calls, 1)
             self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(recorder.items, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])
@@ -305,7 +309,7 @@ class DiscoveryIntegrationTests(unittest.TestCase):
             self.assertEqual(session.calls, [])
             self.assertEqual(addon.open_settings_calls, 0)
             self.assertNotIn(("getSetting", "discovery_native_wall"), addon.calls)
-            self.assertEqual(owner.background.worker.jobs, [])
+            self.assertEqual(service_jobs(owner, pending=True), [])
             self.assertEqual(recorder.items, [])
             self.assertEqual(len(recorder.end_of_directory_calls), 1)
             self.assertFalse(recorder.end_of_directory_calls[-1]["succeeded"])

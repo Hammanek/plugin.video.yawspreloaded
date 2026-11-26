@@ -52,26 +52,48 @@ class SerialStore(ServiceStateStore):
     """Drain the real serial runner as a deterministic native-service test seam."""
 
     runner = None
+    drain_background = True
+
+    def _drain(self):
+        if self._draining:
+            self._drain_again = True
+            return
+        self._draining = True
+        try:
+            self.runner.run_once()
+        finally:
+            self._draining = False
+            if self._drain_again:
+                self._drain_again = False
+                self._drain()
 
     def join(self, request, waiter_id):
         row = super().join(request, waiter_id)
         if row["status"] in ("accepted", "joined"):
-            self.runner.run_once()
+            self._drain()
         return row
 
     def submit(self, requests, **kwargs):
         rows = super().submit(requests, **kwargs)
-        if any(row["status"] in ("accepted", "joined") for row in rows):
-            self.runner.run_once()
+        if (
+            self.drain_background or kwargs.get("interactive")
+        ) and any(row["status"] in ("accepted", "joined") for row in rows):
+            self._drain()
         return rows
 
 
 class NativeComposition:
-    def __init__(self, test, service_responses=()):
+    def __init__(
+        self, test, service_responses=(), share_session=False, drain_background=True
+    ):
         self.test = test
         self.service_session = FakeSession(service_responses)
-        self.parent_session = FakeSession()
+        self.parent_session = (
+            self.service_session if share_session else FakeSession()
+        )
         self.parent_session.headers = {}
+        self.service_session.headers = self.parent_session.headers
+        self.drain_background = drain_background
 
     def __enter__(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -115,8 +137,8 @@ class NativeComposition:
                 30439: "Local cache",
                 30440: "No results",
                 30441: "Objevit",
-                30442: "Popular",
-                30443: "Top rated",
+                30442: "Populární",
+                30443: "Nejlépe hodnocené",
             }
         )
         sys.modules["xbmc"].translatePath = lambda _value: self.profile
@@ -139,6 +161,9 @@ class NativeComposition:
             os.path.join(self.profile, "tmdb_genres.json")
         ))
         self.store = SerialStore(self.profile)
+        self.store.drain_background = self.drain_background
+        self.store._draining = False
+        self.store._drain_again = False
         logger = logging.getLogger("test.native.composition")
         abort = lambda: False
         self.runner = ServiceRunner(
@@ -147,7 +172,7 @@ class NativeComposition:
                 self.settings,
                 self.trailer_cache,
                 self.show_cache,
-                lambda: "en-US",
+                lambda: production_router.kodi_language(sys.modules["xbmc"].getLanguage()),
                 session,
                 abort,
                 logger,
@@ -155,7 +180,7 @@ class NativeComposition:
             lambda session: ServiceWatchlistEngine(
                 self.settings,
                 self.snapshots,
-                lambda: "en-US",
+                lambda: production_router.kodi_language(sys.modules["xbmc"].getLanguage()),
                 self.store,
                 session,
                 abort,
@@ -165,7 +190,7 @@ class NativeComposition:
             lambda session: ServiceOperationEngine(
                 self.settings,
                 self.genres,
-                lambda: "en-US",
+                lambda: production_router.kodi_language(sys.modules["xbmc"].getLanguage()),
                 self.store,
                 session,
                 abort,
@@ -198,6 +223,7 @@ class NativeComposition:
         self.no_executor = mock.patch(
             "yawsp_app.tmdb.ThreadPoolExecutor",
             side_effect=AssertionError("parent TMDB executor is forbidden"),
+            create=True,
         )
         self.no_executor.start()
         self.test.addCleanup(self.no_executor.stop)
@@ -224,6 +250,14 @@ class NativeComposition:
 class ProductionCompositionTests(unittest.TestCase):
     def tearDown(self):
         production_router.close()
+
+    def test_shipped_tmdb_has_no_legacy_prefetch_or_executor_but_downloads_keep_theirs(self):
+        from yawsp_app import download_jobs, tmdb as legacy_probe
+
+        self.assertFalse(hasattr(legacy_probe, "BackgroundPrefetch"))
+        self.assertFalse(hasattr(legacy_probe, "ThreadPoolExecutor"))
+        self.assertTrue(hasattr(download_jobs.threading, "Thread"))
+        self.assertIs(download_jobs.threading.Thread.__module__, "threading")
 
     def test_owner_uses_service_client_without_tmdb_executor_or_parent_worker(self):
         with NativeComposition(self) as native:
@@ -263,6 +297,72 @@ class ProductionCompositionTests(unittest.TestCase):
                     "https://api.themoviedb.org/3/authentication/session/new",
                 ],
             )
+
+    def test_real_pending_401_abort_preserves_identity_without_service_http(self):
+        with NativeComposition(self) as native:
+            native.parent_session.queue_response(response({"request_token": "request-token"}))
+            pending = response({"success": False}, status_code=401)
+            native.parent_session.queue_response(pending)
+
+            class AbortAfterPending:
+                def waitForAbort(self, _seconds):
+                    return True
+
+            native.owner._runtime_options["monitor_factory"] = AbortAfterPending
+            result = production_router.router("action=tmdb_auth")
+            self.assertFalse(result.handled)
+            self.assertTrue(pending.closed)
+            self.assertEqual(native.addon.getSetting("tmdb_access_token"), "session-1")
+            self.assertEqual(native.addon.getSetting("tmdb_account_id"), "account-1")
+            self.assertEqual(native.service_session.calls, [])
+            self.assertEqual(len(native.parent_session.calls), 2)
+
+    def test_real_pending_then_success_invalidates_only_old_scope_via_service(self):
+        with NativeComposition(self) as native:
+            old_scope = SnapshotScope("account-1", "movies", "en-US")
+            replacement_scope = SnapshotScope("account-2", "movies", "en-US")
+            native.snapshots.save_complete(old_scope, [{"id": 1, "title": "Old"}], 0.0)
+            replacement = native.snapshots.save_complete(
+                replacement_scope, [{"id": 2, "title": "Replacement"}], 100.0
+            )
+            native.parent_session.queue_response(response({"request_token": "request-token"}))
+            native.parent_session.queue_response(response({"success": False}, status_code=401))
+            native.parent_session.queue_response(response({"session_id": "session-2"}))
+            invalidations = []
+            original = native.store.identity_transaction
+
+            def observed_identity():
+                invalidations.append("os-transaction")
+                return original()
+
+            native.store.identity_transaction = observed_identity
+            result = production_router.router("action=tmdb_auth")
+            self.assertTrue(result.handled)
+            self.assertIn("os-transaction", invalidations)
+            self.assertIsNone(native.snapshots.load(old_scope))
+            self.assertEqual(native.snapshots.load(replacement_scope), replacement)
+            self.assertEqual(native.addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(native.addon.getSetting("tmdb_account_id"), "")
+            self.assertEqual(native.service_session.calls, [])
+
+    def test_wrong_bound_identity_cannot_delete_replacement_scopes(self):
+        with NativeComposition(self) as native:
+            old_scope = SnapshotScope("account-1", "movies", "en-US")
+            new_scope = SnapshotScope("account-2", "movies", "en-US")
+            old = native.snapshots.save_complete(old_scope, [{"id": 1, "title": "Old"}], 0.0)
+            new = native.snapshots.save_complete(new_scope, [{"id": 2, "title": "New"}], 100.0)
+            native.addon.setSetting("tmdb_account_id", "account-2")
+            native.addon.setSetting("tmdb_access_token", "session-2")
+            old_binding = "v1:" + hashlib.sha256(b"session-1").hexdigest()
+            result = native.owner.background.run_operation(
+                protocol.invalidate_identity_request("account-1", old_binding)
+            )
+            self.assertEqual(result, {"invalidated": False})
+            self.assertEqual(native.snapshots.load(old_scope), old)
+            self.assertEqual(native.snapshots.load(new_scope), new)
+            self.assertEqual(native.addon.getSetting("tmdb_access_token"), "session-2")
+            self.assertEqual(native.addon.getSetting("tmdb_account_id"), "account-2")
+            self.assertEqual(native.service_session.calls, [])
 
     def test_root_order_and_cold_then_fresh_warm_watchlist_use_only_the_service(self):
         movie = {

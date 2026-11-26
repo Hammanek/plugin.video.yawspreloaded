@@ -8,13 +8,13 @@ import threading
 import time
 
 from yawsp_app import tmdb_service_protocol as protocol
+from tests.support.background_prefetch import BackgroundPrefetch
 from yawsp_app.discovery_ui import (
     CATALOG_SOURCES,
     map_discovery_record,
     versioned_catalog_path,
 )
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     TMDBClient,
     TMDBError,
     execute_watched_removal,

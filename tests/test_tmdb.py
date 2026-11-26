@@ -20,8 +20,8 @@ from tests.support.kodi_stubs import KodiRecorder
 from yawsp_app.genre_file_cache import GenreFileCache
 from yawsp_app.json_cache import AtomicJsonCache
 from yawsp_app.watchlist_snapshot import SnapshotScope, WatchlistSnapshotStore
+from tests.support.background_prefetch import BackgroundPrefetch
 from yawsp_app.tmdb import (
-    BackgroundPrefetch,
     ShowRepository,
     TMDBAbortError,
     TMDBClient,

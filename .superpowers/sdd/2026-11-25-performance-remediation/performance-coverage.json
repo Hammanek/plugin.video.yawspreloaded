@@ -54,7 +54,7 @@
         {"module": "yawsp_app.watchlist_snapshot", "symbol": "WatchlistSnapshotStore.load"},
         {"module": "yawsp_app.watchlist_snapshot", "symbol": "WatchlistSnapshotStore.save_complete"},
         {"module": "yawsp_app.tmdb", "symbol": "fetch_complete_watchlist"},
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch._run_watchlist"}
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch._run_watchlist"}
       ],
       "mutation_sensitive_tests": [
         "tests.test_tmdb_ui.TMDBUITests.test_warm_snapshot_has_zero_account_or_watchlist_calls_and_refreshes_after_end",
@@ -263,8 +263,8 @@
     {
       "id": "PERF-06",
       "production_symbols": [
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch.submit_metadata"},
-        {"module": "yawsp_app.tmdb", "symbol": "BackgroundPrefetch._schedule_metadata"},
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch.submit_metadata"},
+        {"module": "tests.support.background_prefetch", "symbol": "BackgroundPrefetch._schedule_metadata"},
         {"module": "yawsp_app.tmdb", "symbol": "_Repository._shared_lookup"},
         {"module": "yawsp_app.tmdb", "symbol": "GenreRepository.get"},
         {"module": "yawsp_app.tmdb_ui", "symbol": "build_tmdb_handlers"}
