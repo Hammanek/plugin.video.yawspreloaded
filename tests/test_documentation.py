@@ -266,8 +266,8 @@ class DocumentationContractTests(unittest.TestCase):
 
     def test_readme_preserves_version_installation_and_tmdb_qr_setup(self):
         addon_version = ET.parse(str(ROOT / "addon.xml")).getroot().get("version")
-        self.assertEqual(addon_version, "2.0.0")
-        self.assertIn("verze-2.0.0-blue.svg", self.readme)
+        self.assertEqual(addon_version, "2.1.0")
+        self.assertIn("verze-2.1.0-blue.svg", self.readme)
         self.assertIn(
             "https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest",
             self.readme,
@@ -322,30 +322,24 @@ class DocumentationContractTests(unittest.TestCase):
             with self.subTest(benchmark=benchmark):
                 self.assertIn(benchmark, self.readme)
 
-    def test_addon_news_is_concise_xml_for_the_existing_2_0_0_release(self):
+    def test_addon_news_is_concise_xml_for_the_2_1_lifecycle_and_ui_release(self):
         addon = ET.parse(str(ROOT / "addon.xml")).getroot()
+        self.assertEqual(addon.get("version"), "2.1.0")
         news = addon.findtext("./extension[@point='xbmc.addon.metadata']/news")
         self.assertIsNotNone(news)
         normalized = " ".join(news.split())
         self.assertTrue(normalized)
         self.assertLessEqual(len(normalized), 1000)
-        self.assertIn("2.0.0", normalized)
-        for phrase in ("jednotným routerem", "32", "watchlist", "QR", "front", "histori", "Kodi"):
+        for phrase in (
+            "2.1.0", "jednotným routerem", "nativní služba", "32", "Objevit",
+            "lokální mezipaměti", "duplicitních roků", "watchlist", "QR",
+            "front", "histori", "Kodi",
+        ):
             with self.subTest(phrase=phrase):
                 self.assertRegex(normalized, "(?i)" + re.escape(phrase))
-        for unreleased in (
-            "Objevit",
-            "discovery_native_wall",
-            "Backup DB",
-            "InfoTag",
-            "nativní služb",
-            "transport",
-            "CI",
-            "2.0.1",
-            "2.1",
-        ):
-            with self.subTest(unreleased=unreleased):
-                self.assertNotRegex(normalized, "(?i)" + re.escape(unreleased))
+        for retired in ("discovery_native_wall", "Backup DB", "WindowXML"):
+            with self.subTest(retired=retired):
+                self.assertNotRegex(normalized, "(?i)" + re.escape(retired))
 
     def test_readme_documents_native_metadata_and_manual_watchlist_refresh(self):
         for phrase in (
@@ -841,45 +835,34 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertRegex(self.readme, r"(?i)Temp.{0,180}originál|originál.{0,180}Temp")
         self.assertRegex(self.readme, r"(?i)ne(?:vypis|zobraz)\w*.{0,80}(?:obsah|taj|přihlaš)|bez.{0,50}výpis\w*.{0,50}(?:obsah|archiv)")
 
-    def test_readme_limits_live_environment_claims_and_marks_external_review_pending(self):
+    def test_readme_limits_live_environment_claims_and_marks_visual_acceptance(self):
         self.assertIn("Kodi 21.2 (Omega), Windows Store x64", self.readme)
-        for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS", "Task 4"):
+        for phrase in ("Python 3.8", "AST", "Python 3.12", "Kodi 19", "ARM", "SMB/NFS"):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, self.readme)
-        self.assertNotIn("Task 9", self.readme)
         self.assertRegex(self.readme, r"(?i)Python 3\.8.{0,100}(?:AST|statick).{0,200}(?:ne|není).{0,120}Kodi 19|Kodi 19.{0,150}Python 3\.8")
         self.assertRegex(self.readme, r"(?i)nebyl\w*.{0,100}skutečn\w* přehrávání|skutečn\w* přehrávání.{0,100}nebyl\w*")
-        self.assertRegex(self.readme, r"(?i)této větve.{0,140}Objevit|Objevit.{0,140}této větve")
-        self.assertRegex(self.readme, r"(?i)Task 4.{0,260}před sloučením|před sloučením.{0,260}Task 4")
-        self.assertRegex(self.readme, r"(?i)nativn\w*.{0,30}služb\w*.{0,100}nebyl\w* vydán|nebyl\w* vydán.{0,100}nativn\w*.{0,30}služb\w*")
-        lifecycle_match = re.search(
-            r"^### Naměřené chování a jeho hranice\s*$\n(.*?)(?=^## )",
+        self.assertNotIn("visual_acceptance=pending", self.readme)
+        visual_match = re.search(
+            r"^## 📸 Vizuální akceptace 2\.1\.0\s*$\n(.*?)(?=^## )",
             self.readme,
             re.MULTILINE | re.DOTALL,
         )
-        self.assertIsNotNone(lifecycle_match)
-        lifecycle = re.sub(r"\s+", " ", lifecycle_match.group(1))
-        self.assertRegex(
-            lifecycle,
-            r"(?i)izolovan\w* profil.{0,180}Objevit|Objevit.{0,180}izolovan\w* profil",
-        )
+        self.assertIsNotNone(visual_match, "missing accepted visual evidence section")
+        visual = re.sub(r"\s+", " ", visual_match.group(1))
         for phrase in (
-            "4 běžné list requesty",
-            "1 movie + 1 TV genre GET",
-            "ActionRunner",
-            "getVideoInfoTag()",
-            "Application.Quit",
-            "exit 0",
+            "13 vybraných snímků PASS", "Nezávislý reviewer", "Místní mezipaměť",
+            "4 list + 1 movie-genre + 1 TV-genre", "revision 1 → 2 → 3",
+            "GUI revize 4", "24:00", "docs/verification/2026-11-26-native-visual-acceptance.md",
+            "Česká a slovenská diakritika", "prázdné čtverce", "Kodi 19/ARM/Linux/POSIX",
+            "SMB/NFS/VFS", "power-loss", "instalace do hlavního profilu",
         ):
-            with self.subTest(native_evidence=phrase):
-                self.assertIn(phrase, lifecycle)
-        self.assertRegex(lifecycle, r"(?i)extern\w*.{0,180}(?:vizuální|interaktiv).{0,100}ne|ne.{0,100}extern\w*.{0,100}(?:vizuální|interaktiv)")
-        self.assertRegex(
-            lifecycle,
-            r"(?i)HANG.{0,220}(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,120}nezávisl|(?:aktivn\w*.{0,80})?(?:pozadí|background).{0,180}HANG.{0,120}nezávisl",
+            with self.subTest(visual_evidence=phrase):
+                self.assertIn(phrase, visual)
+        self.assertIn(
+            "Tag, push, GitHub release a main-profile nasazení zůstávají samostatnými pozdějšími rozhodnutími.",
+            visual,
         )
-        self.assertRegex(lifecycle, r"(?i)HANG.{0,220}nevyřešen|nevyřešen\w*.{0,180}HANG")
-        self.assertRegex(lifecycle, r"(?i)hlavního profilu.{0,160}(?:sloučen|vydán|nasazen)|(?:sloučen|vydán|nasazen).{0,160}hlavního profilu")
 
     def test_performance_coverage_tracks_native_selector_without_custom_ui(self):
         coverage = json.loads(COVERAGE_PATH.read_text(encoding="utf-8"))

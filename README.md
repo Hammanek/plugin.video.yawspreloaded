@@ -1,16 +1,16 @@
 # YAWsP Reloaded (Yet Another Webshare Plugin)
 
-[![Version](https://img.shields.io/badge/verze-2.0.0-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
+[![Version](https://img.shields.io/badge/verze-2.1.0-blue.svg)](https://github.com/Hammanek/plugin.video.yawspreloaded)
 [![License](https://img.shields.io/badge/licence-AGPL--3.0-green.svg)](LICENSE)
 
 Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze služby Webshare. Tento projekt vychází z původního doplňku od "cache" a přináší řadu vylepšení pro lepší uživatelský zážitek.
 
 ## ✨ Klíčové funkce
 
-- 🧩 **Modulární architektura 2.0.0** – Webshare, TMDB, download a Kodi UI jsou oddělené komponenty, s jednotným routerem a zachovanými akcemi pro média, frontu, historii i watchlist.
+- 🧩 **Modulární architektura 2.1.0** – Webshare, TMDB, download a Kodi UI jsou oddělené komponenty, s jednotným routerem a zachovanými akcemi pro média, frontu, historii i watchlist. Jediná nativní služba drží TMDB HTTP a zápisy s omezeným počtem **32 background + 1 interaktivní rezervace**; běžné ukončení Kodi nečeká na původní miniserializované prefetch vlákna.
 - 🧭 **Objevit** – Statický výběr čtyř veřejných TMDB kategorií a běžné nativní řádky InfoWall; výběr pokračuje do hledání Webshare.
-- 🏷️ **Nativní metadata Kodi** – Adaptér `yawsp_app/metadata.py` používá `InfoTagVideo` z `getVideoInfoTag()` a dedikované settery včetně `setFirstAired`. Kodi 19 nemá všechny dedikované settery z Kodi 20, proto adaptér v takovém případě jednou předá celý vstup přes `setInfo("video", info)`. Nešlo o živé ověření běhu na Kodi 19.
-- 🔄 **Ruční obnovení watchlistu** – Viditelný řádek **Obnovit** používá explicitní `refresh=1`; kategorie s hodnotou **Místní mezipaměť** označuje data vykreslená z lokálního snapshotu. Po chybě ručního načtení se použije poslední platný snapshot, pokud existuje a stále odpovídá aktuální identitě; po ručním pokusu nevzniká duplicitní okamžitý background watchlist požadavek.
+- 🏷️ **Nativní metadata Kodi** – Adaptér `yawsp_app/metadata.py` používá `InfoTagVideo` z `getVideoInfoTag()` a dedikované settery včetně `setFirstAired`. Řádek může obsahovat rok/datování zvlášť od samotného titulku, takže v nativním detailu nedochází k jejich duplicitě. Kodi 19 nemá všechny dedikované settery z Kodi 20, proto adaptér v takovém případě jednou předá celý vstup přes `setInfo("video", info)`. Nešlo o živé ověření běhu na Kodi 19.
+- 🔄 **Ruční obnovení watchlistu** – Viditelný řádek **Obnovit** používá explicitní `refresh=1`; kategorie s hodnotou **Místní mezipaměť** označuje data vykreslená z lokálního snapshotu. Po chybě ručního načtení se použije poslední platný snapshot, pokud existuje a stále odpovídá aktuální identitě. Kompletní fallback zůstane použitelně zobrazený místo přechodu na obecné Files a chyba obnovení se ohlásí bez falešného úspěchu vzdáleného načtení; po ručním pokusu nevzniká duplicitní okamžitý background watchlist požadavek.
 - 🔎 **Srozumitelné prázdné hledání** – Pokud po kontrole platnosti a porovnání názvů nezůstane žádný zobrazitelný soubor, Webshare ukáže řádek **Žádné výsledky**. Ovládání stránkování se stále odvozuje od nefiltrovaného `raw_count` serveru, takže tato zpráva nepotvrzuje prázdnou celkovou odpověď ani nemaže další stránky.
 - 🗑️ **Odstraněná Backup DB** – Zastaralá JSON/textová Backup DB už nemá položku menu, instalaci ani akce `db` a `searchdb`. Staré záložky s těmito akcemi otevřou obyčejné hlavní menu bez autentizace, sítě či čtení databázových souborů. Existující uživatelské soubory `database*.json`, `database*.txt`, adresář `db` a trvalé zálohy se nemažou ani nemigrují. Skutečné stahování médií a jeho historie zůstávají zachované; `DownloadJobKey` přijímá pouze rodinu `media`.
 - 📺 **Integrace TMDB** – Watchlist filmů a seriálů z TheMovieDB (náhrada za zpoplatněný Trakt), české názvy, popisy a žánry přímo z TMDB.
@@ -21,17 +21,17 @@ Moderní a vylepšený doplněk pro Kodi umožňující sledování obsahu ze sl
 - 🗂️ **Řazení a filtry** – Watchlist lze řadit (abecedně, nově přidané, hodnocení, rok) a skrýt zatím nevydané filmy.
 - 🖼️ **InfoWall výchozí pohled** – Watchlist se otevře v přehledném pohledu InfoWall (vlastní volba pohledu se respektuje).
 - ⚡ **Chytré vyhledávání z watchlistu** – Klik na film hledá na Webshare seřazené od největších souborů, v menu i vyhledání dle původního (anglického) názvu.
-- 🛠️ **Opravy a optimalizace** – Pravidelné aktualizace pro zajištění stability a rychlosti.
+- 🛠️ **Ošetřený TMDB životní cyklus** – Rodičovská invocation nepoužívá vlastní TMDB executor ani HTTP fallback. Jedna nativní služba vlastní metadata a snapshoty, abort vrací typovaný výsledek a nedokončená čekání odchycená `SystemExit` nemění kompletní data. Kontext vyhledávání nabízí původní název, trailer a označení watched; samotný film ani trailer nehrají automaticky.
 
 ## 📋 Požadavky
 
-- Kodi **19 (Matrix) a novější**
+- Kodi **19 (Matrix) a novější** podle runtime rozhraní. Živě ověřená finální implementace je **Kodi 21.2 (Omega), Windows Store x64** s Estuary. Běh na Kodi 19, ARM, Linux/POSIX, SMB/NFS nebo vzdáleném VFS zde není prezentován jako ověřený; více viz [Ověření pro vývojáře](#-ověření-pro-vývojáře).
 - Účet na [Webshare](https://webshare.cz)
 - Účet na [TMDB](https://www.themoviedb.org) (zdarma) – potřebný pro watchlist
 
 ## 🚀 Instalace
 
-1. Stáhněte **[plugin.video.yawspreloaded-2.0.0.zip](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/download/v2.0.0/plugin.video.yawspreloaded-2.0.0.zip)** z [release v2.0.0](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/tag/v2.0.0) (případně použijte [nejnovější release](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest)).
+1. Stáhněte **[plugin.video.yawspreloaded-2.1.0.zip](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/download/v2.1.0/plugin.video.yawspreloaded-2.1.0.zip)** z [release v2.1.0](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/tag/v2.1.0) (případně použijte [nejnovější release](https://github.com/Hammanek/plugin.video.yawspreloaded/releases/latest)). ZIP nesedávat do `userdata`; stačí jej uložit mimo profil Kodi.
 2. V Kodi zvolte **Doplňky** -> **Instalovat ze souboru zip**.
 3. Vyhledejte stažený soubor a potvrďte instalaci.
 4. V nastavení doplňku vyplňte přihlašovací údaje k Webshare.
@@ -89,7 +89,7 @@ Experimentální vlastní prezentace byla po izolovaných důkazech nepodporovan
 
 ## ⚡ Výkon, snapshoty a úlohy na pozadí
 
-Verze **2.0.0** dokončuje přechod z původního monolitu na modulární architekturu. Měření níže rozlišuje počty requestů, I/O a souběžných rezervací od tvrzení o latenci.
+Verze **2.1.0** navazuje na modulární architekturu 2.0.0 a přidává nativní ošetření TMDB životního cyklu, použitelný kompletní fallback a úpravu titulků tak, aby Kodi nezdvojovalo rok/datování. Měření níže rozlišuje počty requestů, I/O a souběžných rezervací od tvrzení o latenci.
 
 - **TMDB watchlist:** kompletní snapshot je klíčovaný podle **účtu TMDB, typu média, jazyka a verze schématu**, bez tokenů či přihlašovacích údajů. Warm kompatibilní snapshot se vykreslí lokálně s **nulovými account/watchlist HTTP požadavky**; filtrování a globální řazení stále pracují nad celým seznamem. Data mohou být **dočasně zastaralá**, protože obnova na pozadí se projeví až při **pozdějším otevření** (stale-while-revalidate). Při chybějícím, nekompatibilním nebo poškozeném snapshotu cold cesta znovu načte všechny stránky. Uloží se až po úspěchu a validaci **všech stránek**; při chybě vznikne **žádný částečný snapshot** a předchozí kompletní data zůstanou zachována. Změna identity, autentizace a pravidla watched akcí invalidují pouze příslušný rozsah.
 - **Ruční refresh a lokální cache:** řádek **Obnovit** je viditelný i u prázdného watchlistu a otevírá stejnou kategorii s explicitním `refresh=1`. Manuální cesta načte a validuje všechny stránky před uložením. Kategorie **TMDB Watchlist / Místní mezipaměť** vysvětluje, že se právě ukazuje lokální snapshot; po chybě se opět použije poslední platný snapshot, pokud existuje a odpovídá aktuální identitě, a ohlásí se chyba načtení, nikoli částečná nová data. Dokončení manuální cesty nezařazuje duplicitní okamžitý watchlist refresh na pozadí. Běžné teplé otevření si ponechává dříve popsané stale-while-revalidate chování.
@@ -121,11 +121,17 @@ Původní integrovaná kontrola native lifecycle od `430d02f...` použila tehdej
 
 Následná oprava admission/teardown waiterů na přesném commitu **`b7dd99862738745162644080cc7295673932de2f`** má nový archiv s **32 soubory** a SHA-256 **`f5f3cbd0912d6aae8dfac776d8d19f91f316488b38fb3cc9f4bdd1fab71fcd0f`** a vlastní čerstvé native důkazy, nikoli zpětně přepsané staré artefakty. Collision rerun **PID 13420** prošel **17/17** kontrol: dva skutečné overlap waiters na různých nativních threadech sdílely jediný target GET/job/terminal, obdržely dva typed výsledky a řádně ACK/close ukončily bez zbylého waiteru. Samostatný aktivní **12sekundový Application.Quit** na **PID 19172** prošel **11/11** kontrol s `SystemExit`, ABORTED, session/service/lease cleanup, exit 0 a nulou waiterů/live jobů. Ostatní výše uvedené native matice zůstávají historickou evidence z `430d02f...` a v této cílené fix vlně se znovu nespustily. Podrobný RED→GREEN a native provenance záznam je v SDD `final-fix-report.md`.
 
-Toto nevydává doplněk a není místo nezávislého vizuálního posouzení. **Není to reální remote credential, instalace, rendering ani hardware acceptance.** Všechny výsledky vznikly v dočasných profilech na syntetické smyčce s procesně lokálním přesměrováním a externími fixtures; profil, certifikáty ani binární log kopie produkce se sem nepřenášejí. Použití fixture endpointu není svolení k instalaci ani provozu Kodi 19/POSIX/NFS/SMB; tyto platformy zůstávají nepokryté stejně jako power loss a skutečné nezávislé zařízení. **visual_acceptance=pending** a publikace, merge, tag, vydání a main-profile nasazení zůstávají otevřená rozhodnutí.
+## 📸 Vizuální akceptace 2.1.0
 
-Kompatibilita **Python 3.8** je kontrolovaná pouze staticky pomocí **AST**/syntaxe a lokální testy běží také na **Python 3.12**; ani jedno nedokazuje spuštění na **Kodi 19**. POSIX adapter má pouze statické testy s doubles: Linux/POSIX flock, NFS/SMB a remote VFS runtime nejsou prokázány. Nebylo provedeno skutečné přehrávání na Kodi 19, ARM ani SMB/NFS a žádné z těchto prostředí se neprezentuje jako úspěšně otestované. Nativní TMDB služba nebyla vydána. Webshare handoff, čtyři Objevit katalogy, InfoWall/view pravidla, warm/manual/failed watchlist a jedna watched post-action refresh jsou offline UI kontrakty, nikoli dokončená vizuální akceptace.
+Finální obrazová kontrola proběhla na skutečných nativních snímcích v **Kodi 21.2 (Omega), Windows Store x64 / CPython 3.8.15 a Estuary**, v čerstvých izolovaných profilech a bez hlavního uživatelského profilu. Executor posoudil root, čtyři Objevit složky, fokusované InfoWall a Info dialogy všech čtyř kategorií. Nezávislý reviewer otevřel a ohodnotil **13 vybraných snímků PASS**: root, čtyři složky, dva reprezentativní Info dialogy, cold/warm watchlist, kontextové menu originálního názvu, manuální refresh, fallback **Místní mezipaměť** po chybě druhé stránky, watched pouze se zbylým filmem Beta, epizody i detail Pilot s `24:00`.
 
-Starší text zde vyžadoval **Task 4 před sloučením** pro předchozí Objevit přezkoušení; aktuální service větev má vlastní výše popsané finální native a vizuální gates. Historický aktivní legacy background shutdown **HANG**, původně označený jako nezávislý a nevyřešený, byl v Gate 0 reprodukován pro odstraněný `BackgroundPrefetch`; tato věta není tvrzením, že stejný legacy vlastník v produkci zůstal. Ani Gate 0, offline testy ani historické výsledky nejsou slibem okamžitého rušení blokovaného socket I/O nebo release readiness. Tato větev nebyla sloučena, vydána jako nová verze ani nasazena do hlavního profilu; hlavní profil a jeho trvalé zálohy zůstávají neměnné. Schválení změny profilu, merge a release jsou samostatná pozdější rozhodnutí.
+Kontrola odhalila a regresně pokryla tři bývalé prezentační chyby: duplicitní rok v InfoTagu filmů, odchod z použitelného lokálního fallbacku na Files a duplicitní datování epizody v nativním detailu. Runtime identita, snapshot/hash vazby, postup `revision 1 → 2 → 3 / generation 0 → 1` u watched, jediný `Container.Refresh` a následná běžná GUI revize 4 jsou zdokumentovány v [ověřovací zprávě](docs/verification/2026-11-26-native-visual-acceptance.md). Čtyři katalogy použily přesně **4 list + 1 movie-genre + 1 TV-genre** requesty. `ActionRunner.succeeded` a `xbmc.executebuiltin` čtení slouží jen k ověření completion; nenahrazují samotné otevření PNG a posouzení textu, focusu či textur.
+
+Fixtures jsou syntetické loopback údaje a artwork je lokální kontrolní PNG, nikoli obrázek UI vytvořený mimo Kodi. Česká a slovenská diakritika je čitelná; stock Estuary v použitém fontu pro testovaný astrální glyph 🐈 zobrazuje prázdné čtverce, i když ho InfoTag uchovává validně. Netvrdíme univerzální podporu všech glyfů, screen readerů, jiných skinů, rozlišení, OS/GPU či nezávislého hardware. Nebylo provedeno skutečné přehrávání, instalace do hlavního profilu, použití reálných účtů, test na Kodi 19/ARM/Linux/POSIX, SMB/NFS/VFS ani power-loss test.
+
+Vizuální PASS tedy není publikace účtů, tajemství nebo generovaného binárního profilu. Tento repozitář neobsahuje profilové credentials, screenshot-fixtures ani odkazy na neveřejné dočasné profily. Tag, push, GitHub release a main-profile nasazení zůstávají samostatnými pozdějšími rozhodnutími.
+
+Kompatibilita **Python 3.8** je kontrolovaná staticky pomocí **AST**/syntaxe a lokální testy běží také na **Python 3.12**; ani jedno nedokazuje spuštění na **Kodi 19**. POSIX adapter má pouze statické testy s doubles: Linux/POSIX flock, NFS/SMB a remote VFS runtime nejsou prokázány. Nebylo provedeno skutečné přehrávání na Kodi 19, ARM ani SMB/NFS a žádné z těchto prostředí se neprezentuje jako úspěšně otestované.
 
 ## ✅ Ověření pro vývojáře
 

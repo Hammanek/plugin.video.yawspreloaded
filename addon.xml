@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<addon id="plugin.video.yawspreloaded" name="YAWsP Reloaded" version="2.0.0" provider-name="Hammanek">
+<addon id="plugin.video.yawspreloaded" name="YAWsP Reloaded" version="2.1.0" provider-name="Hammanek">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
         <import addon="script.module.requests" version="2.25.0"/>
@@ -17,6 +17,6 @@
         <assets>
             <icon>resources/icon.png</icon>
         </assets>
-        <news>Verze 2.0.0 přináší modulární architekturu s jednotným routerem, TMDB watchlist s QR připojením a frontu i historii stahování. Rezervace metadat jsou omezené na 32 úloh na pozadí plus jednu interaktivní. Životní cyklus doplňku byl ověřen v reálném Kodi a zaznamenán v poznámkách k vydání.</news>
+        <news>Verze 2.1.0 navazuje na architekturu s jednotným routerem, obsahuje Objevit a watchlist s QR, frontu i historii stahování. Jediná nativní služba drží nejvýše 32 TMDB rezervací na pozadí a jednu interaktivní. Opravené je ukončení aktivních TMDB úloh při zavření Kodi, ponechání použitelné lokální mezipaměti po chybě obnovení a titulky bez duplicitních roků v Objevit, watchlistu a epizodách.</news>
     </extension>
 </addon>
