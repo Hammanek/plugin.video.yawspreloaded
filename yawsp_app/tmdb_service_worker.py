@@ -719,13 +719,22 @@ class ServiceRunner:
             self._wait(_METADATA_RETRY_BACKOFF)
 
     def _complete(self, claim, document):
-        # A store completion is the sole terminal authority. Once it has been
-        # attempted, a later cleanup fault can never authorize generic reject or
-        # a conflicting second terminal transition.
+        # A store completion is the sole terminal authority. Reconcile the exact
+        # active+fenced record: never guess whether its original result committed.
         try:
             self.store.complete(claim, document)
         except Exception:
-            self.logger.error("Unable to reconcile completed TMDB service result")
+            self.logger.error("Unable to publish TMDB service result; reconciling owner")
+            try:
+                self.store.reconcile_completion(claim)
+            except Exception:
+                # Persistent I/O can leave the active record for the next fresh
+                # epoch to recover. Stop this owner instead of spinning behind it.
+                self.logger.error("Unable to reconcile TMDB service owner; stopping")
+                self.close()
+                raise TMDBServiceUnavailableError(
+                    "TMDB service result reconciliation failed"
+                ) from None
 
     def _abort_claim(self, claim, code):
         try:

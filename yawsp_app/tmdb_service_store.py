@@ -679,8 +679,9 @@ class ServiceStateStore:
                 document = self._load()
                 candidate = copy.deepcopy(document)
                 value = mutation(candidate)
-                self._write_manifest(candidate)
-                self._reconcile_result_cleanup(document, candidate)
+                if candidate != document:
+                    self._write_manifest(candidate)
+                    self._reconcile_result_cleanup(document, candidate)
                 return copy.deepcopy(value)
 
     def _read_transaction(self, reader):
@@ -759,7 +760,15 @@ class ServiceStateStore:
                 return value
         raise protocol.ProtocolError("could not allocate a unique job identifier")
 
-    def _append_job(self, document, request, interactive, waiter_id, followup_of=None):
+    def _append_job(
+        self,
+        document,
+        request,
+        interactive,
+        waiter_id,
+        followup_of=None,
+        ledger=None,
+    ):
         key = protocol.dedup_key(request)
         ordinal = document["next_ordinal"]
         document["next_ordinal"] += 1
@@ -782,16 +791,28 @@ class ServiceStateStore:
             "followup_of": followup_of,
             "terminal_ordinal": None,
         }
-        reservations = [item for item in document["jobs"] if item["reservation"] and item["interactive"] == interactive]
         cap = INTERACTIVE_RESERVATIONS if interactive else BACKGROUND_RESERVATIONS
         backlog_cap = INTERACTIVE_BACKLOG if interactive else BACKGROUND_BACKLOG
-        if len(reservations) >= cap:
-            backlog = [item for item in document["jobs"] if item["state"] == "backlog" and item["interactive"] == interactive]
-            if len(backlog) >= backlog_cap:
+        reservations = (
+            sum(item["reservation"] and item["interactive"] == interactive for item in document["jobs"])
+            if ledger is None
+            else ledger["reservations"][interactive]
+        )
+        if reservations >= cap:
+            backlog = (
+                sum(item["state"] == "backlog" and item["interactive"] == interactive for item in document["jobs"])
+                if ledger is None
+                else ledger["backlog"][interactive]
+            )
+            if backlog >= backlog_cap:
                 document["next_ordinal"] -= 1
                 return None, "BACKPRESSURED"
             job["state"] = "backlog"
             job["reservation"] = False
+            if ledger is not None:
+                ledger["backlog"][interactive] += 1
+        elif ledger is not None:
+            ledger["reservations"][interactive] += 1
         if waiter_id is not None:
             job["waiters"].append(waiter_id)
         document["jobs"].append(job)
@@ -871,49 +892,163 @@ class ServiceStateStore:
                 code = unavailable
                 return [self._row_backpressured(original, code) for _request, original in validated]
             self._collect(document)
+            ledger = {
+                "reservations": {
+                    kind: sum(
+                        job["reservation"] and job["interactive"] == kind
+                        for job in document["jobs"]
+                    )
+                    for kind in (False, True)
+                },
+                "backlog": {
+                    kind: sum(
+                        job["state"] == "backlog" and job["interactive"] == kind
+                        for job in document["jobs"]
+                    )
+                    for kind in (False, True)
+                },
+            }
+            waiter_count = sum(len(job["waiters"]) for job in document["jobs"])
+            aggregate_bytes = self._aggregate_result_bytes(document)
+            nonterminal_count = sum(job["state"] in _NONTERMINAL for job in document["jobs"])
+            manifest_bytes = len(_json_encode(document, MAX_MANIFEST_BYTES))
+
+            def item_size(collection, item):
+                return len(_json_encode(item, MAX_MANIFEST_BYTES)) + bool(collection)
+
+            def evict(job):
+                nonlocal aggregate_bytes, nonterminal_count, manifest_bytes
+                index = document["jobs"].index(job)
+                tombstones_before = list(document["tombstones"])
+                manifest_bytes -= item_size(document["jobs"][:-1], job)
+                if job["state"] in _TERMINAL:
+                    aggregate_bytes -= job["result_ref"]["bytes"]
+                else:
+                    nonterminal_count -= 1
+                document["jobs"].remove(job)
+                tombstone = {
+                    "job_id": job["job_id"],
+                    "dedup_key": job["dedup_key"],
+                    "ordinal": job["terminal_ordinal"],
+                    "result": protocol.make_result(job["job_id"], "failed", "RESULT_EXPIRED"),
+                }
+                manifest_bytes += item_size(document["tombstones"], tombstone)
+                document["tombstones"].append(tombstone)
+                document["tombstones"].sort(key=lambda entry: entry["ordinal"])
+                if len(document["tombstones"]) > TOMBSTONES:
+                    dropped = document["tombstones"][0]
+                    manifest_bytes -= item_size(document["tombstones"][:-1], dropped)
+                    del document["tombstones"][0]
+                evicted.append((index, job, tombstones_before))
+
+            def admission_room():
+                while aggregate_bytes + nonterminal_count * ABORT_RESULT_BYTES + ABORT_RESULT_BYTES > MAX_AGGREGATE_RESULT_BYTES:
+                    unwaited = sorted(
+                        (
+                            job
+                            for job in document["jobs"]
+                            if job["state"] in _TERMINAL and not job["waiters"]
+                        ),
+                        key=lambda job: job["terminal_ordinal"],
+                    )
+                    if not unwaited:
+                        return False
+                    evict(unwaited[0])
+                return True
+
             rows = []
             for request, original in validated:
                 if request is None:
                     rows.append(self._row_backpressured(original, "FAILED"))
                     continue
-                before = copy.deepcopy(document)
+                before = (
+                    dict(ledger["reservations"]),
+                    dict(ledger["backlog"]),
+                    waiter_count,
+                    aggregate_bytes,
+                    nonterminal_count,
+                    document["next_ordinal"],
+                    manifest_bytes,
+                )
+                collision = None
+                old_waiter_count = old_priority = None
+                appended = None
+                evicted = []
 
                 def rollback():
-                    document.clear()
-                    document.update(before)
+                    nonlocal waiter_count, aggregate_bytes, nonterminal_count, manifest_bytes
+                    document["next_ordinal"] = before[5]
+                    if appended is not None and appended in document["jobs"]:
+                        document["jobs"].remove(appended)
+                    if collision is not None:
+                        del collision["waiters"][old_waiter_count:]
+                        collision["priority"] = old_priority
+                    if evicted:
+                        document["tombstones"][:] = evicted[0][2]
+                        for index, job, _tombstones in reversed(evicted):
+                            document["jobs"].insert(index, job)
+                    ledger["reservations"] = before[0]
+                    ledger["backlog"] = before[1]
+                    waiter_count, aggregate_bytes, nonterminal_count, manifest_bytes = before[2:5] + (before[6],)
 
                 try:
                     key = protocol.dedup_key(request)
-                    job = self._collision(document, key)
-                    if job is not None:
-                        if waiter_id is not None and waiter_id not in job["waiters"]:
-                            if self._waiter_count(document) >= TOTAL_WAITERS:
-                                rows.append(self._row_backpressured(request, "BACKPRESSURED"))
+                    collision = self._collision(document, key)
+                    if collision is not None:
+                        old_waiter_count = len(collision["waiters"])
+                        old_priority = collision["priority"]
+                        if waiter_id is not None and waiter_id not in collision["waiters"]:
+                            if waiter_count >= TOTAL_WAITERS:
                                 rollback()
+                                rows.append(self._row_backpressured(request, "BACKPRESSURED"))
                                 continue
-                            job["waiters"].append(waiter_id)
-                        if waiter_id is not None and job["state"] in _NONTERMINAL:
-                            job["priority"] = True
-                        row = self._row_joined(job)
+                            collision["waiters"].append(waiter_id)
+                            waiter_count += 1
+                            manifest_bytes += 34
+                        if waiter_id is not None and collision["state"] in _NONTERMINAL:
+                            if not collision["priority"]:
+                                collision["priority"] = True
+                                manifest_bytes += 1
+                        row = self._row_joined(collision)
                     else:
-                        if len(document["jobs"]) >= TOTAL_JOBS or not self._make_admission_room(document):
+                        collision = None
+                        if len(document["jobs"]) >= TOTAL_JOBS or not admission_room():
+                            rollback()
                             rows.append(self._row_backpressured(request, "BACKPRESSURED"))
-                            rollback()
                             continue
-                        job, code = self._append_job(document, request, interactive, waiter_id)
-                        if job is None:
+                        ordinal_before = document["next_ordinal"]
+                        appended, code = self._append_job(
+                            document,
+                            request,
+                            interactive,
+                            waiter_id,
+                            ledger=ledger,
+                        )
+                        manifest_bytes += len(str(document["next_ordinal"])) - len(str(ordinal_before))
+                        if appended is None:
+                            rollback()
                             rows.append(self._row_backpressured(request, code))
-                            rollback()
                             continue
-                        row = self._row_accepted(job)
-                    if not self._fits(document):
+                        manifest_bytes += item_size(document["jobs"][:-1], appended)
+                        if waiter_id is not None:
+                            waiter_count += 1
+                        nonterminal_count += 1
+                        row = self._row_accepted(appended)
+                    if manifest_bytes > MAX_MANIFEST_BYTES:
                         rollback()
                         rows.append(self._row_backpressured(request, "BACKPRESSURED"))
                     else:
                         rows.append(row)
-                except protocol.ProtocolError:
+                except protocol.ProtocolError as error:
                     rollback()
-                    rows.append(self._row_backpressured(original, "FAILED"))
+                    code = (
+                        "BACKPRESSURED"
+                        if str(error) == "canonical document exceeds its byte bound"
+                        else "FAILED"
+                    )
+                    rows.append(self._row_backpressured(original, code))
+            if not self._fits(document):
+                raise protocol.ProtocolError("final admission candidate exceeds its bounds")
             return rows
 
         return self._transaction(mutate)
@@ -1105,9 +1240,9 @@ class ServiceStateStore:
                 raise protocol.ProtocolError("BACKPRESSURED: registered live results exhaust retention bounds")
             self._evict(document, unwaited[0])
 
-    def _terminalize(self, document, job, result_document, promote):
+    def _terminalize(self, document, job, result_document, promote, bounded_recovery=False):
         raw = _json_encode(result_document, protocol.MAX_RESULT_CANONICAL_BYTES)
-        aborting = result_document["outcome"] == "aborted"
+        aborting = result_document["outcome"] == "aborted" or bounded_recovery
         self._make_room(document, len(raw), bool(job["waiters"]), job["job_id"], aborting)
         self._publish_result(job, result_document)
         job["state"] = result_document["outcome"]
@@ -1147,6 +1282,36 @@ class ServiceStateStore:
         job_id = completed["job_id"]
         _best_effort_unlink(os.path.join(self.results_dir, job_id + ".tmp"))
         return completed
+
+    def reconcile_completion(self, claim):
+        """Resolve only the current fenced active claim after publication failure.
+
+        If a former completion already committed, its result remains authoritative.
+        Otherwise one bounded typed BACKPRESSURED terminal releases the reservation
+        using the same exact pending-abort budget as owner recovery.
+        """
+
+        def mutate(document):
+            try:
+                job_id = _job_id(claim["job_id"])
+                epoch = _epoch(claim["service_epoch"])
+                _claim_token(claim["claim_token"])
+            except (KeyError, TypeError, protocol.ProtocolError) as error:
+                raise protocol.ProtocolError("invalid fenced claim") from error
+            job = self._find_job(document, job_id)
+            if not self._matches_claim(job, claim) or job["service_epoch"] != epoch:
+                raise protocol.ProtocolError("stale or foreign completion ownership")
+            if job["state"] in _TERMINAL:
+                return self._read_result(job)
+            if job["state"] != "active":
+                raise protocol.ProtocolError("only an active claim can be reconciled")
+            failed = protocol.make_result(job_id, "failed", "BACKPRESSURED")
+            self._terminalize(
+                document, job, failed, promote=True, bounded_recovery=True
+            )
+            return failed
+
+        return self._transaction(mutate)
 
     def abort_claim(self, claim, code):
         if code == "ABORTED":
@@ -1278,6 +1443,19 @@ class ServiceStateStore:
             return None
 
         return self._transaction(mutate)
+
+    def result_candidate(self, job_id):
+        """Probe only the deterministic result path; never trust it as an outcome."""
+
+        _job_id(job_id)
+        candidate = os.path.join(self.results_dir, job_id + ".json")
+        try:
+            information = os.lstat(candidate)
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(information.st_mode) or not stat.S_ISREG(information.st_mode):
+            raise protocol.ProtocolError("result path is not a regular nofollow file")
+        return True
 
     def read_wait_result(self, job_id, waiter_id):
         _job_id(job_id)

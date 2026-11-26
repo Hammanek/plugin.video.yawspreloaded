@@ -741,7 +741,7 @@ class ProductionCompositionTests(unittest.TestCase):
 
     def test_on_demand_trailer_hit_missing_and_error_keep_existing_action_contract(self):
         cases = (
-            ({"results": [{"site": "YouTube", "type": "Trailer", "key": "video-hit"}]}, True),
+            ({"results": [{"site": "YouTube", "type": "Trailer", "key": "videohit001"}]}, True),
             ({"results": []}, False),
             (requests.Timeout("offline"), False),
         )
@@ -768,7 +768,7 @@ class ProductionCompositionTests(unittest.TestCase):
                     if handled:
                         self.assertEqual(
                             native.recorder.builtin_commands,
-                            ["PlayMedia(plugin://plugin.video.youtube/play/?video_id=video-hit)"],
+                            ["PlayMedia(plugin://plugin.video.youtube/play/?video_id=videohit001)"],
                         )
                     else:
                         self.assertEqual(native.recorder.builtin_commands, [])

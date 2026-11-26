@@ -328,7 +328,7 @@ class ClientTests(unittest.TestCase):
             (("trailer", "movie", 7), {"status": "hit"}),
             (
                 ("trailer", "movie", 7),
-                {"status": "hit", "youtube_id": "video", "extra": True},
+                {"status": "hit", "youtube_id": "video000000", "extra": True},
             ),
             (("show", 7), None),
             (("show", 7), {}),
@@ -368,7 +368,7 @@ class ClientTests(unittest.TestCase):
                 )
 
         legitimate = (
-            (("trailer", "movie", 7), {"status": "hit", "youtube_id": "video"}),
+            (("trailer", "movie", 7), {"status": "hit", "youtube_id": "video000000"}),
             (("trailer", "movie", 7), {"status": "missing", "youtube_id": None}),
             (("trailer", "movie", 7), {"status": "error", "youtube_id": None}),
             (("show", 7), {"value": None, "succeeded": True}),
@@ -594,7 +594,7 @@ class ClientTests(unittest.TestCase):
                 )
 
     def test_read_only_legacy_cache_conversion_performs_zero_writes(self):
-        original = {"movie:1": "legacy-valid", "movie:2": None}
+        original = {"movie:1": "legacy00001", "movie:2": None}
         self.trailer_cache.save(original)
         with open(self.trailer_cache.path, "rb") as handle:
             before = handle.read()
@@ -610,10 +610,20 @@ class ClientTests(unittest.TestCase):
             "read-only lookup attempted a merged cache save"
         )
 
-        self.assertFalse(repository.needs_lookup("movie", 1))
+        self.assertTrue(repository.needs_lookup("movie", 1))
         self.assertTrue(repository.needs_lookup("movie", 2))
-        self.assertEqual(repository._entries["movie:1"]["youtube_id"], "legacy-valid")
+        self.assertEqual(repository._entries["movie:1"]["youtube_id"], "legacy00001")
+        self.assertIsNone(repository._entries["movie:1"]["ts"])
         self.assertNotIn("movie:2", repository._entries)
+
+        accepted = client.submit_metadata("movie", trailer_ids=(1, 2))
+
+        self.assertEqual(accepted, 2)
+        submitted = [call for call in client.store.calls if call[0] == "submit"]
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(
+            [request["params"]["media_id"] for request in submitted[0][1]], [1, 2]
+        )
         with open(self.trailer_cache.path, "rb") as handle:
             self.assertEqual(handle.read(), before)
 
@@ -711,13 +721,13 @@ class RealStoreTests(unittest.TestCase):
     def test_same_key_trailer_waiters_share_one_job_and_typed_value(self):
         outputs = self.run_fanout(
             ("trailer", "movie", 21),
-            {"status": "hit", "youtube_id": "shared-video"},
+            {"status": "hit", "youtube_id": "sharevideo0"},
         )
         self.assertEqual(
             outputs,
             [
-                TrailerLookup("hit", "shared-video"),
-                TrailerLookup("hit", "shared-video"),
+                TrailerLookup("hit", "sharevideo0"),
+                TrailerLookup("hit", "sharevideo0"),
             ],
         )
 
@@ -732,7 +742,7 @@ class RealStoreTests(unittest.TestCase):
     def test_interactive_collision_reuses_detached_terminal_without_new_job(self):
         client = self.make_client()
         request = protocol.catalog_request("popular_movies", "cs-CZ")
-        value = {"rows": [{"title": "one"}]}
+        value = {"rows": [{"title": "one00000000"}]}
         # Complete only after the first interactive admission creates the job.
         first_output = []
         first = threading.Thread(target=lambda: first_output.append(client.run_operation(request)))
@@ -749,19 +759,13 @@ class RealStoreTests(unittest.TestCase):
 
     def test_close_during_blocked_terminal_read_maps_detach_race_to_abort(self):
         caller = ServiceStateStore(self.root)
-        first_read = threading.Event()
+        waiting_for_result = threading.Event()
         terminal_read = threading.Event()
         release = threading.Event()
         self.addCleanup(release.set)
-        read_calls = []
         original_read = caller.read_wait_result
 
         def blocked_read(job_id, waiter_id):
-            read_calls.append((job_id, waiter_id))
-            if len(read_calls) == 1:
-                result = original_read(job_id, waiter_id)
-                first_read.set()
-                return result
             terminal_read.set()
             release.wait(5)
             return original_read(job_id, waiter_id)
@@ -775,7 +779,13 @@ class RealStoreTests(unittest.TestCase):
             return original_acknowledge(job_id, waiter_id)
 
         caller.acknowledge = record_acknowledgement
-        client = self.make_client(caller=caller)
+
+        def wait_slice(seconds):
+            self.assertEqual(seconds, 0.05)
+            waiting_for_result.set()
+            return False
+
+        client = self.make_client(caller=caller, wait_for_abort=wait_slice)
         request = protocol.catalog_request("popular_movies", "cs-CZ")
         errors = []
         invocation = threading.Thread(
@@ -783,7 +793,7 @@ class RealStoreTests(unittest.TestCase):
         )
         invocation.start()
         job = self.wait_for_waiters(1)
-        self.assertTrue(first_read.wait(5))
+        self.assertTrue(waiting_for_result.wait(5))
         job_id = self.complete_value({"handled": True})
         self.assertTrue(terminal_read.wait(5))
 
@@ -799,6 +809,84 @@ class RealStoreTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], TMDBAbortError)
         self.assertEqual(acknowledgements, [(job_id, job["waiters"][0])])
+
+    def test_absent_result_wait_slices_use_path_probes_not_manifest_reads(self):
+        class TrackedStore(ServiceStateStore):
+            def __init__(self, root):
+                super().__init__(root)
+                self.loads = 0
+                self.read_transactions = 0
+                self.probes = 0
+
+            def _load(self):
+                self.loads += 1
+                return super()._load()
+
+            def _read_transaction(self, reader):
+                self.read_transactions += 1
+                return super()._read_transaction(reader)
+
+            def result_candidate(self, job_id):
+                self.probes += 1
+                return super().result_candidate(job_id)
+
+        callers = [TrackedStore(self.root), TrackedStore(self.root)]
+        ready = [threading.Event(), threading.Event()]
+        proceed = threading.Event()
+        self.addCleanup(proceed.set)
+        waits = [[], []]
+
+        def wait_for_abort(index, seconds):
+            waits[index].append(seconds)
+            if len(waits[index]) == 5:
+                ready[index].set()
+            if len(waits[index]) >= 5:
+                self.assertTrue(proceed.wait(5), "result publication barrier")
+            return False
+
+        clients = [
+            self.make_client(
+                caller=callers[index],
+                wait_for_abort=lambda seconds, index=index: wait_for_abort(index, seconds),
+            )
+            for index in range(2)
+        ]
+        request = protocol.catalog_request("popular_movies", "cs-CZ")
+        outputs = [[], []]
+        errors = []
+
+        def invoke(index):
+            try:
+                outputs[index] = clients[index].run_operation(request)
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        threads = [threading.Thread(target=invoke, args=(index,)) for index in range(2)]
+        for thread in threads:
+            thread.start()
+        for event in ready:
+            self.assertTrue(event.wait(5))
+
+        self.assertEqual([caller.loads for caller in callers], [1, 1])
+        self.assertEqual([caller.read_transactions for caller in callers], [0, 0])
+        self.assertEqual([len(items) for items in waits], [5, 5])
+        self.assertTrue(all(seconds == 0.05 for items in waits for seconds in items))
+
+        self.complete_value({"handled": True})
+        proceed.set()
+        for thread in threads:
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(outputs, [{"handled": True}, {"handled": True}])
+        self.assertEqual(
+            [caller.loads for caller in callers],
+            [3, 3],
+            "one admission, one terminal read and one ACK load per caller",
+        )
+        self.assertEqual([caller.read_transactions for caller in callers], [1, 1])
+        self.assertGreaterEqual(min(caller.probes for caller in callers), 6)
 
     def test_close_detaches_only_its_waiter_and_never_joins_or_stops_service(self):
         entered = threading.Event()

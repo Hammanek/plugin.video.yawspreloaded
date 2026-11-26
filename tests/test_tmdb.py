@@ -112,7 +112,7 @@ class MetadataSession:
                     {
                         "site": "YouTube",
                         "type": "Trailer",
-                        "key": "video-{0}".format(media_id),
+                        "key": "video{0:06d}".format(media_id),
                     }
                 ]
             }
@@ -532,13 +532,13 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                 json_response(
                     {
                         "results": [
-                            {"site": "YouTube", "type": "Teaser", "key": "teaser"},
-                            {"site": "YouTube", "type": "Trailer", "key": "plain"},
+                            {"site": "YouTube", "type": "Teaser", "key": "teaser00000"},
+                            {"site": "YouTube", "type": "Trailer", "key": "plain000000"},
                             {
                                 "site": "YouTube",
                                 "type": "Trailer",
                                 "official": True,
-                                "key": "official",
+                                "key": "official001",
                             },
                         ]
                     }
@@ -548,18 +548,18 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
 
         result = TrailerRepository(client, self.trailer_cache).lookup("movie", 1)
 
-        self.assertEqual(result, TrailerLookup(status="hit", youtube_id="official"))
+        self.assertEqual(result, TrailerLookup(status="hit", youtube_id="official001"))
         self.assertEqual(session.calls[0]["kwargs"]["params"]["language"], "en-US")
-        self.assertEqual(self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "official")
+        self.assertEqual(self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "official001")
 
     def test_non_trailer_youtube_video_is_the_final_fallback(self):
         client, _, _, _ = self.make_client(
-            [json_response({"results": [{"site": "YouTube", "type": "Featurette", "key": "fallback"}]})]
+            [json_response({"results": [{"site": "YouTube", "type": "Featurette", "key": "fallback000"}]})]
         )
 
         result = TrailerRepository(client, self.trailer_cache).lookup("tv", 8)
 
-        self.assertEqual(result, TrailerLookup("hit", "fallback"))
+        self.assertEqual(result, TrailerLookup("hit", "fallback000"))
 
     def test_success_without_youtube_video_is_cached_as_missing_for_six_hours(self):
         clock = FakeClock()
@@ -581,7 +581,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
         client, session, _, _ = self.make_client(
             [
                 json_response(
-                    {"results": [{"site": "YouTube", "type": "Trailer", "key": "cached"}]}
+                    {"results": [{"site": "YouTube", "type": "Trailer", "key": "cached00000"}]}
                 ),
                 json_response({"results": []}),
             ],
@@ -591,32 +591,37 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
 
         self.assertEqual(repository.lookup("movie", 9).status, "hit")
         clock.now += 7 * 24 * 60 * 60 - 1
-        self.assertEqual(repository.lookup("movie", 9), TrailerLookup("hit", "cached"))
+        self.assertEqual(repository.lookup("movie", 9), TrailerLookup("hit", "cached00000"))
         self.assertEqual(len(session.calls), 1)
         clock.now += 2
         self.assertEqual(repository.lookup("movie", 9), TrailerLookup("missing", None))
         self.assertEqual(len(session.calls), 2)
 
     def test_legacy_valid_id_is_usable_but_legacy_none_is_discarded(self):
-        self.trailer_cache.save({"movie:1": "legacy-valid", "movie:2": None})
-        client, session, _, _ = self.make_client([json_response({"id": 2, "results": []})])
+        self.trailer_cache.save({"movie:1": "legacy00001", "movie:2": None})
+        client, session, _, _ = self.make_client([
+            json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "legacy00001"}]}),
+            json_response({"id": 2, "results": []}),
+        ])
         repository = TrailerRepository(client, self.trailer_cache)
 
-        self.assertEqual(repository.lookup("movie", 1), TrailerLookup("hit", "legacy-valid"))
+        self.assertEqual(repository.lookup("movie", 1), TrailerLookup("hit", "legacy00001"))
         self.assertEqual(repository.lookup("movie", 2), TrailerLookup("missing", None))
-        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(len(session.calls), 2)
 
     def test_legacy_valid_id_is_migrated_so_its_ttl_survives_new_repositories(self):
         clock = FakeClock()
-        self.trailer_cache.save({"movie:4": "legacy-valid"})
-        client, first_session, _, _ = self.make_client([], clock=clock)
+        self.trailer_cache.save({"movie:4": "legacy00001"})
+        client, first_session, _, _ = self.make_client([
+            json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "legacy00001"}]})
+        ], clock=clock)
         first_repository = TrailerRepository(client, self.trailer_cache, clock=clock)
 
-        self.assertEqual(first_repository.lookup("movie", 4), TrailerLookup("hit", "legacy-valid"))
-        self.assertEqual(first_session.calls, [])
+        self.assertEqual(first_repository.lookup("movie", 4), TrailerLookup("hit", "legacy00001"))
+        self.assertEqual(len(first_session.calls), 1)
         self.assertEqual(
             self.read_cache(self.trailer_cache)["movie:4"],
-            {"ts": 1_700_000_000, "youtube_id": "legacy-valid"},
+            {"ts": 1_700_000_000, "youtube_id": "legacy00001"},
         )
 
         clock.now += 7 * 24 * 60 * 60 + 1
@@ -641,7 +646,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                     responses = [failure] * 3
                 responses.append(
                     json_response(
-                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "later"}]}
+                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "later000000"}]}
                     )
                 )
                 cache = AtomicJsonCache(
@@ -653,7 +658,7 @@ class TrailerRepositoryTests(TMDBServiceTestCase):
                 with self.assertLogs("yawsp_app.tmdb", level="ERROR"):
                     self.assertEqual(repository.lookup("movie", 5), TrailerLookup("error", None))
                 self.assertFalse(os.path.exists(cache.path))
-                self.assertEqual(repository.lookup("movie", 5), TrailerLookup("hit", "later"))
+                self.assertEqual(repository.lookup("movie", 5), TrailerLookup("hit", "later000000"))
 
     def test_expired_trailer_does_not_masquerade_as_a_hit_when_refresh_fails(self):
         clock = FakeClock()
@@ -1884,7 +1889,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
                 json_response(
                     {
                         "results": [
-                            {"site": "YouTube", "type": "Trailer", "key": "shared"}
+                            {"site": "YouTube", "type": "Trailer", "key": "shared00000"}
                         ]
                     }
                 ),
@@ -1896,7 +1901,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertEqual(
             execute_trailer_metadata(trailers, "movie", 5),
-            TrailerLookup("hit", "shared"),
+            TrailerLookup("hit", "shared00000"),
         )
         self.assertEqual(execute_show_metadata(shows, 6), (None, True))
 
@@ -1927,13 +1932,13 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
             FakeSession(
                 [
                     json_response(
-                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "one"}]}
+                        {"results": [{"site": "YouTube", "type": "Trailer", "key": "one00000000"}]}
                     ),
                     json_response({"id": 2, "results": []}),
                 ]
             ),
             FakeSession(
-                [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "three"}]})]
+                [json_response({"results": [{"site": "YouTube", "type": "Trailer", "key": "three000000"}]})]
             ),
         ]
         worker = ManualWorker()
@@ -1947,11 +1952,11 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
         worker.run_all()
 
         self.assertEqual(
-            self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "one"
+            self.read_cache(self.trailer_cache)["movie:1"]["youtube_id"], "one00000000"
         )
         self.assertIsNone(self.read_cache(self.trailer_cache)["movie:2"]["youtube_id"])
         self.assertEqual(
-            self.read_cache(self.trailer_cache)["movie:3"]["youtube_id"], "three"
+            self.read_cache(self.trailer_cache)["movie:3"]["youtube_id"], "three000000"
         )
         self.assertTrue(all(session.closed for session in created))
         self.assertEqual(background.submit_trailers("movie", [1, 2, 3]), 0)
@@ -2047,7 +2052,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
                                 {
                                     "site": "YouTube",
                                     "type": "Trailer",
-                                    "key": "video-{0}".format(index),
+                                    "key": "video{0:06d}".format(index),
                                 }
                             ]
                         }
@@ -2915,7 +2920,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertFalse(worker_thread.is_alive())
         self.assertFalse(direct_thread.is_alive())
-        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video000042")])
         self.assertEqual(on_demand_session.calls, [])
         self.assertEqual(len(background._pending), 0)
         background.close(wait=False)
@@ -3004,7 +3009,7 @@ class BackgroundPrefetchTests(TMDBServiceTestCase):
 
         self.assertFalse(worker_thread.is_alive())
         self.assertFalse(direct_thread.is_alive())
-        self.assertEqual(direct_results, [TrailerLookup("hit", "video-42")])
+        self.assertEqual(direct_results, [TrailerLookup("hit", "video000042")])
         self.assertEqual(on_demand_session.calls, [])
         self.assertEqual(len(background._pending), 0)
         background.close(wait=False)

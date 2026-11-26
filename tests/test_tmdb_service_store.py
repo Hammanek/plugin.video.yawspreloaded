@@ -3,6 +3,7 @@
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -14,6 +15,7 @@ from unittest import mock
 
 from yawsp_app import tmdb_service_protocol as protocol
 from yawsp_app import tmdb_service_store as store_module
+from yawsp_app.tmdb_service_worker import ServiceRunner
 
 
 SERVICE_EPOCH = "a" * 32
@@ -268,6 +270,69 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(set(states.values()), {"succeeded"})
         self.assertEqual({entry["job_id"] for entry in self.manifest()["tombstones"]}, set(seen[:-32]))
 
+    def test_fifty_key_admission_uses_one_final_validation_and_document_copy(self):
+        service = self.start()
+        caller = self.store()
+        original_deepcopy = store_module.copy.deepcopy
+        original_fits = store_module.ServiceStateStore._fits
+        original_encode = store_module._json_encode
+        document_copies = []
+        fits = []
+        candidate_bytes = []
+
+        def count_document_copies(value):
+            if isinstance(value, dict) and "service_state" in value and "jobs" in value:
+                document_copies.append(len(value["jobs"]))
+            return original_deepcopy(value)
+
+        def count_fits(*args):
+            document = args[-1]
+            fits.append(len(document["jobs"]))
+            return original_fits(document)
+
+        def count_manifest_encoding(document, limit):
+            encoded = original_encode(document, limit)
+            if isinstance(document, dict) and "service_state" in document and "jobs" in document:
+                candidate_bytes.append((len(document["jobs"]), len(encoded)))
+            return encoded
+
+        with mock.patch.object(store_module.copy, "deepcopy", side_effect=count_document_copies), mock.patch.object(
+            store_module.ServiceStateStore, "_fits", count_fits
+        ), mock.patch.object(store_module, "_json_encode", side_effect=count_manifest_encoding):
+            rows = caller.submit([request(number) for number in range(1, 51)])
+
+        self.assertTrue(all(row["status"] == "accepted" for row in rows))
+        self.assertEqual(sum(row["reservation"] for row in rows), 32)
+        self.assertEqual(len(self.manifest()["jobs"]), 50)
+        self.assertEqual(document_copies, [0])
+        self.assertEqual(fits, [50])
+        self.assertGreater(len(candidate_bytes), 0)
+        self.assertTrue(service.service_ready())
+
+    def test_oversized_key_rolls_back_only_its_delta_and_keeps_collision(self):
+        self.start()
+        caller = self.store()
+        first = self.submit_one(caller, request(1))
+        original_fits = store_module.ServiceStateStore._fits
+        fits = []
+
+        def count_fits(*args):
+            document = args[-1]
+            fits.append(len(document["jobs"]))
+            return original_fits(document)
+
+        huge = protocol.catalog_request("popular_movies", "x" * 261800)
+        with mock.patch.object(store_module.ServiceStateStore, "_fits", count_fits):
+            rows = caller.submit([huge, request(1), request(2)])
+
+        self.assertEqual(rows[0]["status"], "backpressured")
+        self.assertEqual(rows[0]["code"], "BACKPRESSURED")
+        self.assertEqual(rows[1]["status"], "joined")
+        self.assertEqual(rows[1]["job_id"], first["job_id"])
+        self.assertEqual(rows[2]["status"], "accepted")
+        self.assertEqual(fits, [2])
+        self.assertLessEqual(len(self.read_manifest_bytes()), 262144)
+
     def test_overlapping_batches_preserve_per_key_ownership(self):
         self.start()
         left = self.store()
@@ -452,6 +517,59 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(job["result_ref"]["bytes"], len(encoded))
         self.assertIn("Praha".encode("utf-8"), encoded)
         self.assertNotIn(b"Praha\\u", encoded)
+
+    def test_noop_claims_and_drains_write_zero_but_real_mutation_writes_once(self):
+        service = self.store()
+        caller = self.store()
+
+        def unsupported(_session):
+            raise AssertionError("empty drain cannot construct an engine")
+
+        runner = ServiceRunner(
+            service,
+            unsupported,
+            unsupported,
+            unsupported,
+            lambda: False,
+            lambda _seconds: False,
+            logging.getLogger("test.service.store.idle"),
+        )
+        self.assertFalse(runner.run_once())
+        original_write = store_module.ServiceStateStore._write_manifest
+        writes = []
+
+        def counted_write(instance, document):
+            writes.append(instance)
+            return original_write(instance, document)
+
+        before = self.read_manifest_bytes()
+        digest = hashlib.sha256(before).hexdigest()
+        with mock.patch.object(
+            store_module.ServiceStateStore, "_write_manifest", counted_write
+        ), mock.patch.object(
+            store_module.os, "fsync", wraps=store_module.os.fsync
+        ) as fsync, mock.patch.object(
+            store_module.os, "replace", wraps=store_module.os.replace
+        ) as replace:
+            for _index in range(4):
+                self.assertIsNone(
+                    service.claim_next(runner._epoch, "%032x" % (_index + 1))
+                )
+            for _index in range(3):
+                self.assertFalse(runner.run_once())
+            self.assertEqual(writes, [])
+            self.assertEqual(fsync.call_count, 0)
+            self.assertEqual(replace.call_count, 0)
+            self.assertEqual(self.read_manifest_bytes(), before)
+            self.assertEqual(hashlib.sha256(self.read_manifest_bytes()).hexdigest(), digest)
+
+            accepted = caller.submit([request(1)])
+            self.assertEqual(accepted[0]["status"], "accepted")
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(fsync.call_count, 1)
+            self.assertEqual(replace.call_count, 1)
+            self.assertTrue(caller.service_ready())
+        runner.close()
 
     def test_temp_creation_failure_leaves_no_reservation_or_key_owner(self):
         self.start()

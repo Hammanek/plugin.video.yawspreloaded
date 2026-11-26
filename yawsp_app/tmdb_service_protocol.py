@@ -6,6 +6,8 @@ import json
 import math
 import re
 
+from yawsp_app.tmdb_youtube import valid_youtube_id
+
 
 SCHEMA_VERSION = 1
 MAX_JOB_CANONICAL_BYTES = 262144
@@ -441,7 +443,7 @@ def _validate_result_value(value):
             raise ProtocolError("unknown trailer result status")
         youtube_id = value["youtube_id"]
         if value["status"] == "hit":
-            if type(youtube_id) is not str or not youtube_id.strip():
+            if not valid_youtube_id(youtube_id):
                 raise ProtocolError("trailer hit requires a YouTube ID")
         elif youtube_id is not None:
             raise ProtocolError(

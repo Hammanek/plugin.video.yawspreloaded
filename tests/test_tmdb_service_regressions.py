@@ -259,7 +259,7 @@ class HistoricalServiceRegressionTests(unittest.TestCase):
 
     def test_actual_system_exit_closes_response_session_and_preserves_next_job(self):
         class ExitResponse(FakeResponse):
-            def json(self):
+            def iter_content(self, *args, **kwargs):
                 raise SystemExit(0)
 
         first_response = ExitResponse()
@@ -301,13 +301,13 @@ class HistoricalServiceRegressionTests(unittest.TestCase):
         def during_retry(seconds):
             waits.append(seconds)
             if len(waits) == 1:
-                joined["shared"] = caller.join(shared_request, WAITER)
+                joined["shared00000"] = caller.join(shared_request, WAITER)
                 joined["independent"] = caller.join(
                     independent_request, OTHER_WAITER
                 )
                 active = [job for job in self.manifest()["jobs"] if job["state"] == "active"]
                 self.assertEqual(len(active), 1)
-                self.assertEqual(active[0]["job_id"], joined["shared"]["job_id"])
+                self.assertEqual(active[0]["job_id"], joined["shared00000"]["job_id"])
                 self.assertEqual(active[0]["waiters"], [WAITER])
                 self.assertTrue(active[0]["priority"])
             return False
@@ -319,8 +319,8 @@ class HistoricalServiceRegressionTests(unittest.TestCase):
         with self.assertLogs(self.logger, level="ERROR"):
             self.assertTrue(runner.run_once())
 
-        self.assertEqual(joined["shared"]["status"], "joined")
-        self.assertEqual(joined["shared"]["job_id"], background["job_id"])
+        self.assertEqual(joined["shared00000"]["status"], "joined")
+        self.assertEqual(joined["shared00000"]["job_id"], background["job_id"])
         self.assertEqual(joined["independent"]["status"], "accepted")
         self.assertNotEqual(joined["independent"]["job_id"], background["job_id"])
         self.assertEqual(waits, [0.05])
@@ -333,7 +333,7 @@ class HistoricalServiceRegressionTests(unittest.TestCase):
         self.assertEqual(len({call["url"] for call in session.calls}), 2)
         self.assertTrue(all(response.closed for response in session.responses))
         for row, waiter in (
-            (joined["shared"], WAITER),
+            (joined["shared00000"], WAITER),
             (joined["independent"], OTHER_WAITER),
         ):
             result = caller.read_wait_result(row["job_id"], waiter)

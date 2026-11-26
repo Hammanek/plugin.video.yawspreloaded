@@ -25,8 +25,10 @@ from yawsp_app.tmdb import (
     TMDBServiceUnavailableError,
     TrailerRepository,
     WATCHLIST_PREFETCH_LIMIT,
+    _read_response_json,
 )
 from yawsp_app.tmdb_service_store import IdentityTransactionAdapter
+from yawsp_app.tmdb_youtube import valid_youtube_id, youtube_play_media
 from yawsp_app.watchlist_snapshot import SnapshotScope
 
 
@@ -65,7 +67,13 @@ def _cached_trailers(repository, media, media_ids):
             except (TypeError, ValueError):
                 continue
             entry = reader._entry(key)
-            if reader._fresh(entry):
+            if entry is not None and entry.get("ts") is None:
+                # A nonempty legacy ID remains displayable, but only the service
+                # may validate it and persist the migration timestamp.
+                if entry["youtube_id"] is not None:
+                    values[int(media_id)] = entry["youtube_id"]
+                missing.append(int(media_id))
+            elif reader._fresh(entry):
                 values[int(media_id)] = entry["youtube_id"]
             else:
                 missing.append(int(media_id))
@@ -184,7 +192,9 @@ def _pending_session_id(client, request_token):
         raise
 
     try:
-        data = response.json()
+        data = _read_response_json(
+            response, "TMDB session response is malformed", abort=getattr(client, "abort", None)
+        )
         if not isinstance(data, dict):
             raise TMDBError("TMDB session response must be an object")
         session_id = data.get("session_id")
@@ -950,7 +960,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
 
     def trailer(params):
         lookup = trailer_repository.lookup(params["media"], params["id"])
-        if lookup.status != "hit" or not lookup.youtube_id:
+        if lookup.status != "hit" or not valid_youtube_id(lookup.youtube_id):
             runtime.notify(
                 runtime.localized(30423)
                 if lookup.status == "missing"
@@ -961,10 +971,7 @@ def build_tmdb_handlers(runtime, client_factory, repositories, background):
             runtime.notify(runtime.localized(30425))
             return ActionResult(handled=False)
         return ActionResult(
-            handled=True,
-            play_media="PlayMedia(plugin://plugin.video.youtube/play/?video_id={0})".format(
-                lookup.youtube_id
-            ),
+            handled=True, play_media=youtube_play_media(lookup.youtube_id)
         )
 
     def menu(params):

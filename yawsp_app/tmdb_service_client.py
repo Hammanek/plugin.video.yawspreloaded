@@ -9,6 +9,7 @@ import threading
 import time
 
 from yawsp_app import tmdb_service_protocol as protocol
+from yawsp_app.tmdb_youtube import valid_youtube_id
 from yawsp_app.tmdb import (
     ShowRepository,
     TMDBAbortError,
@@ -222,9 +223,17 @@ class TMDBServiceClient:
                 if self.abort():
                     raise TMDBAbortError("TMDB operation aborted")
                 try:
-                    document = self._store_call(
-                        self.store.read_wait_result, job_id, waiter_id
-                    )
+                    candidate_probe = getattr(self.store, "result_candidate", None)
+                    if candidate_probe is not None and not self._store_call(
+                        candidate_probe, job_id
+                    ):
+                        document = None
+                    else:
+                        # A candidate merely triggers the authoritative locked
+                        # manifest/result/digest/waiter read. It proves no success.
+                        document = self._store_call(
+                            self.store.read_wait_result, job_id, waiter_id
+                        )
                 except protocol.ProtocolError as error:
                     with self._lock:
                         closed = self._closed
@@ -272,7 +281,7 @@ class TMDBServiceClient:
         status = value["status"]
         youtube_id = value["youtube_id"]
         if status == "hit":
-            if type(youtube_id) is not str or not youtube_id.strip():
+            if not valid_youtube_id(youtube_id):
                 raise protocol.ProtocolError("trailer hit requires a YouTube ID")
         elif status in ("missing", "error"):
             if youtube_id is not None:

@@ -459,7 +459,7 @@ class DedupAndJobCodecTests(unittest.TestCase):
 class ResultCodecTests(unittest.TestCase):
     def test_trailer_hit_missing_and_error_values_round_trip_detached(self):
         values = (
-            {"status": "hit", "youtube_id": "abc123"},
+            {"status": "hit", "youtube_id": "abc12300000"},
             {"status": "missing", "youtube_id": None},
             {"status": "error", "youtube_id": None},
         )
@@ -479,10 +479,10 @@ class ResultCodecTests(unittest.TestCase):
     def test_trailer_result_rejects_inconsistent_payloads(self):
         values = (
             {"status": "hit", "youtube_id": None},
-            {"status": "missing", "youtube_id": "abc123"},
+            {"status": "missing", "youtube_id": "abc12300000"},
             {"status": "other", "youtube_id": None},
-            {"status": "hit", "youtube_id": "abc123", "response": "secret"},
-            {"status": "hit", "youtube_id": "abc123", "response": object()},
+            {"status": "hit", "youtube_id": "abc12300000", "response": "secret"},
+            {"status": "hit", "youtube_id": "abc12300000", "response": object()},
         )
         for value in values:
             with self.subTest(value=value):

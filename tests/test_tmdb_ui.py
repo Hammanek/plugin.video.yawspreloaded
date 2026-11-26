@@ -22,6 +22,7 @@ from yawsp_app.tmdb import (
     ShowRepository,
     TMDBClient,
     TMDBError,
+    TrailerLookup,
     TrailerRepository,
     WATCHLIST_PREFETCH_LIMIT,
 )
@@ -95,11 +96,10 @@ class Plugin(KodiRecorder):
         return super().executeBuiltin(command)
 
 
-class Response:
+class Response(FakeResponse):
     def __init__(self, data, status_code=200):
+        super().__init__(json_data=data, status_code=status_code)
         self.data = data
-        self.status_code = status_code
-        self.closed = False
 
     def json(self):
         if isinstance(self.data, BaseException):
@@ -456,7 +456,7 @@ class TMDBUITests(unittest.TestCase):
     def test_watchlist_uses_cached_values_and_never_waits_for_item_lookups(self):
         now = self.clock()
         self.trailer_cache.save(
-            {"movie:1": {"ts": now, "youtube_id": "cached-video"}}
+            {"movie:1": {"ts": now, "youtube_id": "cachevideo0"}}
         )
         self.queue_watchlist(
             [{"id": 1, "title": "Film", "release_date": "2026-01-02"}]
@@ -565,7 +565,7 @@ class TMDBUITests(unittest.TestCase):
 
     def test_cached_watchlist_trailer_checks_youtube_without_direct_playmedia(self):
         self.trailer_cache.save(
-            {"movie:42": {"ts": self.clock(), "youtube_id": "cached-video"}}
+            {"movie:42": {"ts": self.clock(), "youtube_id": "cachevideo0"}}
         )
         movie = {"id": 42, "title": "Film", "release_date": "2026-01-02"}
         self.queue_watchlist([movie])
@@ -1909,6 +1909,30 @@ class TMDBUITests(unittest.TestCase):
         self.assertEqual(self.events[-2:], ["Action(Back)", "resolve"])
         self.assertEqual(len(self.plugin.notifications), 2)
 
+    def test_malicious_hit_never_reaches_actual_playmedia_builtin(self):
+        class InvalidRepository:
+            def __init__(self, video_id):
+                self.video_id = video_id
+
+            def lookup(self, _media, _media_id):
+                return TrailerLookup("hit", self.video_id)
+
+        for video_id in ("short", "Abcdef_123-)"):
+            with self.subTest(video_id=video_id):
+                handlers = build_tmdb_handlers(
+                    self.runtime,
+                    lambda: self.client,
+                    {"trailers": InvalidRepository(video_id), "shows": object()},
+                    self.background,
+                )
+                result = handlers["tmdb_trailer"](
+                    {"action": "tmdb_trailer", "media": "movie", "id": "42"}
+                )
+                self.assertFalse(result.handled)
+                self.assertFalse(
+                    any("PlayMedia" in command for command in self.plugin.builtin_commands)
+                )
+
     def trailer(self, available=True):
         self.runtime.addon_available = lambda addon_id: available
         return self.runner.run_action(
@@ -1920,7 +1944,7 @@ class TMDBUITests(unittest.TestCase):
     def test_on_demand_trailer_hit_resolves_false_before_youtube_playmedia(self):
         self.client.queue_get(
             "/3/movie/42/videos",
-            {"results": [{"site": "YouTube", "type": "Trailer", "key": "video-hit"}]},
+            {"results": [{"site": "YouTube", "type": "Trailer", "key": "videohit001"}]},
         )
 
         result = self.trailer()
@@ -1928,7 +1952,7 @@ class TMDBUITests(unittest.TestCase):
         self.assertTrue(result.handled)
         self.assertEqual(
             self.events,
-            ["resolve", "PlayMedia(plugin://plugin.video.youtube/play/?video_id=video-hit)"],
+            ["resolve", "PlayMedia(plugin://plugin.video.youtube/play/?video_id=videohit001)"],
         )
         self.assertEqual(len(self.plugin.resolved_url_calls), 1)
         self.assertFalse(self.plugin.resolved_url_calls[0]["succeeded"])
@@ -1954,7 +1978,7 @@ class TMDBUITests(unittest.TestCase):
 
     def test_youtube_unavailable_never_issues_playmedia(self):
         self.trailer_cache.save(
-            {"movie:42": {"ts": self.clock(), "youtube_id": "video-hit"}}
+            {"movie:42": {"ts": self.clock(), "youtube_id": "videohit001"}}
         )
         self.handlers = self.build_handlers()
 

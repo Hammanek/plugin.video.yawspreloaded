@@ -12,8 +12,9 @@ import requests
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
 from yawsp_app import tmdb_service_protocol as protocol
+from yawsp_app import tmdb_service_store as store_module
 from yawsp_app.json_cache import AtomicJsonCache
-from yawsp_app.tmdb import TrailerLookup
+from yawsp_app.tmdb import TrailerLookup, TrailerRepository
 from yawsp_app.tmdb_service_client import TMDBServiceClient
 from yawsp_app.tmdb_service_store import ServiceStateStore
 from yawsp_app.tmdb_service_worker import ServiceMetadataEngine, ServiceRunner
@@ -57,11 +58,11 @@ def response(data, status_code=200, headers=None):
     return FakeResponse(json_data=data, status_code=status_code, headers=headers)
 
 
-def trailer_data(identifier="trailer"):
+def trailer_data(identifier="official001"):
     return {
         "results": [
-            {"site": "YouTube", "type": "Teaser", "key": "teaser"},
-            {"site": "YouTube", "type": "Trailer", "key": "plain"},
+            {"site": "YouTube", "type": "Teaser", "key": "teaser00000"},
+            {"site": "YouTube", "type": "Trailer", "key": "plain000000"},
             {
                 "site": "YouTube",
                 "type": "Trailer",
@@ -93,7 +94,7 @@ class DynamicMetadataSession:
             raise requests.Timeout("synthetic offline metadata request")
         if url.endswith("/videos"):
             media_id = int(url.rsplit("/", 2)[-2])
-            data = trailer_data("video-%d" % media_id)
+            data = trailer_data("video%06d" % media_id)
         else:
             data = {"next_episode_to_air": None}
         result = response(data)
@@ -135,7 +136,7 @@ class MetadataEngineTests(unittest.TestCase):
 
     def test_trailer_and_show_values_use_exact_protocol_domain_shapes(self):
         responses = [
-            response(trailer_data("official")),
+            response(trailer_data("official001")),
             response({"next_episode_to_air": None}),
         ]
         session = FakeSession(responses)
@@ -144,7 +145,7 @@ class MetadataEngineTests(unittest.TestCase):
         trailer = engine.execute(protocol.trailer_request("movie", 7))
         show = engine.execute(protocol.show_request(8))
 
-        self.assertEqual(trailer, {"status": "hit", "youtube_id": "official"})
+        self.assertEqual(trailer, {"status": "hit", "youtube_id": "official001"})
         self.assertEqual(show, {"value": None, "succeeded": True})
         self.assertIsInstance(TMDBServiceClient._decode_trailer(trailer), TrailerLookup)
         self.assertEqual(TMDBServiceClient._decode_show(show), (None, True))
@@ -159,7 +160,7 @@ class MetadataEngineTests(unittest.TestCase):
             [
                 response({"results": []}),
                 requests.Timeout("offline"),
-                response(trailer_data("later")),
+                response(trailer_data("later000000")),
             ]
         )
         engine = self.engine(session)
@@ -183,7 +184,7 @@ class MetadataEngineTests(unittest.TestCase):
             )
         self.assertNotIn("movie:4", self.read_cache(self.trailer_cache))
         self.assertEqual(
-            engine.execute(failed), {"status": "hit", "youtube_id": "later"}
+            engine.execute(failed), {"status": "hit", "youtube_id": "later000000"}
         )
         self.assertEqual(len(session.calls), 3)
 
@@ -223,6 +224,34 @@ class MetadataEngineTests(unittest.TestCase):
         self.assertEqual(
             self.read_cache(self.show_cache)["13"]["next"], refreshed
         )
+
+    def test_service_migration_is_the_only_fresh_legacy_timestamp_writer(self):
+        self.trailer_cache.save({"movie:5": "legacy00001"})
+        session = FakeSession([response(trailer_data("migrated001"))])
+        engine = self.engine(session)
+
+        self.assertEqual(
+            engine.execute(protocol.trailer_request("movie", 5)),
+            {"status": "hit", "youtube_id": "migrated001"},
+        )
+        engine.close()
+
+        migrated = self.read_cache(self.trailer_cache)["movie:5"]
+        self.assertEqual(migrated["youtube_id"], "migrated001")
+        self.assertEqual(migrated["ts"], self.clock())
+        independent = TrailerRepository(
+            None,
+            AtomicJsonCache(self.trailer_cache.path),
+            clock=self.clock,
+            _read_only=True,
+        )
+        self.assertFalse(independent.needs_lookup("movie", 5))
+        ordinary_hit = self.engine(FakeSession())
+        self.assertEqual(
+            ordinary_hit.execute(protocol.trailer_request("movie", 5)),
+            {"status": "hit", "youtube_id": "migrated001"},
+        )
+        ordinary_hit.close()
 
     def test_transport_retries_retry_after_and_every_response_close_are_preserved(self):
         responses = [
@@ -506,7 +535,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(document["job_id"], row["job_id"])
         self.assertEqual(
             TMDBServiceClient._decode_trailer(document["value"]),
-            TrailerLookup("hit", "video-42"),
+            TrailerLookup("hit", "video000042"),
         )
         self.assertEqual(session.attempts[url], 2)
         self.assertEqual(self.waits, [0.05])
@@ -538,6 +567,89 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(self.result_document(row["job_id"])["outcome"], "succeeded")
         self.assertFalse(runner.run_once())
         self.assertEqual(len(completions), 2)
+
+    def test_precommit_temp_fault_reconciles_active_claim_and_continues(self):
+        session = DynamicMetadataSession()
+        runner, _ = self.make_runner(session)
+        first = self.caller.join(protocol.show_request(1), WAITER)
+        second = self.caller.join(protocol.show_request(2), OTHER_WAITER)
+        original_temp = store_module._temp_file
+        attempts = []
+
+        def fail_first_result_temp(path):
+            if os.path.basename(os.path.dirname(path)) == "results" and not attempts:
+                attempts.append(path)
+                raise OSError("injected precommit result fault")
+            return original_temp(path)
+
+        with mock.patch.object(store_module, "_temp_file", side_effect=fail_first_result_temp):
+            self.assertTrue(runner.run_once())
+
+        self.assertEqual(len(attempts), 1)
+        first_result = self.caller.read_wait_result(first["job_id"], WAITER)
+        second_result = self.caller.read_wait_result(second["job_id"], OTHER_WAITER)
+        self.assertEqual(first_result["outcome"], "failed")
+        self.assertEqual(first_result["error"]["code"], "BACKPRESSURED")
+        self.assertEqual(second_result["outcome"], "succeeded")
+        self.assertEqual(len(session.calls), 2)
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] == "active"])
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] in ("queued", "backlog", "active")])
+        self.assertFalse(runner.run_once())
+
+    def test_saturated_pinned_results_reconcile_runner_and_next_job(self):
+        session = DynamicMetadataSession()
+        runner, _ = self.make_runner(session)
+        target = 16777216 - 16384
+        retained = []
+        index = 0
+        while True:
+            aggregate = sum(
+                job["result_ref"]["bytes"] for job in self.manifest()["jobs"]
+            )
+            if aggregate >= target:
+                break
+            row = self.caller.submit(
+                [protocol.trailer_request("movie", index + 100)],
+                interactive=True,
+                waiter_id="%032x" % (index + 100),
+            )[0]
+            claim = self.store.claim_next(
+                runner._epoch, "%032x" % (index + 1000)
+            )
+            empty = protocol.make_result(row["job_id"], "succeeded", {"value": ""})
+            envelope = len(
+                json.dumps(empty, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            )
+            length = min(1048400, target - aggregate - envelope)
+            self.assertGreater(length, 0)
+            document = protocol.make_result(
+                row["job_id"], "succeeded", {"value": "x" * length}
+            )
+            self.store.complete(claim, document)
+            retained.append((row, index, length))
+            index += 1
+
+        first = self.caller.join(protocol.show_request(1), WAITER)
+        second = self.caller.join(protocol.show_request(2), OTHER_WAITER)
+        self.assertTrue(runner.run_once())
+
+        for row, waiter, _length in retained:
+            self.assertIsNotNone(
+                self.caller.read_wait_result(
+                    row["job_id"], "%032x" % (waiter + 100)
+                )
+            )
+        outcomes = [
+            self.caller.read_wait_result(row["job_id"], waiter)
+            for row, waiter in ((first, WAITER), (second, OTHER_WAITER))
+        ]
+        self.assertEqual(
+            [document["outcome"] for document in outcomes], ["succeeded", "failed"]
+        )
+        self.assertEqual(outcomes[1]["error"]["code"], "BACKPRESSURED")
+        self.assertEqual(len(session.calls), 2)
+        self.assertFalse([job for job in self.manifest()["jobs"] if job["state"] in ("queued", "backlog", "active")])
+        self.assertFalse(runner.run_once())
 
     def test_base_exception_unwinds_with_one_terminal_final_flush_and_session_close(self):
         class FatalMetadata(BaseException):
@@ -628,7 +740,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(first["outcome"], "failed")
         self.assertEqual(first["error"], {"code": "FAILED", "message": "TMDB operation failed"})
         self.assertEqual(second["outcome"], "succeeded")
-        self.assertEqual(second["value"]["youtube_id"], "video-2")
+        self.assertEqual(second["value"]["youtube_id"], "video000002")
 
     def test_abort_flushes_completed_success_aborts_queue_and_closes_session(self):
         session = DynamicMetadataSession()
@@ -670,7 +782,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(show_result["job_id"], show["job_id"])
         self.assertEqual(
             TMDBServiceClient._decode_trailer(trailer_result["value"]),
-            TrailerLookup("hit", "video-9"),
+            TrailerLookup("hit", "video000009"),
         )
         self.assertEqual(TMDBServiceClient._decode_show(show_result["value"]), (None, True))
         self.assertEqual(set(trailer_result), {"job_id", "outcome", "value"})

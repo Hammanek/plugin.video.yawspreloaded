@@ -4,14 +4,17 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import json
 import logging
 import math
+import re
 import threading
 import time
 from typing import Literal, Optional
 
 import requests
 
+from yawsp_app.tmdb_youtube import valid_youtube_id
 from yawsp_app.watchlist_snapshot import validated_results
 
 
@@ -22,6 +25,9 @@ _MAX_ATTEMPTS = 3
 _RETRY_WAIT_SLICE = 0.25
 _FALLBACK_RETRY_CAP = 30.0
 _MAX_WATCHLIST_PAGES = 1000
+MAX_TMDB_RESPONSE_BYTES = 1048576
+_TRAILER_CHUNK_BYTES = 65536
+_ACCOUNT_ROUTE = re.compile(r"^/3/account/[^/]+(?=/)")
 TRAILER_TTL = 7 * 24 * 60 * 60
 TRAILER_MISSING_TTL = 6 * 60 * 60
 SHOW_TTL = 24 * 60 * 60
@@ -64,6 +70,57 @@ def _sanitize_requests_error(error):
     error.__context__ = None
     error.__cause__ = None
     error.__suppress_context__ = True
+
+
+def _route_label(path):
+    """Keep useful public routes but never put an account identifier in errors."""
+
+    return _ACCOUNT_ROUTE.sub("/3/account/{redacted}", str(path), count=1)
+
+
+def _read_response_json(response, error_message, abort=None):
+    """Decode at most 1 MiB from actual chunks, never an unbounded response.json."""
+
+    headers = getattr(response, "headers", {})
+    content_length = next(
+        (value for key, value in headers.items() if str(key).casefold() == "content-length"),
+        None,
+    )
+    if content_length is not None:
+        try:
+            declared = int(str(content_length).strip())
+        except (TypeError, ValueError, OverflowError) as error:
+            raise TMDBError("TMDB response has an invalid Content-Length") from error
+        if declared > MAX_TMDB_RESPONSE_BYTES:
+            raise TMDBError("TMDB response exceeds 1 MiB")
+
+    # Abort behavior stays at the existing request/runner boundaries. Checking
+    # after a response arrives would change its already-completed cache outcome.
+    del abort
+    body = bytearray()
+    try:
+        for chunk in response.iter_content(
+            chunk_size=_TRAILER_CHUNK_BYTES, decode_unicode=False
+        ):
+            if not chunk:
+                continue
+            if isinstance(chunk, str):
+                raise TypeError("TMDB response chunks must be bytes")
+            if len(body) + len(chunk) > MAX_TMDB_RESPONSE_BYTES:
+                raise TMDBError("TMDB response exceeds 1 MiB")
+            body.extend(chunk)
+    except (TMDBAbortError, TMDBError):
+        raise
+    except requests.RequestException as error:
+        _sanitize_requests_error(error)
+        raise TMDBError(error_message) from error
+    except (OSError, TypeError, ValueError) as error:
+        raise TMDBError(error_message) from error
+    try:
+        text = bytes(body).decode("utf-8", errors="strict")
+        return json.loads(text)
+    except (UnicodeError, ValueError, TypeError) as error:
+        raise TMDBError(error_message) from error
 
 
 @dataclass(frozen=True)
@@ -171,6 +228,7 @@ class TMDBClient:
     def request(
         self, method, path, params=None, json_data=None, invalidate_on_unauthorized=True
     ):
+        route = _route_label(path)
         query = {"language": self.locale_mapper()}
         if params:
             query.update(params)
@@ -195,10 +253,11 @@ class TMDBClient:
                     params=query,
                     json=json_data,
                     timeout=_TIMEOUT,
+                    stream=True,
                 )
             except requests.RequestException as error:
                 _sanitize_requests_error(error)
-                raise TMDBError("TMDB {0} request failed".format(path)) from error
+                raise TMDBError("TMDB {0} request failed".format(route)) from error
 
             if response.status_code == 429 and attempt + 1 < _MAX_ATTEMPTS:
                 delay = self._retry_delay(response, attempt)
@@ -214,7 +273,7 @@ class TMDBClient:
                     self._invalidate_request_session(session_id)
                 _sanitize_requests_error(error)
                 raise TMDBError(
-                    "TMDB {0} returned HTTP {1}".format(path, response.status_code)
+                    "TMDB {0} returned HTTP {1}".format(route, response.status_code)
                 ) from error
             else:
                 succeeded = True
@@ -227,14 +286,16 @@ class TMDBClient:
 
     def get(self, path, params=None):
         response = self.request("GET", path, params=params)
+        route = _route_label(path)
         try:
-            try:
-                data = response.json()
-            except (ValueError, TypeError) as error:
-                raise TMDBError("TMDB {0} returned malformed JSON".format(path)) from error
+            data = _read_response_json(
+                response,
+                "TMDB {0} returned malformed JSON".format(route),
+                abort=self.abort,
+            )
             if not isinstance(data, dict):
                 error = ValueError("TMDB JSON response root must be an object")
-                raise TMDBError("TMDB {0} returned a non-object JSON response".format(path)) from error
+                raise TMDBError("TMDB {0} returned a non-object JSON response".format(route)) from error
             return data
         finally:
             response.close()
@@ -404,7 +465,11 @@ class TrailerRepository(_Repository):
                 del self._entries[key]
                 migrated = True
             elif isinstance(raw, str) and raw.strip():
-                self._entries[key] = {"ts": self.clock(), "youtube_id": raw.strip()}
+                self._entries[key] = {
+                    "ts": None if self._read_only else 0.0,
+                    "youtube_id": raw.strip(),
+                    "_legacy": self._read_only,
+                }
                 migrated = True
         if migrated and not self._read_only:
             # Only a service-owned repository may migrate legacy cache bytes.
@@ -417,16 +482,29 @@ class TrailerRepository(_Repository):
         # Bare non-empty IDs are the valid legacy representation. Legacy None
         # is deliberately not upgraded into a six-hour negative response.
         if isinstance(raw, str) and raw.strip():
-            entry = {"ts": self.clock(), "youtube_id": raw.strip()}
+            entry = {
+                "ts": None if self._read_only else 0.0,
+                "youtube_id": raw.strip(),
+                "_legacy": self._read_only,
+            }
             self._entries[key] = entry
             return entry
+        if (
+            self._read_only
+            and isinstance(raw, dict)
+            and raw.get("_legacy") is True
+            and raw.get("ts") is None
+        ):
+            legacy_id = raw.get("youtube_id")
+            return {
+                "ts": None,
+                "youtube_id": legacy_id if valid_youtube_id(legacy_id) else None,
+            }
         if not isinstance(raw, dict) or not self._valid_timestamp(raw.get("ts")):
             self._entries.pop(key, None)
             return None
         youtube_id = raw.get("youtube_id", _MISSING)
-        if youtube_id is not None and not (
-            isinstance(youtube_id, str) and youtube_id.strip()
-        ):
+        if youtube_id is not None and not valid_youtube_id(youtube_id):
             self._entries.pop(key, None)
             return None
         return {"ts": raw["ts"], "youtube_id": youtube_id}
@@ -439,7 +517,7 @@ class TrailerRepository(_Repository):
         return "{0}:{1}".format(media, int(media_id))
 
     def _fresh(self, entry):
-        if entry is None:
+        if entry is None or not self._valid_timestamp(entry.get("ts")):
             return False
         ttl = TRAILER_MISSING_TTL if entry["youtube_id"] is None else TRAILER_TTL
         return self.clock() - entry["ts"] < ttl
@@ -469,9 +547,9 @@ class TrailerRepository(_Repository):
         if not candidates:
             return None
         youtube_id = candidates[0].get("key")
-        if not isinstance(youtube_id, str) or not youtube_id.strip():
+        if not valid_youtube_id(youtube_id):
             raise TMDBError("Selected TMDB YouTube video has no valid id")
-        return youtube_id.strip()
+        return youtube_id
 
     def lookup(self, media, media_id):
         normalized_id = int(media_id)
@@ -864,10 +942,9 @@ def execute_watched_removal(client, scope, media_id):
         },
     )
     try:
-        try:
-            data = response.json()
-        except (TypeError, ValueError) as error:
-            raise TMDBError("TMDB watched response is malformed") from error
+        data = _read_response_json(
+            response, "TMDB watched response is malformed", abort=getattr(client, "abort", None)
+        )
         return (
             response.status_code in (200, 201)
             and isinstance(data, dict)
