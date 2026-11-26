@@ -213,17 +213,23 @@ class ServiceWatchlistEngine:
             raise TMDBError("TMDB identity changed before watchlist operation")
         return session_id, not account_id
 
+    def _identity_matches_locked(self, scope, session_id, allow_missing=False):
+        """Compare current identity only inside the caller's real OS transaction."""
+        account_id = self._setting(self.settings, "tmdb_account_id")
+        return (
+            self._setting(self.settings, "tmdb_access_token") == session_id
+            and (
+                account_id == scope.account_id
+                or (allow_missing and not account_id)
+            )
+            and self.locale_mapper() == scope.language
+        )
+
     def _valid_operation(self, scope, session_id, allow_missing=False):
         def valid():
             with self._identity():
-                account_id = self._setting(self.settings, "tmdb_account_id")
-                return (
-                    self._setting(self.settings, "tmdb_access_token") == session_id
-                    and (
-                        account_id == scope.account_id
-                        or (allow_missing and not account_id)
-                    )
-                    and self.locale_mapper() == scope.language
+                return self._identity_matches_locked(
+                    scope, session_id, allow_missing
                 )
 
         return valid
@@ -233,16 +239,20 @@ class ServiceWatchlistEngine:
         if not valid():
             raise TMDBError("TMDB identity changed during watchlist operation")
 
+    def _require_valid_locked(self, scope, session_id, allow_missing=False):
+        if not self._identity_matches_locked(scope, session_id, allow_missing):
+            raise TMDBError("TMDB identity changed during watchlist operation")
+
     def _invalidate_if_cleared(self, scope):
-        # The scoped operation client clears only a still-current raw 401 token.
-        # Recheck under the same OS lock before tombstoning just that old account.
+        # Compare-and-tombstone is one OS transaction: a same-account QR save
+        # cannot slip between the cleared check and scoped invalidation.
         with self._identity():
             cleared = not (
                 self._setting(self.settings, "tmdb_access_token")
                 or self._setting(self.settings, "tmdb_account_id")
             )
-        if cleared:
-            self.snapshot_store.invalidate_identity(scope.account_id)
+            if cleared:
+                self.snapshot_store.invalidate_identity(scope.account_id)
 
     def _ensure_refresh(self, request, generation):
         if self._claim is None:
@@ -314,17 +324,22 @@ class ServiceWatchlistEngine:
         )
         try:
             results = fetch_complete_watchlist(client, scope, operation_valid=valid)
-            self._require_valid(valid)
-            saved = self.snapshot_store.save_complete(
-                scope,
-                results,
-                time.time(),
-                expected_generation=request["generation"],
-            )
-            if saved is None:
-                self._ensure_refresh(request, self.snapshot_store.generation(scope))
-                raise TMDBError("TMDB watchlist generation changed during refresh")
-            return self._value(scope, saved.revision, saved.generation)
+            with self._identity():
+                # Validation, generation-checked save and any ordinary watched
+                # continuation share one identity -> snapshot -> manifest order.
+                self._require_valid_locked(scope, session_id, allow_missing)
+                saved = self.snapshot_store.save_complete(
+                    scope,
+                    results,
+                    time.time(),
+                    expected_generation=request["generation"],
+                )
+                if saved is None:
+                    state = self.snapshot_store.refresh_state(scope, time.time())
+                    if state.snapshot is not None:
+                        self._ensure_refresh(request, state.generation)
+                    raise TMDBError("TMDB watchlist generation changed during refresh")
+                return self._value(scope, saved.revision, saved.generation)
         except Exception:
             self._invalidate_if_cleared(scope)
             raise
@@ -332,7 +347,6 @@ class ServiceWatchlistEngine:
     def _watched(self, request):
         scope = SnapshotScope(**request["params"]["scope"])
         session_id, _account_was_missing = self._capture(request, scope)
-        valid = self._valid_operation(scope, session_id)
         client = watchlist_operation_client(
             self._client,
             scope,
@@ -344,23 +358,31 @@ class ServiceWatchlistEngine:
                 client, scope, request["params"]["media_id"]
             ):
                 raise TMDBError("TMDB watched operation was not accepted")
-            self._require_valid(valid)
-            self.snapshot_store.remove(scope, request["params"]["media_id"])
-            generation = self.snapshot_store.generation(scope)
-            self._ensure_refresh(
-                protocol.watchlist_request(
-                    request["params"]["scope"],
-                    generation,
-                    True,
-                    False,
-                    request["session_binding"],
-                ),
-                generation,
-            )
-            latest = self.snapshot_store.load(scope)
-            if latest is None:
-                raise TMDBError("TMDB watched snapshot is not complete")
-            return self._value(scope, latest.revision, generation)
+            with self._identity():
+                self._require_valid_locked(scope, session_id)
+                latest = self.snapshot_store.remove(
+                    scope, request["params"]["media_id"]
+                )
+                if latest is None:
+                    # An already-absent ID retains a latest complete snapshot;
+                    # an incomplete/tombstone result cannot yield a revision or
+                    # justify an automatic refresh on this business failure.
+                    latest = self.snapshot_store.refresh_state(
+                        scope, time.time()
+                    ).snapshot
+                if latest is None:
+                    raise TMDBError("TMDB watched snapshot is not complete")
+                self._ensure_refresh(
+                    protocol.watchlist_request(
+                        request["params"]["scope"],
+                        latest.generation,
+                        True,
+                        False,
+                        request["session_binding"],
+                    ),
+                    latest.generation,
+                )
+                return self._value(scope, latest.revision, latest.generation)
         except Exception:
             self._invalidate_if_cleared(scope)
             raise
@@ -373,9 +395,11 @@ class ServiceWatchlistEngine:
             matches = self._binding(session_id) == request["session_binding"] and (
                 not current_account or current_account == account_id
             )
-        if not matches:
-            return {"invalidated": False}
-        return {"invalidated": self.snapshot_store.invalidate_identity(account_id)}
+            if not matches:
+                return {"invalidated": False}
+            return {
+                "invalidated": self.snapshot_store.invalidate_identity(account_id)
+            }
 
     def execute(self, request):
         """Execute one closed descriptor without holding identity locks over HTTP."""

@@ -580,5 +580,336 @@ class WatchlistServiceTests(unittest.TestCase):
         )
 
 
+    def start_qr_replacement_save(self, attempted, finished, results):
+        def replace():
+            attempted.set()
+            with ServiceStateStore(self.root).identity_transaction():
+                generation = self.snapshots.generation(self.scope)
+                self.settings.set("tmdb_access_token", "qr-session")
+                self.settings.set("tmdb_account_id", "42")
+                saved = self.snapshots.save_complete(
+                    self.scope,
+                    results,
+                    300.0,
+                    expected_generation=generation,
+                )
+                self.assertIsNotNone(saved)
+            finished.set()
+            return saved
+
+        return self.run_async(replace)
+
+    def test_identity_tombstone_generation_conflict_has_no_automatic_refresh(self):
+        self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
+        self.start_service()
+        row, claim = self.claim(self.refresh_request())
+        session = BlockingSession([page([KEEP])])
+        engine = self.engine(session)
+        engine.bind_claim(claim)
+        outcome = self.run_async(lambda: engine.execute(claim["request"]))
+        self.assertTrue(session.entered.wait(5))
+
+        invalidated = self.engine(FakeSession()).execute(
+            protocol.invalidate_identity_request("42", binding("old-session"))
+        )
+        self.assertEqual(invalidated, {"invalidated": True})
+        session.release.set()
+        self.threads[0].join(5)
+
+        self.assertEqual(outcome[0][0], "error")
+        self.assertIsNone(self.snapshots.load(self.scope))
+        self.assertEqual(
+            [job for job in self.manifest()["jobs"] if job["followup_of"] == row["job_id"]],
+            [],
+        )
+        self.identity.abort_claim(claim, "FAILED")
+        self.assertFalse(self.nonterminal())
+        with ServiceStateStore(self.root).identity_transaction():
+            self.settings.set("identity_probe", "released")
+        self.assertEqual(self.settings.get("identity_probe"), "released")
+
+    def test_qr_same_account_cannot_be_overwritten_by_validated_old_refresh(self):
+        self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
+        session = FakeSession([page([KEEP])])
+        engine = self.engine(session)
+        original_save = self.snapshots.save_complete
+        save_entered = threading.Event()
+        release_save = threading.Event()
+        replacement_attempted = threading.Event()
+        replacement_finished = threading.Event()
+        racing = False
+
+        def save_with_barrier(scope, results, created_at, **kwargs):
+            nonlocal racing
+            if racing:
+                return original_save(scope, results, created_at, **kwargs)
+            racing = True
+            save_entered.set()
+            self.assertTrue(release_save.wait(5), "old save barrier")
+            return original_save(scope, results, created_at, **kwargs)
+
+        self.snapshots.save_complete = save_with_barrier
+        outcome = self.run_async(lambda: engine.execute(self.refresh_request()))
+        self.assertTrue(save_entered.wait(5))
+        replacement = self.start_qr_replacement_save(
+            replacement_attempted,
+            replacement_finished,
+            [dict(MOVIE, id=7, title="QR refresh")],
+        )
+        self.assertTrue(replacement_attempted.wait(5))
+        replacement_finished.wait(1)
+        release_save.set()
+        self.threads[0].join(5)
+        self.threads[1].join(5)
+
+        self.assertEqual(outcome[0][0], "value")
+        self.assertEqual(replacement[0][0], "value")
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [dict(MOVIE, id=7, title="QR refresh")])
+        self.assertEqual(self.settings.get("tmdb_access_token"), "qr-session")
+
+    def test_qr_same_account_cannot_precede_old_watched_removal(self):
+        self.snapshots.save_complete(self.scope, [MOVIE, KEEP], 100.0)
+        original_remove = self.snapshots.remove
+        remove_entered = threading.Event()
+        release_remove = threading.Event()
+        replacement_attempted = threading.Event()
+        replacement_finished = threading.Event()
+        racing = False
+        qr_rows = [
+            dict(MOVIE, id=1, title="QR one"),
+            dict(KEEP, id=2, title="QR two"),
+        ]
+
+        def remove_with_barrier(scope, media_id):
+            nonlocal racing
+            if racing:
+                return original_remove(scope, media_id)
+            racing = True
+            remove_entered.set()
+            self.assertTrue(release_remove.wait(5), "watched remove barrier")
+            return original_remove(scope, media_id)
+
+        self.snapshots.remove = remove_with_barrier
+        session = FakeSession([FakeResponse(json_data={"success": True})])
+        outcome = self.run_async(
+            lambda: self.engine(session).execute(self.watched_request())
+        )
+        self.assertTrue(remove_entered.wait(5))
+        replacement = self.start_qr_replacement_save(
+            replacement_attempted, replacement_finished, qr_rows
+        )
+        self.assertTrue(replacement_attempted.wait(5))
+        replacement_finished.wait(1)
+        release_remove.set()
+        self.threads[0].join(5)
+        self.threads[1].join(5)
+
+        self.assertEqual(outcome[0][0], "value")
+        self.assertEqual(replacement[0][0], "value")
+        self.assertEqual(self.snapshots.load(self.scope).results, qr_rows)
+        self.assertEqual(
+            outcome[0][1],
+            {"scope": dict(self.scope.__dict__), "revision": 2, "generation": 1},
+        )
+
+    def test_delayed_invalidate_cannot_tombstone_same_account_qr_snapshot(self):
+        self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
+        original_invalidate = self.snapshots.invalidate_identity
+        invalidate_entered = threading.Event()
+        release_invalidate = threading.Event()
+        replacement_attempted = threading.Event()
+        replacement_finished = threading.Event()
+        racing = False
+
+        def invalidate_with_barrier(account_id):
+            nonlocal racing
+            if racing:
+                return original_invalidate(account_id)
+            racing = True
+            invalidate_entered.set()
+            self.assertTrue(release_invalidate.wait(5), "identity invalidation barrier")
+            return original_invalidate(account_id)
+
+        self.snapshots.invalidate_identity = invalidate_with_barrier
+        request = protocol.invalidate_identity_request("42", binding("old-session"))
+        outcome = self.run_async(lambda: self.engine(FakeSession()).execute(request))
+        self.assertTrue(invalidate_entered.wait(5))
+        replacement = self.start_qr_replacement_save(
+            replacement_attempted,
+            replacement_finished,
+            [dict(MOVIE, id=7, title="QR invalidation")],
+        )
+        self.assertTrue(replacement_attempted.wait(5))
+        replacement_finished.wait(1)
+        release_invalidate.set()
+        self.threads[0].join(5)
+        self.threads[1].join(5)
+
+        self.assertEqual(outcome, [("value", {"invalidated": True})])
+        self.assertEqual(replacement[0][0], "value")
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [dict(MOVIE, id=7, title="QR invalidation")])
+        self.assertEqual((current.revision, current.generation), (3, 1))
+
+    def test_delayed_old_401_cannot_invalidate_same_account_qr_snapshot(self):
+        self.snapshots.save_complete(self.scope, [MOVIE], 100.0)
+        original_invalidate = self.snapshots.invalidate_identity
+        invalidate_entered = threading.Event()
+        release_invalidate = threading.Event()
+        replacement_attempted = threading.Event()
+        replacement_finished = threading.Event()
+        racing = False
+
+        def invalidate_with_barrier(account_id):
+            nonlocal racing
+            if racing:
+                return original_invalidate(account_id)
+            racing = True
+            invalidate_entered.set()
+            self.assertTrue(release_invalidate.wait(5), "401 invalidation barrier")
+            return original_invalidate(account_id)
+
+        self.snapshots.invalidate_identity = invalidate_with_barrier
+        session = FakeSession([FakeResponse(json_data={}, status_code=401)])
+        outcome = self.run_async(
+            lambda: self.engine(session).execute(self.refresh_request())
+        )
+        self.assertTrue(invalidate_entered.wait(5))
+        replacement = self.start_qr_replacement_save(
+            replacement_attempted,
+            replacement_finished,
+            [dict(MOVIE, id=7, title="QR after 401")],
+        )
+        self.assertTrue(replacement_attempted.wait(5))
+        replacement_finished.wait(1)
+        release_invalidate.set()
+        self.threads[0].join(5)
+        self.threads[1].join(5)
+
+        self.assertEqual(outcome[0][0], "error")
+        self.assertEqual(replacement[0][0], "value")
+        current = self.snapshots.load(self.scope)
+        self.assertEqual(current.results, [dict(MOVIE, id=7, title="QR after 401")])
+        self.assertEqual((current.revision, current.generation), (3, 1))
+        self.assertEqual(self.settings.get("tmdb_access_token"), "qr-session")
+
+    def test_two_watched_results_keep_revision_and_generation_from_one_commit(self):
+        self.snapshots.save_complete(
+            self.scope, [MOVIE, KEEP, dict(MOVIE, id=3)], 100.0
+        )
+        original_generation = self.snapshots.generation
+        generation_read = threading.Event()
+        release_generation = threading.Event()
+        first_read = True
+
+        def generation_with_barrier(scope):
+            nonlocal first_read
+            value = original_generation(scope)
+            if first_read:
+                first_read = False
+                generation_read.set()
+                self.assertTrue(release_generation.wait(5), "generation/load gap")
+            return value
+
+        self.snapshots.generation = generation_with_barrier
+        first = self.run_async(
+            lambda: self.engine(
+                FakeSession([FakeResponse(json_data={"success": True})])
+            ).execute(self.watched_request())
+        )
+        interleaved = generation_read.wait(1)
+        if not interleaved:
+            self.threads[0].join(5)
+        second = self.engine(
+            FakeSession([FakeResponse(json_data={"success": True})])
+        ).execute(protocol.watched_request(self.scope, 2, binding("old-session")))
+        if interleaved:
+            release_generation.set()
+            self.threads[0].join(5)
+
+        self.assertEqual(first[0][0], "value")
+        self.assertEqual(
+            first[0][1],
+            {"scope": dict(self.scope.__dict__), "revision": 2, "generation": 1},
+        )
+        self.assertEqual(
+            second,
+            {"scope": dict(self.scope.__dict__), "revision": 3, "generation": 2},
+        )
+        self.assertEqual(
+            [row["id"] for row in self.snapshots.load(self.scope).results], [3]
+        )
+
+    def test_late_generation_read_coalesces_with_newer_explicit_refresh(self):
+        self.snapshots.save_complete(self.scope, [MOVIE, KEEP], 100.0)
+        caller = self.start_service()
+        row, claim = self.claim(self.refresh_request())
+        session = BlockingSession([page([MOVIE])])
+        engine = self.engine(session)
+        engine.bind_claim(claim)
+        original_generation = self.snapshots.generation
+        generation_read = threading.Event()
+        release_generation = threading.Event()
+        first_read = True
+
+        def generation_with_barrier(scope):
+            nonlocal first_read
+            value = original_generation(scope)
+            if first_read:
+                first_read = False
+                generation_read.set()
+                self.assertTrue(release_generation.wait(5), "late generation barrier")
+            return value
+
+        self.snapshots.generation = generation_with_barrier
+        outcome = self.run_async(lambda: engine.execute(claim["request"]))
+        self.assertTrue(session.entered.wait(5))
+        self.snapshots.remove(self.scope, 1)
+        explicit = caller.submit([self.refresh_request(generation=1)])[0]
+        self.assertEqual(explicit["status"], "accepted")
+        session.release.set()
+
+        interleaved = generation_read.wait(1)
+        if interleaved:
+            with ServiceStateStore(self.root).identity_transaction():
+                self.snapshots.remove(self.scope, 2)
+                newer = caller.submit([self.refresh_request(generation=2)])[0]
+                self.assertEqual(newer["status"], "accepted")
+            release_generation.set()
+        self.threads[0].join(5)
+
+        self.assertEqual(outcome[0][0], "error")
+        expected_generation = 2 if interleaved else 1
+        refresh_jobs = [
+            job for job in self.manifest()["jobs"]
+            if job["state"] == "queued"
+            and job["request"]["operation"] == "watchlist.refresh"
+        ]
+        self.assertEqual(len(refresh_jobs), 1)
+        self.assertEqual(refresh_jobs[0]["request"]["generation"], expected_generation)
+        self.assertEqual(refresh_jobs[0]["followup_of"], row["job_id"])
+        self.assertTrue(refresh_jobs[0]["request"]["force"])
+        self.identity.abort_claim(claim, "FAILED")
+
+    def test_watched_business_failure_without_complete_snapshot_has_no_followup(self):
+        self.start_service()
+        row, claim = self.claim(self.watched_request())
+        engine = self.engine(FakeSession([FakeResponse(json_data={"success": True})]))
+        engine.bind_claim(claim)
+
+        with self.assertRaises(TMDBError):
+            engine.execute(claim["request"])
+
+        self.assertIsNone(self.snapshots.load(self.scope))
+        self.assertEqual(
+            [job for job in self.manifest()["jobs"]
+             if job["followup_of"] == row["job_id"]],
+            [],
+        )
+        self.identity.abort_claim(claim, "FAILED")
+        self.assertFalse(self.nonterminal())
+
+
 if __name__ == "__main__":
     unittest.main()
